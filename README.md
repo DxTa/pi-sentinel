@@ -9,7 +9,7 @@ Derived from [`@gotgenes/pi-permission-system`](https://github.com/gotgenes/pi-p
 First release is Git-only. Install a reviewed tag or commit:
 
 ```bash
-pi install git:github.com/DxTa/pi-sentinel@v0.1.0
+pi install git:git@github.com:DxTa/pi-sentinel@1f0ae12
 ```
 
 Pi clones the package and runs `npm install`. The package exposes `./src/index.ts` through its `pi.extensions` manifest; no build step is required.
