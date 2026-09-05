@@ -1,0 +1,1744 @@
+/**
+ * Pi Permission System — standalone permission and sandbox extension.
+ *
+ * This extension provides:
+ * - Network domain gating (from domain-gate.ts)
+ * - Bubblewrap OS-level sandboxing (from ape-dev, hardened)
+ * - Dynamic sandbox rules with ask/allow/deny UX
+ * - Unified config with permission, network, and sandbox sections
+ */
+
+import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
+
+// ── Extension imports ────────────────────────────────────────────────────
+import { registerPermissionSystemCommand } from "./config-modal";
+import {
+  getBundledConfigPath,
+  getGlobalConfigPath,
+  getLegacyGlobalPolicyPath,
+  getLegacyProjectConfigPath,
+  getLegacyProjectExtensionConfigPath,
+  getLegacyProjectPolicyPath,
+  getProjectConfigPath,
+} from "./config-paths";
+import { EXTENSION_ROOT } from "./extension-config";
+import type { PermissionForwardingDeps } from "./forwarded-permissions/polling";
+import { ForwardingManager } from "./forwarding-manager";
+import {
+  AgentPrepHandler,
+  PermissionGateHandler,
+  SessionLifecycleHandler,
+} from "./handlers";
+import { buildInputForSurface } from "./input-normalizer";
+import { requestPermissionDecisionFromUi } from "./permission-dialog";
+import { registerPermissionRpcHandlers } from "./permission-event-rpc";
+import { emitReadyEvent } from "./permission-events";
+import { PermissionPrompter } from "./permission-prompter";
+import { PromptWaitTracker } from "./prompt-state";
+import { PermissionSession } from "./permission-session";
+import {
+  createExtensionRuntime,
+  logResolvedConfigPaths,
+  persistPermissionRule,
+  recordInteractiveSession,
+  refreshExtensionConfig,
+  resetExtensionConfig,
+  resolveInteractiveSessionFallback,
+  saveExtensionConfig,
+} from "./runtime";
+import type { PermissionsService } from "./service";
+import {
+  publishPermissionsService,
+  unpublishPermissionsService,
+} from "./service";
+import { createSessionLogger } from "./session-logger";
+import { isSubagentExecutionContext } from "./subagent-context";
+import {
+  canResolveAskPermissionRequest,
+  shouldAutoApprovePermissionState,
+} from "./yolo-mode";
+
+// ── Our modules ──────────────────────────────────────────────────────────
+import { registerSentinelCreds } from "./sentinel-creds/index";
+import { loadDomainPolicy, type DomainGateConfig } from "./network/config.js";
+import { registerDomainGateCommand } from "./network/domain-gate.js";
+import { clearSessionNetworkApprovals, getSessionNetworkApprovals, handleNetworkToolCall, handleNetworkUserBash } from "./network/network-gate-handler.js";
+import { normalizeSandboxConfig, type SandboxConfig, validateSandboxGrantPath } from "./sandbox/settings.js";
+import type { ResolvedSandboxProfile } from "./sandbox/types.js";
+import { wildcardMatch } from "./wildcard-matcher.js";
+import { checkSandboxStatus } from "./sandbox/status.js";
+import { createBwrapBackend } from "./sandbox/backends/bwrap-backend.js";
+import { createSrtBackend } from "./sandbox/backends/srt-backend.js";
+import { defaultSrtHelperPath, defaultSrtStatus } from "./sandbox/srt-status.js";
+import { SandboxPolicyManager, type Grant, type GrantDuration } from "./sandbox/policy-manager.js";
+import { createSandboxRuntimeLoader } from "./sandbox/runtime-lazy.js";
+import { promptSandboxGrant } from "./sandbox/sandbox-prompt.js";
+import {
+  DEFAULT_MASKED_PATTERNS,
+  classifyMaskedPathKind,
+  detectMaskedFileAccess,
+  formatMaskedAccessSuggestion,
+  isPathMasked,
+} from "./sandbox/masked-file-gate.js";
+import { resolveSandboxProfile, type UnmaskedPath } from "./sandbox/bwrap-command.js";
+import { detectExternalPaths, formatExternalPathPrompt, resolveRepoRoot } from "./sandbox/external-path-gate.js";
+import {
+  getScopedConfigPath,
+  loadMergedScopedConfig,
+  readConfigFile,
+  resolveConfinedConfigPath,
+  writeConfigFile,
+  persistNetworkGrantToConfig,
+  persistSandboxNetworkGrantToConfig,
+  persistSandboxPathGrantToConfig,
+  removeNetworkGrantFromConfig,
+  removeSandboxNetworkGrantFromConfig,
+  removeSandboxPathGrantFromConfig,
+  type PersistentApprovalScope,
+} from "./scoped-config";
+import { detectImplicitAuthAccess, type MaskedAuthKind } from "./sandbox/auth-path-detection.js";
+import {
+  addMaskedAuthPersistentGrant,
+  addMaskedAuthSessionGrant,
+  clearMaskedAuthSessionGrants,
+  getMaskedAuthPersistentGrants,
+  getMaskedAuthSessionGrants,
+} from "./sandbox/masked-auth-grants.js";
+import { resolveAuthExceptionPolicy, type ResolvedAuthException } from "./sandbox/auth-exception-policy.js";
+import { existsSync, lstatSync, realpathSync, unlinkSync } from "node:fs";
+import { dirname, isAbsolute, join, resolve } from "node:path";
+import { homedir } from "node:os";
+
+// ── Config helpers ───────────────────────────────────────────────────────
+
+function getAgentDir(): string {
+  return process.env.PI_CODING_AGENT_DIR || join(homedir(), ".pi", "agent");
+}
+
+/** True if the raw command string matches any sandbox-bypass glob pattern.
+ *  Uses wildcardMatch so `"herdr *"` matches both `herdr` and `herdr pane list`. */
+function matchesBypassCommand(command: string, patterns: string[]): boolean {
+  if (patterns.length === 0) return false;
+  const cmd = command.trim();
+  if (cmd.length === 0) return false;
+  return patterns.some((p) => wildcardMatch(p, cmd));
+}
+
+function getExtensionDir(): string {
+  return join(getAgentDir(), "extensions", "pi-sentinel");
+}
+
+interface UnifiedConfig {
+  debugLog?: boolean;
+  permissionReviewLog?: boolean;
+  yoloMode?: boolean;
+  permission?: Record<string, unknown>;
+  network?: DomainGateConfig;
+  sandbox?: Record<string, unknown>;
+  sentinelCreds?: Record<string, unknown>;
+}
+
+function loadConfig(cwd?: string): UnifiedConfig {
+  return loadMergedScopedConfig(getAgentDir(), cwd ?? null).merged as UnifiedConfig;
+}
+
+function getSafeScopedConfigPath(
+  scope: PersistentApprovalScope,
+  cwd: string | undefined,
+): string {
+  const configPath = getScopedConfigPath(getAgentDir(), cwd ?? null, scope);
+  if (scope === "workspace" && cwd) resolveConfinedConfigPath(configPath, cwd);
+  return configPath;
+}
+
+function persistScopedSandboxPathGrant(
+  scope: PersistentApprovalScope,
+  cwd: string | undefined,
+  targetPath: string,
+  mode: "ro" | "rw",
+): string {
+  const configPath = getScopedConfigPath(getAgentDir(), cwd ?? null, scope);
+  const workspaceRoot = scope === "workspace" && cwd ? cwd : undefined;
+  const safeConfigPath = getSafeScopedConfigPath(scope, cwd);
+  persistSandboxPathGrantToConfig(configPath, targetPath, mode, workspaceRoot);
+  return safeConfigPath;
+}
+
+function persistScopedNetworkGrant(
+  scope: PersistentApprovalScope,
+  cwd: string | undefined,
+  domain: string,
+  state: "allow" | "deny" = "allow",
+): string {
+  const configPath = getScopedConfigPath(getAgentDir(), cwd ?? null, scope);
+  const workspaceRoot = scope === "workspace" && cwd ? cwd : undefined;
+  const safeConfigPath = getSafeScopedConfigPath(scope, cwd);
+  persistNetworkGrantToConfig(configPath, domain, state, workspaceRoot);
+  return safeConfigPath;
+}
+
+function persistScopedSandboxNetworkGrant(
+  scope: PersistentApprovalScope,
+  cwd: string | undefined,
+): string {
+  const configPath = getScopedConfigPath(getAgentDir(), cwd ?? null, scope);
+  const workspaceRoot = scope === "workspace" && cwd ? cwd : undefined;
+  const safeConfigPath = getSafeScopedConfigPath(scope, cwd);
+  persistSandboxNetworkGrantToConfig(configPath, workspaceRoot);
+  return safeConfigPath;
+}
+
+/** Parse a human-readable TTL string into milliseconds. */
+function parseTTL(ttl: string): GrantDuration {
+  if (ttl === "once" || ttl === "session" || ttl === "always") return ttl;
+  const match = ttl.match(/^(\d+)(ms|s|m|h)?$/);
+  if (!match) throw new Error(`Invalid TTL '${ttl}'. Use once, session, always, 30m, or 1h.`);
+  const num = parseInt(match[1], 10);
+  const unit = match[2] || "m";
+  switch (unit) {
+    case "ms": return num;
+    case "s": return num * 1000;
+    case "m": return num * 60_000;
+    case "h": return num * 3_600_000;
+    default: throw new Error(`Invalid TTL '${ttl}'.`);
+  }
+}
+
+function tokenizeSandboxCommandArgs(args: string): string[] {
+  if (args.includes("\u0000")) throw new Error("Sandbox grant arguments contain NUL byte.");
+  const tokens: string[] = [];
+  let token = "";
+  let quote: "'" | '"' | undefined;
+  let escaped = false;
+  for (const char of args.trim()) {
+    if (escaped) {
+      token += char;
+      escaped = false;
+    } else if (char === "\\") {
+      escaped = true;
+    } else if (quote) {
+      if (char === quote) quote = undefined;
+      else token += char;
+    } else if (char === "'" || char === '"') {
+      quote = char;
+    } else if (/\s/.test(char)) {
+      if (token) {
+        tokens.push(token);
+        token = "";
+      }
+    } else {
+      token += char;
+    }
+  }
+  if (escaped) token += "\\";
+  if (quote) throw new Error("Unclosed quote in sandbox grant arguments.");
+  if (token) tokens.push(token);
+  return tokens;
+}
+
+function expandGrantPath(rawPath: string, cwd: string): string {
+  const expanded = rawPath === "~"
+    ? homedir()
+    : rawPath.startsWith("~/")
+      ? join(homedir(), rawPath.slice(2))
+      : rawPath;
+  return isAbsolute(expanded) ? expanded : resolve(cwd, expanded);
+}
+
+function normalizeGrantPath(rawPath: string, cwd: string): string {
+  let candidate = expandGrantPath(rawPath, cwd);
+  const suffix: string[] = [];
+  while (true) {
+    try {
+      const stats = lstatSync(candidate);
+      if (stats.isSocket()) throw new Error("Sandbox grants cannot target Unix sockets.");
+      const canonical = realpathSync.native(candidate);
+      return suffix.length === 0 ? canonical : resolve(canonical, ...suffix.reverse());
+    } catch (error) {
+      if (error instanceof Error && /Unix sockets/.test(error.message)) throw error;
+      const parent = dirname(candidate);
+      if (parent === candidate) throw new Error(`Sandbox grant path does not exist: ${rawPath}`);
+      suffix.push(candidate.slice(parent.length + 1));
+      candidate = parent;
+    }
+  }
+}
+
+function validateGrantPath(targetPath: string, profile: ResolvedSandboxProfile, mode: "ro" | "rw"): void {
+  const normalized = resolve(targetPath);
+  validateSandboxGrantPath(normalized);
+  if (mode === "rw" && isPathMasked(normalized, [...DEFAULT_MASKED_PATTERNS, ...(profile.maskedPaths ?? [])])) {
+    throw new Error(`Refusing read-write grant to protected credential path: ${normalized}`);
+  }
+}
+
+function validateGrantDomain(domain: string): string {
+  const normalized = domain.trim().toLowerCase();
+  const hostname = normalized.startsWith("*.") ? normalized.slice(2) : normalized;
+  const ipv4 = hostname.split(".").length === 4
+    && hostname.split(".").every((part) => /^\d+$/.test(part) && Number(part) <= 255);
+  const validHostname = hostname === "localhost"
+    || ipv4
+    || /^(?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\.)+[a-z]{2,63}$/.test(hostname);
+  if (!normalized || normalized === "*" || !validHostname) {
+    throw new Error(`Invalid network grant domain '${domain}'. Use example.com, localhost, or *.example.com.`);
+  }
+  return normalized;
+}
+
+const sessionBypassApprovals = new Map<string, Set<string>>();
+
+function getBypassApprovals(repoRoot: string, kind: MaskedAuthKind): Set<string> {
+  const key = `${repoRoot}::${kind}`;
+  let set = sessionBypassApprovals.get(key);
+  if (!set) {
+    set = new Set();
+    sessionBypassApprovals.set(key, set);
+  }
+  return set;
+}
+
+function approvedMaskedPathsForKinds(
+  repoRoot: string,
+  kinds: Set<MaskedAuthKind>,
+  legacyActiveGrantPaths: Set<string>,
+): Set<string> {
+  const approved = new Set<string>(legacyActiveGrantPaths);
+  for (const kind of kinds) {
+    for (const path of getMaskedAuthSessionGrants(repoRoot, kind)) approved.add(path);
+    for (const path of getMaskedAuthPersistentGrants(repoRoot, kind)) approved.add(path);
+  }
+  return approved;
+}
+
+async function resolveMaskedAuthAccess(
+  command: string,
+  cwd: string,
+  repoRoot: string,
+  profile: ResolvedSandboxProfile,
+  sandboxConfig: SandboxConfig,
+  ctx: ExtensionContext,
+  promptWaitTracker: PromptWaitTracker,
+  legacyActiveGrantPaths: Set<string>,
+): Promise<{
+  blockReason?: string;
+  unmaskedPaths: UnmaskedPath[];
+  bypass: boolean;
+  authDecision?: ResolvedAuthException;
+}> {
+  const explicitMasked = detectMaskedFileAccess(command, profile, cwd);
+  const implicitAuth = await detectImplicitAuthAccess(command, repoRoot);
+
+  let canonicalizationFailed = false;
+  const pinPath = (path: string): string | null => {
+    try {
+      return normalizeGrantPath(path, cwd);
+    } catch {
+      canonicalizationFailed = true;
+      return null;
+    }
+  };
+  const kindByPath = new Map<string, MaskedAuthKind>();
+  for (const path of explicitMasked) {
+    const pinnedPath = pinPath(path);
+    if (pinnedPath) kindByPath.set(pinnedPath, classifyMaskedPathKind([pinnedPath]));
+  }
+  if (implicitAuth) {
+    for (const path of implicitAuth.candidatePaths) {
+      const pinnedPath = pinPath(path);
+      if (pinnedPath) kindByPath.set(pinnedPath, implicitAuth.kind);
+    }
+  }
+
+  if (canonicalizationFailed) {
+    return {
+      blockReason: "Sandbox: unable to canonicalize protected path; command blocked.",
+      unmaskedPaths: [],
+      bypass: false,
+    };
+  }
+  if (implicitAuth == null && kindByPath.size === 0) {
+    return { unmaskedPaths: [], bypass: false };
+  }
+
+  const inferredKind = implicitAuth?.kind ?? (kindByPath.size === 1 ? [...new Set(kindByPath.values())][0] : "generic-secret");
+  const authDecision = resolveAuthExceptionPolicy({
+    command,
+    kind: inferredKind,
+    rules: sandboxConfig.authExceptions,
+    hasCandidatePaths: kindByPath.size > 0,
+    needsSocketFallback: implicitAuth?.needsSocketFallback ?? false,
+  });
+
+  if (authDecision.strategy === "deny") {
+    return {
+      blockReason: `Sandbox: ${authDecision.reason}`,
+      unmaskedPaths: [],
+      bypass: false,
+      authDecision,
+    };
+  }
+
+  if (authDecision.strategy === "ask-bypass") {
+    const approvals = getBypassApprovals(repoRoot, authDecision.kind);
+    if (approvals.has(authDecision.approvalKey)) {
+      return { unmaskedPaths: [], bypass: true, authDecision };
+    }
+    const promptResult = await promptSandboxGrant(ctx, {
+      change: {
+        type: "auth-bypass",
+        values: [authDecision.kind],
+        description: `The command "${command}" needs ${authDecision.kind} access that is safer or more reliable outside the sandbox. Approving will run this command outside sandbox protections for the selected duration.`,
+        authKind: authDecision.kind,
+      },
+      command,
+      promptWaitTracker,
+      allowPersistentScopes: false,
+    });
+    if (promptResult.action === "deny") {
+      return {
+        blockReason: `Sandbox: ${authDecision.reason} User denied unsandboxed execution.`,
+        unmaskedPaths: [],
+        bypass: false,
+        authDecision,
+      };
+    }
+    if (promptResult.duration === "session") {
+      approvals.add(authDecision.approvalKey);
+    }
+    return { unmaskedPaths: [], bypass: true, authDecision };
+  }
+
+  const kinds = new Set<MaskedAuthKind>(kindByPath.values());
+  if (kinds.size === 0) kinds.add(authDecision.kind);
+  const approved = approvedMaskedPathsForKinds(repoRoot, kinds, legacyActiveGrantPaths);
+  const pendingPaths = [...kindByPath.keys()].filter((path) => !approved.has(path));
+
+  const unmaskedPaths: UnmaskedPath[] = [...kindByPath.keys()]
+    .filter((path) => approved.has(path))
+    .map((path) => ({ path, writable: false }));
+
+  if (pendingPaths.length === 0) {
+    return { unmaskedPaths, bypass: false, authDecision };
+  }
+
+  const kind = authDecision.kind;
+  const promptResult = await promptSandboxGrant(ctx, {
+    change: {
+      type: "path",
+      mode: "ro",
+      values: pendingPaths,
+      description: formatMaskedAccessSuggestion(command, pendingPaths, kind),
+      authKind: kind,
+    },
+    command,
+    promptWaitTracker,
+    allowPersistentScopes: false,
+  });
+
+  if (promptResult.action === "deny") {
+    return {
+      blockReason: `Sandbox: ${formatMaskedAccessSuggestion(command, pendingPaths, kind)} User denied access.`,
+      unmaskedPaths: [],
+      bypass: false,
+      authDecision,
+    };
+  }
+
+  for (const path of pendingPaths) {
+    unmaskedPaths.push({ path, writable: false });
+    if (promptResult.duration === "session") {
+      addMaskedAuthSessionGrant(repoRoot, kindByPath.get(path) ?? kind, path);
+    } else if (promptResult.duration === "always") {
+      const pathKind = kindByPath.get(path) ?? kind;
+      addMaskedAuthSessionGrant(repoRoot, pathKind, path);
+      addMaskedAuthPersistentGrant(repoRoot, pathKind, path);
+    }
+  }
+
+  return { unmaskedPaths, bypass: false, authDecision };
+}
+
+// ── Main extension ───────────────────────────────────────────────────────
+
+export default function piPermissionSystemExtension(pi: ExtensionAPI): void {
+  // ── Upstream setup (identical to original index.ts) ───────────────────
+  const runtime = createExtensionRuntime();
+  const promptWaitTracker = new PromptWaitTracker(pi.events);
+
+  const prompter = new PermissionPrompter({
+    promptWaitTracker,
+    getConfig: () => runtime.config,
+    writeReviewLog: runtime.writeReviewLog.bind(runtime),
+    subagentSessionsDir: runtime.subagentSessionsDir,
+    forwardingDir: runtime.forwardingDir,
+    resolveFallbackTargetSessionId: (ctx) =>
+      resolveInteractiveSessionFallback(runtime, ctx.cwd),
+    requestPermissionDecisionFromUi,
+  });
+
+  const forwardingDeps: PermissionForwardingDeps = {
+    forwardingDir: runtime.forwardingDir,
+    subagentSessionsDir: runtime.subagentSessionsDir,
+    promptWaitTracker,
+    logger: {
+      writeReviewLog: runtime.writeReviewLog.bind(runtime),
+      writeDebugLog: runtime.writeDebugLog.bind(runtime),
+    },
+    writeReviewLog: runtime.writeReviewLog.bind(runtime),
+    requestPermissionDecisionFromUi,
+    shouldAutoApprove: (request) =>
+      shouldAutoApprovePermissionState("ask", runtime.config, {
+        toolName: request.toolName,
+        command: request.command,
+      }),
+    resolveFallbackTargetSessionId: (ctx) =>
+      resolveInteractiveSessionFallback(runtime, ctx.cwd),
+  };
+
+  refreshExtensionConfig(runtime);
+
+  const session = new PermissionSession(
+    runtime,
+    createSessionLogger(runtime),
+    new ForwardingManager(runtime.subagentSessionsDir, forwardingDeps),
+    {
+      refreshExtensionConfig: (ctx) => refreshExtensionConfig(runtime, ctx),
+      logResolvedConfigPaths: () => logResolvedConfigPaths(runtime),
+      getConfig: () => runtime.config,
+      persistPermissionRule: (cwd, scope, surface, pattern) =>
+        persistPermissionRule(runtime, cwd, scope, surface, pattern),
+      canRequestPermissionConfirmation: (ctx, details) => {
+        const fallbackTargetSessionId = resolveInteractiveSessionFallback(
+          runtime,
+          ctx.cwd,
+        );
+        return canResolveAskPermissionRequest({
+          config: runtime.config,
+          hasUI: ctx.hasUI,
+          isSubagent:
+            isSubagentExecutionContext(ctx, runtime.subagentSessionsDir) ||
+            (!ctx.hasUI && Boolean(fallbackTargetSessionId)),
+          toolName: details?.toolName,
+          command: details?.command,
+        });
+      },
+      promptPermission: (ctx, details) => prompter.prompt(ctx, details),
+    },
+  );
+
+  registerPermissionSystemCommand(pi, {
+    getConfig: () => runtime.config,
+    setConfig: (next, ctx) => saveExtensionConfig(runtime, next, ctx),
+    resetConfig: (ctx) => resetExtensionConfig(runtime, ctx),
+    getConfigPath: (cwd) =>
+      [
+        `bundled: ${getBundledConfigPath(EXTENSION_ROOT)}`,
+        `global: ${getGlobalConfigPath(runtime.agentDir)}`,
+        `project: ${cwd ? getProjectConfigPath(cwd) : "(none)"}`,
+        `legacy project: ${cwd ? getLegacyProjectExtensionConfigPath(cwd) : "(none)"}`,
+        `legacy policy: ${cwd ? getLegacyProjectPolicyPath(cwd) : "(none)"}`,
+      ].join("\n"),
+    getComposedRules: () =>
+      runtime.permissionManager.getComposedConfigRules(
+        runtime.lastKnownActiveAgentName ?? undefined,
+      ),
+  });
+
+  const rpcHandles = registerPermissionRpcHandlers(pi.events, {
+    promptWaitTracker,
+    getPermissionManager: () => runtime.permissionManager,
+    getSessionRules: () => runtime.sessionRules.getRuleset(),
+    getRuntimeContext: () => runtime.runtimeContext,
+    requestPermissionDecisionFromUi,
+    writeReviewLog: runtime.writeReviewLog.bind(runtime),
+  });
+
+  const permissionsService: PermissionsService = {
+    checkPermission(surface, value, agentName) {
+      const input = buildInputForSurface(surface, value);
+      const sessionRules = runtime.sessionRules.getRuleset();
+      return runtime.permissionManager.checkPermission(
+        surface,
+        input,
+        agentName,
+        sessionRules,
+      );
+    },
+  };
+  publishPermissionsService(permissionsService);
+
+  // ── sentinel-creds integration (shared promptWaitTracker) ────────────
+  registerSentinelCreds(pi, {
+    promptWaitTracker,
+    getConfig: (cwd) => loadConfig(cwd) as Record<string, unknown>,
+  });
+
+  emitReadyEvent(pi.events);
+
+  const toolRegistry = {
+    getAll: () => pi.getAllTools(),
+    setActive: (names: string[]) => pi.setActiveTools(names),
+  };
+
+  const lifecycle = new SessionLifecycleHandler(session, () => {
+    rpcHandles.unsubCheck();
+    rpcHandles.unsubPrompt();
+    unpublishPermissionsService();
+  });
+  const agentPrep = new AgentPrepHandler(session, toolRegistry);
+  const gates = new PermissionGateHandler(session, pi.events, toolRegistry);
+
+  type PersistentGrantRecord =
+    | { kind: "network"; configPath: string; value: string; scope: PersistentApprovalScope }
+    | { kind: "sandbox-network"; configPath: string; scope: PersistentApprovalScope }
+    | { kind: "path"; configPath: string; value: string; scope: PersistentApprovalScope };
+  const persistentGrantRecords = new Map<string, PersistentGrantRecord>();
+  let sandboxAuthorizationUnavailable = false;
+
+  type ConfigSnapshot = {
+    path: string;
+    existed: boolean;
+    config: Record<string, unknown>;
+  };
+  const snapshotConfigs = (paths: Iterable<string>): ConfigSnapshot[] => [...new Set(paths)].map((configPath) => ({
+    path: configPath,
+    existed: existsSync(configPath),
+    config: readConfigFile(configPath),
+  }));
+  const restoreConfigs = (snapshots: ConfigSnapshot[], workspaceRoot?: string): void => {
+    let firstError: Error | undefined;
+    for (const snapshot of snapshots) {
+      try {
+        if (snapshot.existed) {
+          if (!writeConfigFile(snapshot.path, snapshot.config, workspaceRoot)) {
+            throw new Error(`Failed to restore config at '${snapshot.path}'.`);
+          }
+        } else if (existsSync(snapshot.path)) {
+          const stat = lstatSync(snapshot.path);
+          if (stat.isSymbolicLink() || !stat.isFile()) {
+            throw new Error(`Failed to remove unexpected config at '${snapshot.path}'.`);
+          }
+          unlinkSync(snapshot.path);
+        }
+      } catch (error) {
+        firstError ??= error instanceof Error ? error : new Error(String(error));
+      }
+    }
+    if (firstError) throw firstError;
+  };
+  const rollbackSandboxChanges = (
+    policyManager: SandboxPolicyManager,
+    grants: Grant[],
+    snapshots: ConfigSnapshot[],
+    workspaceRoot?: string,
+  ): void => {
+    for (const grant of grants) policyManager.revokeGrant(grant.id);
+    try {
+      restoreConfigs(snapshots, workspaceRoot);
+      if (snapshots.length > 0) sandboxRuntime.reloadConfig();
+      for (const grant of grants) persistentGrantRecords.delete(grant.id);
+    } catch {
+      sandboxAuthorizationUnavailable = true;
+    }
+  };
+  const revokeRecordedGrants = (policyManager: SandboxPolicyManager, paths: Set<string>): void => {
+    for (const [grantId, record] of persistentGrantRecords) {
+      if (record.kind === "sandbox-network" && paths.has(record.configPath)) {
+        policyManager.revokeGrant(grantId);
+        persistentGrantRecords.delete(grantId);
+      }
+    }
+  };
+  const persistNetworkGrantTransaction = (
+    policyManager: SandboxPolicyManager,
+    cwd: string,
+    domains: readonly string[],
+    scope: PersistentApprovalScope,
+    state: "allow" | "deny" = "allow",
+  ): void => {
+    const configPath = getSafeScopedConfigPath(scope, cwd);
+    const workspaceRoot = scope === "workspace" ? cwd : undefined;
+    const snapshots = snapshotConfigs([configPath]);
+    try {
+      for (const domain of domains) persistScopedNetworkGrant(scope, cwd, domain, state);
+      sandboxRuntime.reloadConfig();
+    } catch (error) {
+      rollbackSandboxChanges(policyManager, [], snapshots, workspaceRoot);
+      throw error;
+    }
+  };
+
+  let activeWorkspaceCwd = process.cwd();
+  pi.on("session_start", (event, ctx) => {
+    activeWorkspaceCwd = ctx.cwd;
+    sandboxAuthorizationUnavailable = false;
+    promptWaitTracker.clear(runtime.runtimeContext ?? undefined);
+    sessionBypassApprovals.clear();
+    clearSessionNetworkApprovals();
+    clearMaskedAuthSessionGrants();
+    sandboxRuntime.clearGrants();
+    recordInteractiveSession(runtime, ctx);
+    return lifecycle.handleSessionStart(event, ctx);
+  });
+  pi.on("resources_discover", (event) =>
+    lifecycle.handleResourcesDiscover(event),
+  );
+  pi.on("session_shutdown", () => {
+    promptWaitTracker.clear(runtime.runtimeContext ?? undefined);
+    sessionBypassApprovals.clear();
+    clearSessionNetworkApprovals();
+    clearMaskedAuthSessionGrants();
+    sandboxRuntime.dispose();
+    return lifecycle.handleSessionShutdown();
+  });
+  pi.on("before_agent_start", (event, ctx) => agentPrep.handle(event, ctx));
+  pi.on("input", (event, ctx) => gates.handleInput(event, ctx));
+  // NOTE: tool_call and user_bash are handled below with our additions
+
+  // ── Our additions: lazy config/runtime, commands ─────────────────────
+  const sandboxRuntime = createSandboxRuntimeLoader({
+    loadConfig,
+    normalizeSandboxConfig,
+    createPolicyManager: (cfg) => new SandboxPolicyManager(cfg),
+    createBackend: (cfg) => cfg.backend === "srt"
+      ? createSrtBackend({ helperPath: () => defaultSrtHelperPath(null) })
+      : createBwrapBackend(),
+  });
+
+  const getNetworkConfig = (cwd?: string): DomainGateConfig | undefined =>
+    loadConfig(cwd).network;
+  const getSandboxConfig = (cwd?: string): SandboxConfig => {
+    if (sandboxAuthorizationUnavailable) {
+      throw new Error("Sandbox authorization state unavailable.");
+    }
+    return normalizeSandboxConfig(loadConfig(cwd).sandbox);
+  };
+  const getPolicyManager = (): SandboxPolicyManager =>
+    sandboxRuntime.getRuntime().policyManager;
+  const getSandboxBackend = (cwd?: string) => {
+    const sandboxConfig = getSandboxConfig(cwd);
+    return sandboxConfig.backend === "srt"
+      ? createSrtBackend({
+          helperPath: () => defaultSrtHelperPath(null),
+        })
+      : createBwrapBackend();
+  };
+
+  function getEffectiveSandboxConfig(cwd: string): SandboxConfig {
+    return getSandboxConfig(cwd);
+  }
+
+  const rememberPersistentGrant = (grant: Grant, record: PersistentGrantRecord): void => {
+    persistentGrantRecords.set(grant.id, record);
+  };
+
+  type PersistentSandboxNetworkRecord = {
+    id: string;
+    scope: PersistentApprovalScope;
+    configPaths: string[];
+  };
+  const getPersistentSandboxNetworkRecords = (cwd: string): PersistentSandboxNetworkRecord[] => {
+    const scoped = loadMergedScopedConfig(getAgentDir(), cwd);
+    const hasCapability = (config: Record<string, unknown>): boolean => {
+      const sandbox = config.sandbox;
+      return Boolean(
+        sandbox &&
+        typeof sandbox === "object" &&
+        !Array.isArray(sandbox) &&
+        (sandbox as { network?: unknown }).network === true,
+      );
+    };
+    const hasCapabilityAt = (configPath: string): boolean => {
+      try {
+        return hasCapability(readConfigFile(configPath));
+      } catch {
+        return false;
+      }
+    };
+    const records: PersistentSandboxNetworkRecord[] = [];
+    const globalPaths = [
+      scoped.globalPath,
+      getLegacyGlobalPolicyPath(getAgentDir()),
+    ].filter((configPath, index, paths) => paths.indexOf(configPath) === index && hasCapabilityAt(configPath));
+    if (globalPaths.length > 0) {
+      records.push({
+        id: "sandbox-network-global",
+        scope: "global",
+        configPaths: globalPaths,
+      });
+    }
+    const workspacePaths = [
+      getProjectConfigPath(cwd),
+      getLegacyProjectConfigPath(cwd),
+      getLegacyProjectExtensionConfigPath(cwd),
+      getLegacyProjectPolicyPath(cwd),
+    ]
+      .filter((configPath, index, paths) => paths.indexOf(configPath) === index)
+      .filter((configPath) => {
+        resolveConfinedConfigPath(configPath, cwd);
+        return hasCapabilityAt(configPath);
+      });
+    if (workspacePaths.length > 0) {
+      records.push({
+        id: "sandbox-network-workspace",
+        scope: "workspace",
+        configPaths: workspacePaths,
+      });
+    }
+    return records;
+  };
+
+  function revokeSandboxNetworkCapability(
+    policyManager: SandboxPolicyManager,
+    configPaths: Iterable<string>,
+    scope: PersistentApprovalScope,
+    cwd: string,
+  ): void {
+    const paths = new Set(configPaths);
+    const workspaceRoot = scope === "workspace" ? cwd : undefined;
+    const snapshots = snapshotConfigs(paths);
+    try {
+      for (const configPath of paths) {
+        removeSandboxNetworkGrantFromConfig(configPath, workspaceRoot);
+      }
+    } catch (error) {
+      rollbackSandboxChanges(policyManager, [], snapshots, workspaceRoot);
+      throw error;
+    }
+
+    try {
+      sandboxRuntime.reloadConfig();
+    } catch (error) {
+      try {
+        restoreConfigs(snapshots, workspaceRoot);
+        sandboxRuntime.reloadConfig();
+      } catch {
+        sandboxAuthorizationUnavailable = true;
+        revokeRecordedGrants(policyManager, paths);
+      }
+      throw error;
+    }
+    revokeRecordedGrants(policyManager, paths);
+  }
+
+  // ── Register our commands ────────────────────────────────────────────
+  registerDomainGateCommand(pi, getNetworkConfig);
+
+  type SandboxCompletion = { value: string; label: string; description?: string };
+  const completeSandboxGrant = (argumentPrefix: string): SandboxCompletion[] => {
+    const hasTrailingWhitespace = /\s$/.test(argumentPrefix);
+    const prefix = argumentPrefix.trimEnd();
+    if (!prefix) {
+      return [
+        { value: "path", label: "path", description: "Grant filesystem access" },
+        { value: "network", label: "network", description: "Grant network access" },
+      ];
+    }
+
+    const parts = prefix.split(/\s+/);
+    const subcommand = parts[0];
+    if (subcommand !== "path" && subcommand !== "network") return [];
+    const last = parts.at(-1) ?? "";
+    const flags = subcommand === "path" ? ["--ro", "--rw", "--ttl"] : ["--domain", "--ttl"];
+    const usedFlags = new Set(parts.filter((part) => flags.includes(part)));
+    if (hasTrailingWhitespace) {
+      return flags
+        .filter((flag) => !usedFlags.has(flag))
+        .map((flag) => ({ value: `${argumentPrefix}${flag}`, label: flag }));
+    }
+    if (!last.startsWith("--")) return [];
+    const stem = prefix.slice(0, prefix.length - last.length);
+    return flags
+      .filter((flag) => !usedFlags.has(flag) && flag.startsWith(last))
+      .map((flag) => ({ value: `${stem}${flag}`, label: flag }));
+  };
+
+  pi.registerCommand("sandbox-status", {
+    description: "Show sandbox status and active profile",
+    handler: async (_args: string, ctx: ExtensionContext) => {
+      const sc = getSandboxConfig(ctx.cwd);
+      if (!sc.enabled) {
+        ctx.ui.notify("Sandbox: disabled", "info");
+        return;
+      }
+      const backendKind = sc.backend ?? "bwrap";
+      const profile = sc.profiles[sc.defaultProfile];
+      const grants = getPolicyManager().listGrants();
+      const persistentNetwork = getPersistentSandboxNetworkRecords(ctx.cwd);
+      const activeGrantIds = new Set(grants.map((grant) => grant.id));
+      const activePersistentPaths = new Set(
+        [...persistentGrantRecords.entries()]
+          .filter(([grantId, record]) => record.kind === "sandbox-network" && activeGrantIds.has(grantId))
+          .map(([, record]) => record.configPath),
+      );
+      const info = [
+        `Sandbox: ${sc.enabled ? "enabled" : "disabled"}`,
+        `Backend: ${backendKind}`,
+        `Profile: ${sc.defaultProfile} (network: ${profile?.network || sc.network ? "on" : "off"})`,
+      ];
+      if (backendKind === "srt") {
+        const status = defaultSrtStatus(sc.runnerPath ?? null);
+        info.push(`SRT package: ${status.packageAvailable ? "available" : "missing"}`);
+        info.push(`Runner: ${status.entrypointPath ?? "not configured"} (${status.entrypointExists ? "exists" : "missing"})`);
+        if (status.dependencyChecks.length > 0) {
+          info.push(`Dependencies: ${status.dependencyChecks.map((dep) => `${dep.name}=${dep.available ? "ok" : "missing"}`).join(", ")}`);
+        }
+        info.push(`Active grants: ${grants.length}`);
+        if (status.error) info.push(`Error: ${status.error}`);
+      } else {
+        const status = checkSandboxStatus(sc.runnerPath ?? null);
+        info.push(`bwrap binary: ${status.bwrapBinary ? "available" : "missing"}${status.bwrapVersion ? ` (${status.bwrapVersion})` : ""}`);
+        info.push(`Runner: ${status.runnerPath ?? "not configured"} (${status.runnerExists ? "exists" : "missing"})`);
+        info.push(`Active grants: ${grants.length}`);
+        if (status.error) info.push(`Error: ${status.error}`);
+      }
+      for (const g of grants) {
+        const expires = g.expiresAt ? `expires ${g.expiresAt.toISOString()}` : "session end";
+        info.push(`  ${g.id}: ${g.type} ${g.value}${g.mode ? ` (${g.mode})` : ""} [${expires}]`);
+      }
+      for (const [grantId, record] of persistentGrantRecords) {
+        if (activeGrantIds.has(grantId) || record.kind === "sandbox-network") continue;
+        info.push(`  ${grantId}: ${record.kind} ${record.value} [persistent]`);
+      }
+      for (const record of persistentNetwork) {
+        if (!record.configPaths.some((configPath) => activePersistentPaths.has(configPath))) {
+          info.push(`  ${record.id}: network capability (${record.scope}) [persistent]`);
+        }
+      }
+      ctx.ui.notify(info.join("\n"), "info");
+    },
+  });
+
+  pi.registerCommand("sandbox-grant", {
+    description: "Grant sandbox access. Usage: /sandbox-grant path <path> [--ro|--rw] [--ttl 30m] | /sandbox-grant network --domain *.npmjs.org [--ttl 5m]",
+    getArgumentCompletions: completeSandboxGrant,
+    handler: async (args: string, ctx: ExtensionContext) => {
+      const policyManager = getPolicyManager();
+      const parts = tokenizeSandboxCommandArgs(args);
+      const subcmd = parts[0];
+
+      if (subcmd === "network") {
+        let domain: string | undefined;
+        let ttl: GrantDuration = "session";
+        for (let i = 1; i < parts.length; i++) {
+          if (parts[i] === "--domain") {
+            if (!parts[i + 1]) throw new Error("Missing value for --domain.");
+            domain = validateGrantDomain(parts[++i]!);
+          } else if (parts[i] === "--ttl") {
+            if (!parts[i + 1]) throw new Error("Missing value for --ttl.");
+            ttl = parseTTL(parts[++i]!);
+          } else {
+            throw new Error(`Unknown sandbox network grant option: ${parts[i]}`);
+          }
+        }
+        if (!domain) throw new Error("Network grant requires --domain example.com or *.example.com.");
+        if (ttl === "once") throw new Error("Standalone sandbox grants do not support --ttl once; use --ttl session.");
+        let configPath: string | undefined;
+        let snapshots: ConfigSnapshot[] = [];
+        let grants: Grant[] = [];
+        try {
+          if (ttl === "always") {
+            configPath = getSafeScopedConfigPath("global", ctx.cwd);
+            snapshots = snapshotConfigs([configPath]);
+            persistScopedSandboxNetworkGrant("global", ctx.cwd);
+          }
+          grants = policyManager.grantNetwork([domain], {
+            duration: ttl,
+            projectRoot: resolveRepoRoot(ctx.cwd),
+          });
+          if (configPath) {
+            for (const grant of grants) rememberPersistentGrant(grant, { kind: "sandbox-network", configPath, scope: "global" });
+            sandboxRuntime.reloadConfig();
+          }
+        } catch (error) {
+          rollbackSandboxChanges(policyManager, grants, snapshots);
+          throw error;
+        }
+        ctx.ui.notify(`Granted network access to ${domain} (${grants.length} grant(s), ${typeof ttl === "number" ? `${ttl}ms` : ttl})`, "info");
+      } else if (subcmd === "path") {
+        const rawPath = parts[1];
+        if (!rawPath || rawPath.startsWith("--")) {
+          throw new Error("Path grant requires a path.");
+        }
+        let mode: "ro" | "rw" = "ro";
+        let ttl: GrantDuration = "session";
+        for (let i = 2; i < parts.length; i++) {
+          if (parts[i] === "--ro" || parts[i] === "--rw") {
+            mode = parts[i] === "--rw" ? "rw" : "ro";
+          } else if (parts[i] === "--ttl") {
+            if (!parts[i + 1]) throw new Error("Missing value for --ttl.");
+            ttl = parseTTL(parts[++i]!);
+          } else {
+            throw new Error(`Unknown sandbox path grant option: ${parts[i]}`);
+          }
+        }
+        const profile = policyManager.resolveProfile("", ctx.cwd, resolveRepoRoot(ctx.cwd)).profile;
+        const requestedPath = expandGrantPath(rawPath, ctx.cwd);
+        validateGrantPath(requestedPath, profile, mode);
+        const targetPath = normalizeGrantPath(rawPath, ctx.cwd);
+        validateGrantPath(targetPath, profile, mode);
+        if (ttl === "once") throw new Error("Standalone sandbox grants do not support --ttl once; use --ttl session.");
+        if (ttl === "always" && !existsSync(targetPath)) {
+          throw new Error("Persistent sandbox path grants require an existing target.");
+        }
+        let configPath: string | undefined;
+        let snapshots: ConfigSnapshot[] = [];
+        let grant: Grant | undefined;
+        try {
+          if (ttl === "always") {
+            configPath = getSafeScopedConfigPath("global", ctx.cwd);
+            snapshots = snapshotConfigs([configPath]);
+            persistScopedSandboxPathGrant("global", ctx.cwd, targetPath, mode);
+          }
+          grant = policyManager.grantPath(targetPath, mode, {
+            duration: ttl,
+            projectRoot: resolveRepoRoot(ctx.cwd),
+          });
+          if (configPath) {
+            rememberPersistentGrant(grant, { kind: "path", configPath, value: targetPath, scope: "global" });
+            sandboxRuntime.reloadConfig();
+          }
+        } catch (error) {
+          rollbackSandboxChanges(policyManager, grant ? [grant] : [], snapshots);
+          throw error;
+        }
+        if (!grant) throw new Error("Sandbox path grant was not created.");
+        ctx.ui.notify(`Granted ${mode} access to ${targetPath} (${grant.id})`, "info");
+      } else {
+        ctx.ui.notify("Usage: /sandbox-grant network --domain example.com [--ttl 30m] | /sandbox-grant path <path> [--ro|--rw] [--ttl 30m]", "warning");
+      }
+    },
+  });
+
+  pi.registerCommand("sandbox-revoke", {
+    description: "Revoke a sandbox grant. Usage: /sandbox-revoke <grant-id>",
+    getArgumentCompletions: (argumentPrefix: string): SandboxCompletion[] => {
+      const query = argumentPrefix.trim();
+      const grantIds = getPolicyManager()
+        .listGrants()
+        .filter((grant) => grant.id.startsWith(query))
+        .map((grant) => ({ value: grant.id, label: grant.id, description: `${grant.type}: ${grant.value}` }));
+      const activeIds = new Set(grantIds.map((grant) => grant.value));
+      const persistedIds = [...persistentGrantRecords.entries()]
+        .filter(([id]) => id.startsWith(query) && !activeIds.has(id))
+        .map(([id, record]) => ({
+          value: id,
+          label: id,
+          description: record.kind === "path" ? `path: ${record.value}` : record.kind,
+        }));
+      const persistentIds = getPersistentSandboxNetworkRecords(activeWorkspaceCwd)
+        .filter((record) => record.id.startsWith(query))
+        .map((record) => ({ value: record.id, label: record.id, description: `network capability: ${record.scope}` }));
+      return [...grantIds, ...persistedIds, ...persistentIds];
+    },
+    handler: async (args: string, ctx: ExtensionContext) => {
+      const policyManager = getPolicyManager();
+      const id = args.trim();
+      if (!id) {
+        ctx.ui.notify("Usage: /sandbox-revoke <grant-id>", "warning");
+        return;
+      }
+      const persistedSandboxNetwork = getPersistentSandboxNetworkRecords(ctx.cwd)
+        .find((record) => record.id === id);
+      if (persistedSandboxNetwork) {
+        revokeSandboxNetworkCapability(
+          policyManager,
+          persistedSandboxNetwork.configPaths,
+          persistedSandboxNetwork.scope,
+          ctx.cwd,
+        );
+        ctx.ui.notify(`Revoked grant ${id}`, "info");
+        return;
+      }
+      const persistent = persistentGrantRecords.get(id);
+      if (persistent?.kind === "sandbox-network") {
+        revokeSandboxNetworkCapability(
+          policyManager,
+          [persistent.configPath],
+          persistent.scope,
+          ctx.cwd,
+        );
+        ctx.ui.notify(`Revoked grant ${id}`, "info");
+        return;
+      }
+      if (persistent) {
+        const workspaceRoot = persistent.scope === "workspace" ? ctx.cwd : undefined;
+        const snapshots = snapshotConfigs([persistent.configPath]);
+        try {
+          if (persistent.kind === "network") {
+            removeNetworkGrantFromConfig(
+              persistent.configPath,
+              persistent.value,
+              workspaceRoot,
+            );
+          } else {
+            removeSandboxPathGrantFromConfig(
+              persistent.configPath,
+              persistent.value,
+              workspaceRoot,
+            );
+          }
+          sandboxRuntime.reloadConfig();
+        } catch (error) {
+          try {
+            restoreConfigs(snapshots, workspaceRoot);
+            sandboxRuntime.reloadConfig();
+          } catch {
+            // Keep live grant and record when durable state cannot be restored.
+          }
+          throw error;
+        }
+        policyManager.revokeGrant(id);
+        persistentGrantRecords.delete(id);
+        ctx.ui.notify(`Revoked grant ${id}`, "info");
+        return;
+      }
+      const revoked = policyManager.revokeGrant(id);
+      ctx.ui.notify(revoked ? `Revoked grant ${id}` : `Grant ${id} not found`, revoked ? "info" : "warning");
+    },
+  });
+
+  // ── Augmented tool_call handler (upstream + our gates) ────────────────
+  pi.on("tool_call", (event: unknown, ctx: ExtensionContext) => (async () => {
+    activeWorkspaceCwd = ctx.cwd;
+    const e = event as { toolName?: string; input?: unknown };
+    let sc: SandboxConfig;
+    let policyManager: SandboxPolicyManager;
+    try {
+      sc = getSandboxConfig(ctx.cwd);
+      policyManager = getPolicyManager();
+    } catch {
+      return { block: true, reason: "Permission config unavailable; command blocked." };
+    }
+
+    // 1. Network domain gate (our addition — runs before upstream gates)
+    let networkResult: Awaited<ReturnType<typeof handleNetworkToolCall>>;
+    try {
+      networkResult = await handleNetworkToolCall(
+        e as Parameters<typeof handleNetworkToolCall>[0],
+        ctx,
+        {
+          getNetworkConfig,
+          getAgentDir: getAgentDir,
+          promptWaitTracker,
+          persistNetworkGrants: (domains, scope, state) =>
+            persistNetworkGrantTransaction(policyManager, ctx.cwd, domains, scope, state),
+        },
+      );
+    } catch {
+      return { block: true, reason: "Permission authorization failed; command blocked." };
+    }
+    if (networkResult?.block) {
+      return { block: true, reason: networkResult.reason };
+    }
+    const approvedNetworkDomains = [
+      ...getSessionNetworkApprovals(),
+      ...(networkResult?.approvedDomains ?? []),
+    ];
+
+    let bashPermissionAlreadyChecked = false;
+    if (e.toolName === "bash") {
+      try {
+        const upstreamResult = await gates.handleToolCall(event, ctx);
+        if (upstreamResult.block) return upstreamResult;
+      } catch {
+        return { block: true, reason: "Permission authorization failed; command blocked." };
+      }
+      bashPermissionAlreadyChecked = true;
+    }
+
+    // 2. Sandbox wrapping with dynamic grants (mutates event.input.command)
+    if (e.toolName === "bash" && sc.enabled) {
+      const command = (e.input as { command?: unknown })?.command;
+      if (typeof command === "string" && !matchesBypassCommand(command, sc.bypassCommands ?? [])) {
+        let effectiveConfig = getEffectiveSandboxConfig(ctx.cwd);
+        policyManager.updateConfig(effectiveConfig);
+        let resolved = policyManager.resolveProfile(command, ctx.cwd, resolveRepoRoot(ctx.cwd));
+        let networkApprovedForInvocation = false;
+        const invocationPathGrants: { path: string; mode: "ro" | "rw" }[] = [];
+
+        if (!resolved.canExecute && resolved.requiredChanges) {
+          const promptResult = await promptSandboxGrant(ctx, {
+            change: resolved.requiredChanges,
+            command,
+            promptWaitTracker,
+          });
+
+          if (promptResult.action === "deny") {
+            return {
+              block: true,
+              reason: `Sandbox: ${resolved.requiredChanges.description}. User denied.`,
+            };
+          }
+
+          const change = resolved.requiredChanges;
+          if (change.type === "network") {
+            if (promptResult.duration === "once") {
+              networkApprovedForInvocation = true;
+            } else {
+              let configPath: string | undefined;
+              let snapshots: ConfigSnapshot[] = [];
+              let grants: Grant[] = [];
+              try {
+                if (promptResult.duration === "always") {
+                  const scope = promptResult.scope ?? "global";
+                  configPath = getSafeScopedConfigPath(scope, ctx.cwd);
+                  snapshots = snapshotConfigs([configPath]);
+                  persistScopedSandboxNetworkGrant(scope, ctx.cwd);
+                }
+                grants = policyManager.grantNetwork(change.values, {
+                  duration: promptResult.duration,
+                  projectRoot: resolveRepoRoot(ctx.cwd),
+                });
+                if (configPath) {
+                  for (const grant of grants) {
+                    rememberPersistentGrant(grant, { kind: "sandbox-network", configPath, scope: promptResult.scope ?? "global" });
+                  }
+                  sandboxRuntime.reloadConfig();
+                  effectiveConfig = getEffectiveSandboxConfig(ctx.cwd);
+                  policyManager.updateConfig(effectiveConfig);
+                }
+              } catch {
+                rollbackSandboxChanges(policyManager, grants, snapshots, promptResult.scope === "workspace" ? ctx.cwd : undefined);
+                return {
+                  block: true,
+                  reason: "Sandbox: failed to persist network approval; command blocked.",
+                };
+              }
+            }
+          } else if (change.type === "path") {
+            const grants: Grant[] = [];
+            let snapshots: ConfigSnapshot[] = [];
+            try {
+              for (const path of change.values) {
+                if (promptResult.duration === "once") {
+                  invocationPathGrants.push({ path, mode: change.mode ?? "ro" });
+                  continue;
+                }
+                let configPath: string | undefined;
+                if (promptResult.duration === "always") {
+                  const scope = promptResult.scope ?? "global";
+                  configPath = getSafeScopedConfigPath(scope, ctx.cwd);
+                  if (snapshots.length === 0) snapshots = snapshotConfigs([configPath]);
+                  persistScopedSandboxPathGrant(scope, ctx.cwd, path, change.mode ?? "ro");
+                }
+                const grant = policyManager.grantPath(path, change.mode ?? "ro", {
+                  duration: promptResult.duration,
+                  projectRoot: resolveRepoRoot(ctx.cwd),
+                });
+                grants.push(grant);
+                if (configPath) {
+                  rememberPersistentGrant(grant, { kind: "path", configPath, value: path, scope: promptResult.scope ?? "global" });
+                  sandboxRuntime.reloadConfig();
+                }
+              }
+            } catch {
+              rollbackSandboxChanges(policyManager, grants, snapshots, promptResult.scope === "workspace" ? ctx.cwd : undefined);
+              return {
+                block: true,
+                reason: "Sandbox: failed to persist path approval; command blocked.",
+              };
+            }
+          }
+
+          resolved = policyManager.resolveProfile(
+            command,
+            ctx.cwd,
+            resolveRepoRoot(ctx.cwd),
+            { network: networkApprovedForInvocation, pathGrants: invocationPathGrants },
+          );
+        }
+
+        // Collect unmasked paths from user grants (either from masked-file gate or policy grants)
+        // These override the "(masked)" placeholder with real file content
+        const unmaskedPaths: UnmaskedPath[] = [];
+
+        // Collect active path grant paths to avoid double-prompting
+        const activeGrantPaths = new Set(
+          policyManager.listGrants(resolveRepoRoot(ctx.cwd))
+            .filter((g) => g.type === "path")
+            .map((g) => g.value),
+        );
+
+        // 2b. Masked/auth-sensitive file access gate — works for both bwrap and SRT.
+        // This covers explicit masked file references (.env, ~/.ssh/id_ed25519, etc.)
+        // and implicit auth needs like `git push` / `ssh host` that may not mention
+        // the key path on the command line.
+        if (sc.enabled) {
+          const maskedResolution = await resolveMaskedAuthAccess(
+            command,
+            ctx.cwd,
+            resolveRepoRoot(ctx.cwd),
+            resolved.profile,
+            effectiveConfig,
+            ctx,
+            promptWaitTracker,
+            activeGrantPaths,
+          );
+          if (maskedResolution.blockReason) {
+            return {
+              block: true,
+              reason: maskedResolution.blockReason,
+            };
+          }
+          if (maskedResolution.bypass) {
+            return undefined;
+          }
+          for (const entry of maskedResolution.unmaskedPaths) {
+            if (!unmaskedPaths.some((u) => u.path === entry.path)) {
+              unmaskedPaths.push(entry);
+            }
+          }
+        }
+
+        // 2c. External path gate — detect paths outside sandbox scope and prompt user
+        if (sc.enabled) {
+          const activeProfile = resolved.profile;
+          let externalPaths: ReturnType<typeof detectExternalPaths>;
+          try {
+            externalPaths = detectExternalPaths(
+              command,
+              ctx.cwd,
+              activeProfile,
+              effectiveConfig,
+              undefined,
+              unmaskedPaths.map((entry) => entry.path),
+            );
+          } catch {
+            return { block: true, reason: "Sandbox: invalid external path; command blocked." };
+          }
+          const notYetGranted = externalPaths.filter(
+            (ep) => !activeGrantPaths.has(ep.path)
+          );
+          if (notYetGranted.length > 0) {
+            const extPromptResult = await promptSandboxGrant(ctx, {
+              change: {
+                type: "path",
+                mode: "ro",
+                values: notYetGranted.map((p) => p.path),
+                description: formatExternalPathPrompt(notYetGranted, command),
+              },
+              command,
+              promptWaitTracker,
+            });
+
+            if (extPromptResult.action === "deny") {
+              return {
+                block: true,
+                reason: `Sandbox: external paths not granted: ${notYetGranted.map((p) => p.displayPath).join(", ")}`,
+              };
+            }
+
+            if (extPromptResult.duration === "once") {
+              for (const { path } of notYetGranted) {
+                invocationPathGrants.push({ path, mode: "ro" });
+                activeGrantPaths.add(path);
+              }
+            } else {
+              const grants: Grant[] = [];
+              let snapshots: ConfigSnapshot[] = [];
+              try {
+                const scope = extPromptResult.scope ?? "global";
+                for (const p of notYetGranted) {
+                  const configPath = extPromptResult.duration === "always"
+                    ? getSafeScopedConfigPath(scope, ctx.cwd)
+                    : undefined;
+                  if (configPath && snapshots.length === 0) snapshots = snapshotConfigs([configPath]);
+                  if (extPromptResult.duration === "always") {
+                    persistScopedSandboxPathGrant(scope, ctx.cwd, p.path, "ro");
+                  }
+                  const grant = policyManager.grantPath(p.path, "ro", {
+                    duration: extPromptResult.duration,
+                    projectRoot: resolveRepoRoot(ctx.cwd),
+                  });
+                  grants.push(grant);
+                  activeGrantPaths.add(p.path);
+                  if (configPath) rememberPersistentGrant(grant, { kind: "path", configPath, value: p.path, scope });
+                }
+
+                if (extPromptResult.duration === "always") {
+                  effectiveConfig = getEffectiveSandboxConfig(ctx.cwd);
+                  policyManager.updateConfig(effectiveConfig);
+                }
+              } catch {
+                rollbackSandboxChanges(policyManager, grants, snapshots, extPromptResult.scope === "workspace" ? ctx.cwd : undefined);
+                return {
+                  block: true,
+                  reason: "Sandbox: failed to persist external path approval; command blocked.",
+                };
+              }
+            }
+
+
+            resolved = policyManager.resolveProfile(
+              command,
+              ctx.cwd,
+              resolveRepoRoot(ctx.cwd),
+              { network: networkApprovedForInvocation, pathGrants: invocationPathGrants },
+            );
+          }
+        }
+
+        // 2d. Secret env handling remains separate from masked auth-file handling.
+        const secretEnv: Record<string, string> = {};
+
+        // Use the policy-resolved profile (includes dynamic grants for network/path)
+        const repoRoot = resolveRepoRoot(ctx.cwd);
+        const result = await getSandboxBackend(ctx.cwd).wrapCommand({
+          command,
+          sandboxConfig: effectiveConfig,
+          cwd: ctx.cwd,
+          repoRoot,
+          unmaskedPaths,
+          preResolvedProfile: resolved.profile,
+          secretEnv,
+          unifiedConfig: { network: getNetworkConfig(ctx.cwd) },
+          approvedDomains: approvedNetworkDomains,
+        });
+        if (result && "block" in result) {
+          return { block: true, reason: result.reason };
+        }
+        if (result && "command" in result) {
+          (e.input as { command: string }).command = result.command;
+        }
+      }
+    }
+
+    // 3. Delegate to upstream PermissionGateHandler (existing gates)
+    if (bashPermissionAlreadyChecked) return undefined;
+    try {
+      return await gates.handleToolCall(event, ctx);
+    } catch {
+      return { block: true, reason: "Permission authorization failed; command blocked." };
+    }
+  })().catch(() => ({
+    block: true,
+    reason: "Permission authorization failed; command blocked.",
+  })));
+
+  // ── Augmented user_bash handler (our addition) ────────────────────────
+  const blockedUserBash = (reason: string) => ({
+    result: {
+      output: `${reason}\n`,
+      exitCode: 1,
+      cancelled: false,
+      truncated: false,
+    },
+  });
+
+  const handleUserBash = async (
+    event: { command: string; cwd: string },
+    ctx: ExtensionContext,
+  ) => {
+    activeWorkspaceCwd = event.cwd;
+    let sc: SandboxConfig;
+    let policyManager: SandboxPolicyManager;
+    try {
+      sc = getSandboxConfig(event.cwd);
+      policyManager = getPolicyManager();
+    } catch {
+      return {
+        result: {
+          output: "Permission config unavailable; command blocked.\n",
+          exitCode: 1,
+          cancelled: false,
+          truncated: false,
+        },
+      };
+    }
+    // Network domain gate for user bash
+    const networkResult = await handleNetworkUserBash(
+      event as Parameters<typeof handleNetworkUserBash>[0],
+      ctx,
+      {
+        getNetworkConfig,
+        getAgentDir: getAgentDir,
+        promptWaitTracker,
+        persistNetworkGrants: (domains, scope, state) =>
+          persistNetworkGrantTransaction(policyManager, event.cwd, domains, scope, state),
+      },
+    );
+    if (networkResult?.result) {
+      return networkResult;
+    }
+    const approvedNetworkDomains = [
+      ...getSessionNetworkApprovals(),
+      ...(networkResult?.approvedDomains ?? []),
+    ];
+
+    // Sandbox wrapping for user bash (same gate path as tool_call)
+    if (sc.enabled) {
+      if (sc.bypassCommands?.length && matchesBypassCommand(event.command, sc.bypassCommands)) {
+        return undefined;
+      }
+      if ((sc.backend ?? "bwrap") === "bwrap") {
+        const status = checkSandboxStatus(sc.runnerPath ?? null);
+        if (!status.available) {
+          return {
+            result: {
+              output: `Sandbox enabled but bwrap not available: ${status.error}`,
+              exitCode: 1,
+              cancelled: false,
+              truncated: false,
+            },
+          };
+        }
+      }
+
+      // Same masked-file gate for user_bash
+      // (masked files show "(masked)" content; block if user hasn't granted access)
+      let effectiveConfig = getEffectiveSandboxConfig(event.cwd);
+      policyManager.updateConfig(effectiveConfig);
+      let resolvedProfile = policyManager.resolveProfile(event.command, event.cwd, resolveRepoRoot(event.cwd));
+      let networkApprovedForInvocation = false;
+      const invocationPathGrants: { path: string; mode: "ro" | "rw" }[] = [];
+
+      if (!resolvedProfile.canExecute && resolvedProfile.requiredChanges) {
+        const change = resolvedProfile.requiredChanges;
+        const promptResult = await promptSandboxGrant(ctx, {
+          change,
+          command: event.command,
+          promptWaitTracker,
+        });
+
+        if (promptResult.action === "deny") {
+          return {
+            result: {
+              output: `Sandbox: ${change.description}. User denied.\n`,
+              exitCode: 1,
+              cancelled: false,
+              truncated: false,
+            },
+          };
+        }
+
+        if (change.type === "network") {
+          if (promptResult.duration === "once") {
+            networkApprovedForInvocation = true;
+          } else {
+          let configPath: string | undefined;
+          let snapshots: ConfigSnapshot[] = [];
+          let grants: Grant[] = [];
+          try {
+            if (promptResult.duration === "always") {
+              const scope = promptResult.scope ?? "global";
+              configPath = getSafeScopedConfigPath(scope, event.cwd);
+              snapshots = snapshotConfigs([configPath]);
+              persistScopedSandboxNetworkGrant(scope, event.cwd);
+            }
+            grants = policyManager.grantNetwork(change.values, {
+              duration: promptResult.duration,
+              projectRoot: resolveRepoRoot(event.cwd),
+            });
+            if (configPath) {
+              for (const grant of grants) {
+                rememberPersistentGrant(grant, { kind: "sandbox-network", configPath, scope: promptResult.scope ?? "global" });
+              }
+              sandboxRuntime.reloadConfig();
+              effectiveConfig = getEffectiveSandboxConfig(event.cwd);
+              policyManager.updateConfig(effectiveConfig);
+            }
+          } catch {
+            rollbackSandboxChanges(policyManager, grants, snapshots, promptResult.scope === "workspace" ? event.cwd : undefined);
+            return {
+              result: {
+                output: "Sandbox: failed to persist network approval; command blocked.\n",
+                exitCode: 1,
+                cancelled: false,
+                truncated: false,
+              },
+            };
+          }
+        }
+        } else if (change.type === "path") {
+          const grants: Grant[] = [];
+          let snapshots: ConfigSnapshot[] = [];
+          try {
+            for (const path of change.values) {
+              if (promptResult.duration === "once") {
+                invocationPathGrants.push({ path, mode: change.mode ?? "ro" });
+                continue;
+              }
+              let configPath: string | undefined;
+              if (promptResult.duration === "always") {
+                const scope = promptResult.scope ?? "global";
+                configPath = getSafeScopedConfigPath(scope, event.cwd);
+                if (snapshots.length === 0) snapshots = snapshotConfigs([configPath]);
+                persistScopedSandboxPathGrant(scope, event.cwd, path, change.mode ?? "ro");
+              }
+              const grant = policyManager.grantPath(path, change.mode ?? "ro", {
+                duration: promptResult.duration,
+                projectRoot: resolveRepoRoot(event.cwd),
+              });
+              grants.push(grant);
+              if (configPath) {
+                rememberPersistentGrant(grant, { kind: "path", configPath, value: path, scope: promptResult.scope ?? "global" });
+                sandboxRuntime.reloadConfig();
+              }
+            }
+          } catch {
+            rollbackSandboxChanges(policyManager, grants, snapshots, promptResult.scope === "workspace" ? event.cwd : undefined);
+            return {
+              result: {
+                output: "Sandbox: failed to persist path approval; command blocked.\n",
+                exitCode: 1,
+                cancelled: false,
+                truncated: false,
+              },
+            };
+          }
+        }
+
+        resolvedProfile = policyManager.resolveProfile(
+          event.command,
+          event.cwd,
+          resolveRepoRoot(event.cwd),
+          { network: networkApprovedForInvocation, pathGrants: invocationPathGrants },
+        );
+      }
+
+      let activeProfile = resolvedProfile.profile;
+
+      // Collect active grants to avoid double-prompting
+      const activeGrantPaths = new Set(
+        policyManager.listGrants(resolveRepoRoot(event.cwd))
+          .filter((g) => g.type === "path")
+          .map((g) => g.value),
+      );
+      const maskedResolution = await resolveMaskedAuthAccess(
+        event.command,
+        event.cwd,
+        resolveRepoRoot(event.cwd),
+        activeProfile,
+        effectiveConfig,
+        ctx,
+        promptWaitTracker,
+        activeGrantPaths,
+      );
+      if (maskedResolution.blockReason) {
+        return {
+          result: {
+            output: maskedResolution.blockReason,
+            exitCode: 1,
+            cancelled: false,
+            truncated: false,
+          },
+        };
+      }
+      if (maskedResolution.bypass) {
+        return undefined;
+      }
+      const unmaskedPaths: UnmaskedPath[] = maskedResolution.unmaskedPaths;
+
+      // External path gate for user_bash
+      const externalPaths = detectExternalPaths(
+        event.command,
+        event.cwd,
+        activeProfile,
+        effectiveConfig,
+        undefined,
+        unmaskedPaths.map((entry) => entry.path),
+      );
+      const notYetGranted = externalPaths.filter(
+        (ep) => !activeGrantPaths.has(ep.path)
+      );
+      if (notYetGranted.length > 0) {
+        const extPromptResult = await promptSandboxGrant(ctx, {
+          change: {
+            type: "path",
+            mode: "ro",
+            values: notYetGranted.map((p) => p.path),
+            description: formatExternalPathPrompt(notYetGranted, event.command),
+          },
+          command: event.command,
+          promptWaitTracker,
+        });
+
+        if (extPromptResult.action === "deny") {
+          return {
+            result: {
+              output: `Sandbox: external paths not granted: ${notYetGranted.map((p) => p.displayPath).join(", ")}`,
+              exitCode: 1,
+              cancelled: false,
+              truncated: false,
+            },
+          };
+        }
+
+        if (extPromptResult.duration === "once") {
+          for (const { path } of notYetGranted) {
+            invocationPathGrants.push({ path, mode: "ro" });
+            activeGrantPaths.add(path);
+          }
+        } else {
+          const grants: Grant[] = [];
+          let snapshots: ConfigSnapshot[] = [];
+          try {
+            const scope = extPromptResult.scope ?? "global";
+            for (const p of notYetGranted) {
+              const configPath = extPromptResult.duration === "always"
+                ? getSafeScopedConfigPath(scope, event.cwd)
+                : undefined;
+              if (configPath && snapshots.length === 0) snapshots = snapshotConfigs([configPath]);
+              if (extPromptResult.duration === "always") {
+                persistScopedSandboxPathGrant(scope, event.cwd, p.path, "ro");
+              }
+              const grant = policyManager.grantPath(p.path, "ro", {
+                duration: extPromptResult.duration,
+                projectRoot: resolveRepoRoot(event.cwd),
+              });
+              grants.push(grant);
+              activeGrantPaths.add(p.path);
+              if (configPath) rememberPersistentGrant(grant, { kind: "path", configPath, value: p.path, scope });
+            }
+
+            if (extPromptResult.duration === "always") {
+              effectiveConfig = getEffectiveSandboxConfig(event.cwd);
+              policyManager.updateConfig(effectiveConfig);
+            }
+          } catch {
+            rollbackSandboxChanges(policyManager, grants, snapshots, extPromptResult.scope === "workspace" ? event.cwd : undefined);
+            return {
+              result: {
+                output: "Sandbox: failed to persist external path approval; command blocked.\n",
+                exitCode: 1,
+                cancelled: false,
+                truncated: false,
+              },
+            };
+          }
+        }
+
+        activeProfile = policyManager.resolveProfile(
+          event.command,
+          event.cwd,
+          resolveRepoRoot(event.cwd),
+          { network: networkApprovedForInvocation, pathGrants: invocationPathGrants },
+        ).profile;
+      }
+
+      // Env vars and config dirs are always available by default in sandbox.
+      const secretEnv: Record<string, string> = {};
+
+      return {
+        operations: getSandboxBackend(event.cwd).createBashOperations({
+          sandboxConfig: effectiveConfig,
+          cwd: event.cwd,
+          repoRoot: resolveRepoRoot(event.cwd),
+          unmaskedPaths,
+          preResolvedProfile: activeProfile,
+          secretEnv,
+          unifiedConfig: { network: getNetworkConfig(event.cwd) },
+          approvedDomains: approvedNetworkDomains,
+        }),
+      };
+    }
+
+    return undefined;
+  };
+
+  pi.on("user_bash", (event: { command: string; cwd: string }, ctx: ExtensionContext) =>
+    handleUserBash(event, ctx).catch(() => blockedUserBash("Permission authorization failed; command blocked.")),
+  );
+}

@@ -1,0 +1,228 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://raw.githubusercontent.com/DxTa/pi-sentinel/main/schemas/permissions.schema.json",
+  "title": "PI Sentinel Configuration",
+  "description": "Unified config file combining runtime knobs and flat permission policy for pi-sentinel.",
+  "markdownDescription": "Unified config file combining runtime knobs and flat permission policy for [pi-sentinel](https://github.com/DxTa/pi-sentinel).\n\nBundled defaults live at `~/.pi/agent/extensions/pi-sentinel/config.json`. Put global overrides at `~/.pi/agent/permissions.json` and trusted project overrides at `<project>/.pi/permissions.json`; project values override global values.",
+  "type": "object",
+  "additionalProperties": false,
+  "properties": {
+    "$schema": {
+      "description": "JSON Schema URI for editor autocomplete and validation.",
+      "type": "string"
+    },
+    "debugLog": {
+      "description": "Write verbose pi-sentinel diagnostics to the extension logs directory.",
+      "markdownDescription": "Write verbose pi-sentinel diagnostics to `logs/pi-sentinel-debug.jsonl` under `~/.pi/agent/extensions/pi-sentinel/logs/`.",
+      "type": "boolean",
+      "default": false
+    },
+    "permissionReviewLog": {
+      "description": "Write permission request and decision audit events to the extension logs directory.",
+      "markdownDescription": "Write permission request and decision audit events to `logs/pi-sentinel-permission-review.jsonl` under `~/.pi/agent/extensions/pi-sentinel/logs/`.",
+      "type": "boolean",
+      "default": true
+    },
+    "yoloMode": {
+      "description": "Auto-approve ask-state permission checks, including subagent approval forwarding.",
+      "markdownDescription": "Auto-approve `ask`-state permission checks, including subagent approval forwarding.\n\n⚠️ **Use with caution** — this disables all interactive confirmation prompts unless an explicit yolo bash exception matches.",
+      "type": "boolean",
+      "default": false
+    },
+    "yoloAskBashPatterns": {
+      "description": "Bash command wildcard patterns that still prompt even when yolo mode is enabled.",
+      "markdownDescription": "Bash command wildcard patterns that still prompt even when `yoloMode` is enabled.\n\nPatterns use the same wildcard matching as `permission.bash` and are matched against the raw bash command string. Example: `git push *` or `git commit *`.",
+      "type": "array",
+      "items": {
+        "type": "string",
+        "minLength": 1
+      },
+      "default": [],
+      "examples": [["git push *", "git commit *"]]
+    },
+    "piInfrastructureReadPaths": {
+      "description": "Additional directories to auto-allow for reads as Pi infrastructure, bypassing the external_directory gate. Supports ~ expansion and wildcard patterns (* and ?).",
+      "markdownDescription": "Additional directories to auto-allow for reads as Pi infrastructure, bypassing the `external_directory` gate.\n\nThe extension auto-discovers the global node_modules root (walks up from the extension's install path; falls back to `npm root -g` from a dev checkout), `agentDir`, `agentDir/git`, and project-local `.pi/npm/` and `.pi/git/`. Add entries here for edge cases where auto-discovery is insufficient (e.g. custom `npmCommand` pointing to pnpm).\n\nSupports `~`/`$HOME` expansion. Entries may be plain directory prefixes or wildcard patterns using `*` (matches any characters, including `/`) and `?` (matches exactly one character). `**` and `*` are equivalent — both cross directory boundaries.",
+      "type": "array",
+      "items": {
+        "type": "string",
+        "minLength": 1
+      },
+      "default": []
+    },
+    "permission": {
+      "description": "Flat permission policy. Each key is a surface name; values are a PermissionState string (catch-all) or a pattern→action map.",
+      "markdownDescription": "Flat permission policy.\n\nEach top-level key is a surface name:\n- `\"*\"` — universal fallback (replaces `defaultPolicy.tools` from the legacy format)\n- Tool names (`read`, `write`, `bash`, `mcp`, `skill`, `external_directory`, `path`, etc.)\n\nA **string** value is shorthand for `{ \"*\": action }` (surface-level catch-all).\nAn **object** value maps wildcard patterns to actions — last matching pattern wins.\n\nFor path-bearing tools (`read`, `write`, `edit`, `find`, `grep`, `ls`), patterns are matched against the file path from `input.path`. For example, `\"read\": { \"*\": \"allow\", \"*.env\": \"deny\" }` allows reads but denies `.env` files.\n\nThe `path` surface is a cross-cutting gate that applies to **all** file access — both Pi tools and bash commands. A `path` deny cannot be overridden by a per-tool allow. Use it to protect sensitive files (`.env`, `~/.ssh/*`) from all tools at once.\n\n**Merge order (lowest → highest precedence):** bundled defaults → global overrides → trusted project overrides → per-agent frontmatter → security profile overlay. Project overrides may weaken global settings; use only in trusted workspaces.",
+      "type": "object",
+      "propertyNames": {
+        "description": "A surface name or the universal fallback key '*'.",
+        "type": "string",
+        "minLength": 1
+      },
+      "additionalProperties": {
+        "oneOf": [
+          {
+            "$ref": "#/$defs/permissionState",
+            "description": "Catch-all shorthand: equivalent to { \"*\": action }."
+          },
+          {
+            "$ref": "#/$defs/permissionMap",
+            "description": "Pattern→action map for this surface."
+          }
+        ]
+      },
+      "examples": [
+        {
+          "*": "ask",
+          "path": {
+            "*": "allow",
+            "*.env": "deny",
+            "*.env.*": "deny",
+            "*.env.example": "allow"
+          },
+          "read": "allow",
+          "write": "deny",
+          "edit": "deny",
+          "bash": {
+            "*": "ask",
+            "git status": "allow",
+            "git diff": "allow",
+            "git *": "ask"
+          },
+          "mcp": {
+            "*": "ask",
+            "mcp_status": "allow",
+            "exa:*": "allow"
+          },
+          "skill": {
+            "*": "ask",
+            "librarian": "allow"
+          },
+          "external_directory": "ask"
+        }
+      ]
+    },
+    "network": {
+      "description": "Network domain gate policy for bash commands.",
+      "markdownDescription": "Network domain gate policy for bash commands. `unknownDomains: \"ask\"` prompts before first access to domains not listed in `allowedDomains`; `deny` fails closed; `allow` permits unknown domains unless listed in `deniedDomains`.",
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "enabled": {
+          "description": "Enable network domain gate checks.",
+          "type": "boolean",
+          "default": true
+        },
+        "unknownDomains": {
+          "description": "Policy for domains that match neither allowedDomains nor deniedDomains.",
+          "enum": ["allow", "deny", "ask"],
+          "default": "ask"
+        },
+        "allowedDomains": {
+          "description": "Domain patterns allowed without prompting. Supports exact domains, *.example.com, and *.",
+          "type": "array",
+          "items": { "type": "string", "minLength": 1 },
+          "default": []
+        },
+        "deniedDomains": {
+          "description": "Domain patterns always blocked. Supports exact domains, *.example.com, and *.",
+          "type": "array",
+          "items": { "type": "string", "minLength": 1 },
+          "default": []
+        }
+      }
+    },
+    "sandbox": {
+      "description": "Sandbox execution backend and profile selection for bash commands.",
+      "markdownDescription": "Sandbox execution settings for bash commands. `backend: \"srt\"` is the default cross-platform backend; `backend: \"bwrap\"` is the legacy Linux/bubblewrap fallback.",
+      "type": "object",
+      "additionalProperties": true,
+      "properties": {
+        "enabled": {
+          "description": "Enable sandboxing for bash commands.",
+          "type": "boolean",
+          "default": false
+        },
+        "network": {
+          "description": "Persist coarse sandbox network capability after approval.",
+          "type": "boolean",
+          "default": false
+        },
+        "backend": {
+          "description": "Sandbox backend. srt is default; bwrap remains legacy fallback.",
+          "enum": [
+            "srt",
+            "bwrap"
+          ],
+          "default": "srt"
+        },
+        "defaultProfile": {
+          "description": "Default sandbox profile name.",
+          "type": "string",
+          "default": "online-dev"
+        },
+        "runnerPath": {
+          "description": "Optional backend runner/helper path override.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "roBinds": {
+          "description": "Additional read-only paths visible inside sandbox.",
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "default": []
+        },
+        "rwBinds": {
+          "description": "Additional read-write paths visible inside sandbox.",
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "default": []
+        },
+        "profiles": {
+          "description": "Named sandbox profile overrides.",
+          "type": "object",
+          "additionalProperties": true,
+          "default": {}
+        }
+      }
+    }
+  },
+  "$defs": {
+    "permissionState": {
+      "description": "A permission decision: allow (permit silently), deny (block with error), or ask (prompt the user for confirmation).",
+      "oneOf": [
+        {
+          "const": "allow",
+          "description": "Permit the action silently with no user interaction."
+        },
+        {
+          "const": "deny",
+          "description": "Block the action with an error message. The agent is told not to retry."
+        },
+        {
+          "const": "ask",
+          "description": "Prompt the user for confirmation via the interactive UI before proceeding."
+        }
+      ]
+    },
+    "permissionMap": {
+      "description": "A map of wildcard patterns to permission states. Last matching pattern wins.",
+      "markdownDescription": "A map of wildcard patterns to permission states.\n\nUse `*` for wildcard matching. When multiple patterns match, the **last matching rule wins** — put broad catch-alls first and specific overrides after them.\n\nPattern keys support home directory expansion:\n- `~/path` or `$HOME/path` — expanded to the OS home directory at match time.\n- `~` or `$HOME` alone — expands to the home directory itself.\n\nThe stored pattern is always shown in logs and approval dialogs as written (e.g. `~/dev/*`).",
+      "type": "object",
+      "propertyNames": {
+        "description": "A non-empty pattern string. Use * for wildcard matching. Prefix with ~/ or $HOME/ for home-relative paths.",
+        "type": "string",
+        "minLength": 1
+      },
+      "additionalProperties": {
+        "$ref": "#/$defs/permissionState"
+      }
+    }
+  }
+}

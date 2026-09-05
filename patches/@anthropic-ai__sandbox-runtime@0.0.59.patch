@@ -1,0 +1,58 @@
+diff --git a/dist/sandbox/macos-sandbox-utils.js b/dist/sandbox/macos-sandbox-utils.js
+index a6eb77a49e32ee5fa1fe943e6ba81800d742b088..c0742a045879e5f4d23e276cf9dafa981c8fb38a 100644
+--- a/dist/sandbox/macos-sandbox-utils.js
++++ b/dist/sandbox/macos-sandbox-utils.js
+@@ -72,14 +72,19 @@ function getAncestorDirectories(pathStr) {
+  */
+ function generateMoveBlockingRules(pathPatterns, logTag) {
+     const rules = [];
+-    const ops = ['file-write-unlink', 'file-write-create'];
++    const exactOps = ['file-write-unlink', 'file-write-create'];
++    const ancestorOps = ['file-write-unlink'];
+     for (const pathPattern of pathPatterns) {
+         const normalizedPath = normalizePathForSandbox(pathPattern);
++        // A root read deny must not become a write-create deny: write roots
++        // are intentionally carved out of the read boundary below.
++        if (normalizedPath === '/')
++            continue;
+         if (containsGlobChars(normalizedPath)) {
+             // Use regex matching for glob patterns
+             const regexPattern = globToRegex(normalizedPath);
+             // Block moving/renaming files matching this pattern
+-            for (const op of ops) {
++            for (const op of exactOps) {
+                 rules.push(`(deny ${op}`, `  (regex ${escapePath(regexPattern)})`, `  (with message "${logTag}"))`);
+             }
+             // For glob patterns, extract the static prefix and block ancestor moves
+@@ -91,12 +96,12 @@ function generateMoveBlockingRules(pathPatterns, logTag) {
+                     ? staticPrefix.slice(0, -1)
+                     : path.dirname(staticPrefix);
+                 // Block moves of the base directory itself
+-                for (const op of ops) {
++                for (const op of ancestorOps) {
+                     rules.push(`(deny ${op}`, `  (literal ${escapePath(baseDir)})`, `  (with message "${logTag}"))`);
+                 }
+                 // Block moves of ancestor directories
+                 for (const ancestorDir of getAncestorDirectories(baseDir)) {
+-                    for (const op of ops) {
++                    for (const op of ancestorOps) {
+                         rules.push(`(deny ${op}`, `  (literal ${escapePath(ancestorDir)})`, `  (with message "${logTag}"))`);
+                     }
+                 }
+@@ -105,12 +110,13 @@ function generateMoveBlockingRules(pathPatterns, logTag) {
+         else {
+             // Use subpath matching for literal paths
+             // Block moving/renaming the denied path itself
+-            for (const op of ops) {
++            for (const op of exactOps) {
+                 rules.push(`(deny ${op}`, `  (subpath ${escapePath(normalizedPath)})`, `  (with message "${logTag}"))`);
+             }
+-            // Block moves of ancestor directories
++            // Protect ancestor directories from rename, but keep file creation in
++            // writable roots possible. The exact path remains protected above.
+             for (const ancestorDir of getAncestorDirectories(normalizedPath)) {
+-                for (const op of ops) {
++                for (const op of ancestorOps) {
+                     rules.push(`(deny ${op}`, `  (literal ${escapePath(ancestorDir)})`, `  (with message "${logTag}"))`);
+                 }
+             }

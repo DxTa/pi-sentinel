@@ -1,0 +1,43 @@
+{
+  "scan-discovery": {
+    "write": "deny",
+    "edit": "deny",
+    "process": "deny",
+    "bash": {
+      "*": "deny",
+      "git status": "allow",
+      "git diff": "allow",
+      "git log *": "allow",
+      "find *": "allow",
+      "grep *": "allow",
+      "ls *": "allow",
+      "head *": "allow",
+      "tail *": "allow",
+      "wc *": "allow"
+    }
+  },
+  "scan-verification": {
+    "write": "deny",
+    "edit": "deny",
+    "process": "deny",
+    "bash": {
+      "*": "ask",
+      "git status": "allow",
+      "git diff": "allow",
+      "find *": "allow",
+      "grep *": "allow",
+      "ls *": "allow",
+      "node --version": "allow",
+      "python3 --version": "allow"
+    }
+  },
+  "scan-remediation": {
+    "write": "allow",
+    "edit": "allow",
+    "bash": {
+      "*": "ask",
+      "git status": "allow",
+      "git diff": "allow"
+    }
+  }
+}

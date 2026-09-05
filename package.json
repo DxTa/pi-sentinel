@@ -1,0 +1,82 @@
+{
+  "name": "@dxta/pi-sentinel",
+  "version": "0.1.0",
+  "description": "Permission enforcement, network domain gating, sandboxed Bash, and credential protection for the Pi coding agent.",
+  "type": "module",
+  "exports": {
+    ".": "./src/service.ts"
+  },
+  "imports": {
+    "#src/*": "./src/*"
+  },
+  "files": [
+    "src",
+    "bin",
+    "config.json",
+    "profiles",
+    "schemas",
+    "README.md",
+    "CHANGELOG.md",
+    "LICENSE",
+    "SECURITY.md"
+  ],
+  "keywords": [
+    "pi-package",
+    "pi",
+    "pi-extension",
+    "pi-coding-agent",
+    "coding-agent",
+    "permissions",
+    "policy",
+    "access-control",
+    "authorization",
+    "security",
+    "sandbox"
+  ],
+  "author": {
+    "name": "DxTa"
+  },
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/DxTa/pi-sentinel.git"
+  },
+  "homepage": "https://github.com/DxTa/pi-sentinel#readme",
+  "bugs": {
+    "url": "https://github.com/DxTa/pi-sentinel/issues"
+  },
+  "engines": {
+    "node": ">=23.6.0"
+  },
+  "publishConfig": {
+    "access": "public"
+  },
+  "pi": {
+    "extensions": [
+      "./src/index.ts"
+    ]
+  },
+  "peerDependencies": {
+    "@earendil-works/pi-coding-agent": ">=0.84.2",
+    "@earendil-works/pi-tui": ">=0.75.5"
+  },
+  "devDependencies": {
+    "@earendil-works/pi-coding-agent": "0.84.2",
+    "@earendil-works/pi-tui": "0.75.5",
+    "@types/node": "^22.15.3",
+    "typescript": "5.9.3",
+    "vitest": "3.2.7"
+  },
+  "dependencies": {
+    "@anthropic-ai/sandbox-runtime": "0.0.59",
+    "@earendil-works/gondolin": "0.12.0",
+    "tree-sitter-bash": "0.25.1",
+    "web-tree-sitter": "0.26.9"
+  },
+  "scripts": {
+    "check": "tsc --noEmit",
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "check:shell": "bash -n bin/bwrap-run.sh tests/*.sh"
+  }
+}

@@ -1,0 +1,7 @@
+node_modules/
+logs/
+*.log
+.pi/
+project-grants.json
+**/project-grants.json
+.DS_Store
