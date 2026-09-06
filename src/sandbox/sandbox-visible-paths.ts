@@ -1,8 +1,10 @@
+import { createRequire } from "node:module";
 import { homedir, tmpdir } from "node:os";
 import { realpathSync } from "node:fs";
 import { realpath } from "node:fs/promises";
 import { basename, dirname, isAbsolute, resolve } from "node:path";
 
+import { EXTENSION_ROOT } from "../extension-config.js";
 import type { ResolvedSandboxProfile, SandboxConfig } from "./types.js";
 import {
   assertScanWithinBudget,
@@ -52,6 +54,7 @@ const KNOWN_HOME_VISIBLE_PATHS: string[] = [
 ];
 
 const KNOWN_HOME_FILES: string[] = [];
+const require = createRequire(import.meta.url);
 
 export interface SandboxVisibilityContext {
   repoRoot: string;
@@ -119,6 +122,16 @@ function pathMatchesPrefix(absPath: string, prefix: string): boolean {
   return absPath === prefix || absPath.startsWith(prefix + "/");
 }
 
+function getRuntimePackageRoots(): string[] {
+  const roots = [EXTENSION_ROOT];
+  try {
+    roots.push(dirname(require.resolve("@anthropic-ai/sandbox-runtime/package.json")));
+  } catch {
+    // The SRT backend reports a missing dependency separately.
+  }
+  return roots;
+}
+
 export function getSandboxTempPaths(): string[] {
   const values = new Set<string>();
   const envTmp = process.env.TMPDIR?.trim();
@@ -151,6 +164,7 @@ export function buildSandboxVisiblePaths(
     canonicalPath(resolve(home, relPath)),
   );
   const homeFiles = KNOWN_HOME_FILES.map((relPath) => canonicalPath(resolve(home, relPath)));
+  const runtimePackageRoots = getRuntimePackageRoots().map(canonicalPath);
 
   return dedupeCanonical([
     repoRoot,
@@ -159,6 +173,7 @@ export function buildSandboxVisiblePaths(
     ...KNOWN_SYSTEM_PREFIXES,
     ...homeVisiblePaths,
     ...homeFiles,
+    ...runtimePackageRoots,
     ...getSandboxTempPaths(),
   ]);
 }
@@ -183,6 +198,7 @@ export function buildSandboxRuntimeReadAllowPaths(
     canonicalPath(resolve(home, relPath)),
   );
   const homeFiles = KNOWN_HOME_FILES.map((relPath) => canonicalPath(resolve(home, relPath)));
+  const runtimePackageRoots = getRuntimePackageRoots().map(canonicalPath);
 
   return dedupeCanonical([
     repoRoot,
@@ -191,6 +207,7 @@ export function buildSandboxRuntimeReadAllowPaths(
     ...KNOWN_SYSTEM_PREFIXES,
     ...homeVisiblePaths,
     ...homeFiles,
+    ...runtimePackageRoots,
     ...getSandboxTempPaths(),
   ]);
 }
@@ -239,6 +256,11 @@ export async function buildSandboxVisiblePathsWithinScanBudget(
     deadline,
     durationMs,
   );
+  const runtimePackageRoots = await canonicalizeVisiblePaths(
+    getRuntimePackageRoots(),
+    deadline,
+    durationMs,
+  );
 
   return [...new Set([
     repoRoot,
@@ -247,6 +269,7 @@ export async function buildSandboxVisiblePathsWithinScanBudget(
     ...KNOWN_SYSTEM_PREFIXES,
     ...homeVisiblePaths,
     ...homeFiles,
+    ...runtimePackageRoots,
     ...getSandboxTempPaths(),
   ])];
 }

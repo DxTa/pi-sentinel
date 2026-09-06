@@ -1,4 +1,5 @@
 import { join } from "node:path";
+import { EXTENSION_ROOT } from "./extension-config";
 import { getGlobalLogsDir } from "./config-paths";
 import { discoverGlobalNodeModulesRoot } from "./node-modules-discovery";
 
@@ -41,6 +42,7 @@ export function computeExtensionPaths(agentDir: string): ExtensionPaths {
   const piInfrastructureDirs: string[] = [
     agentDir,
     join(agentDir, "git"),
+    EXTENSION_ROOT,
     ...(globalNodeModulesRoot ? [globalNodeModulesRoot] : []),
   ];
 

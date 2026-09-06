@@ -2,61 +2,27 @@
 
 Pi extension for permission enforcement, network domain gating, sandboxed Bash, and credential protection.
 
-Derived from [`@gotgenes/pi-permission-system`](https://github.com/gotgenes/pi-packages/tree/main/packages/pi-permission-system), with domain gating, SRT/bubblewrap/Gondolin sandbox integration, masked-file handling, and credential protection added by DxTa.
+## Quick start
 
-## Install
-
-First release is Git-only. Install a reviewed tag or commit:
+Install a reviewed Git ref:
 
 ```bash
-pi install git:git@github.com:DxTa/pi-sentinel@1f0ae12
+pi install git:git@github.com:DxTa/pi-sentinel@<reviewed-tag-or-commit>
 ```
 
-Pi clones the package and runs `npm install`. The package exposes `./src/index.ts` through its `pi.extensions` manifest; no build step is required.
+The first release is Git-only. Pi installs dependencies from `package.json`; no build step is required. The npm package name is reserved but not yet published.
 
-The future npm name is `@dxta/pi-sentinel`. npm publication is not part of the first release.
+Bundled defaults are conservative:
 
-## Security model
+- sandbox disabled until enabled explicitly;
+- reads allowed, writes and edits denied;
+- Bash asks by default, except for `git status` and `git diff`;
+- network domains require approval unless explicitly allowed.
 
-- **Permission policy:** `allow`, `deny`, or `ask` for tools, paths, Bash commands, MCP, skills, and external directories.
-- **Network gate:** extracts domains from Bash and applies allow/deny/ask rules.
-- **Sandbox:** SRT is the default backend; bubblewrap is the legacy Linux backend; Gondolin is available for its configured profile/runtime path.
-- **Credential protection:** blocks or redacts secret environment variables and sensitive file reads through `sentinelCreds`.
-- **Masked paths:** `.env`, keys, certificates, SSH credentials, cloud credentials, and Pi credentials are masked. `ls`/`find` may show names; content is replaced or denied.
-- **Audit logs:** permission decisions and optional debug diagnostics are written as JSONL.
-
-Sandbox failures block execution. This extension does not make an unsupported host safe by falling back to unsandboxed execution.
-
-## Configuration
-
-Bundled defaults live in `config.json`.
-
-Precedence, lowest to highest:
-
-1. Bundled defaults
-2. Global `~/.pi/agent/permissions.json`
-3. Trusted project `<project>/.pi/permissions.json`
-4. Per-agent frontmatter
-5. Security profile overlay
-
-Legacy project/global paths remain supported for compatibility. Use project overrides only in trusted repositories. Last matching wildcard rule wins; `permission.path` is a cross-cutting gate.
-
-Minimal configuration:
+Enable the SRT sandbox in a trusted global or project override:
 
 ```json
 {
-  "permission": {
-    "*": "ask",
-    "read": "allow",
-    "write": "deny",
-    "path": { "*": "allow", "*.env": "deny" }
-  },
-  "network": {
-    "enabled": true,
-    "unknownDomains": "ask",
-    "allowedDomains": ["registry.npmjs.org"],
-    "deniedDomains": []
-  },
   "sandbox": {
     "enabled": true,
     "backend": "srt",
@@ -65,48 +31,93 @@ Minimal configuration:
 }
 ```
 
-See [`schemas/permissions.schema.json`](schemas/permissions.schema.json) for all options.
+## Features
+
+- **Permission policy** for tools, paths, Bash commands, MCP, skills, and external directories with `allow`, `deny`, and `ask` states.
+- **Network domain gate** that extracts domains from Bash and applies allow/deny/ask rules.
+- **Sandboxed Bash** through SRT or bubblewrap, with fail-closed behavior when the selected backend is unavailable.
+- **Credential protection** for sensitive environment variables and files; masked files show names while content is replaced or denied.
+- **Dynamic approvals and audit logs** for path/network grants, permission decisions, and optional debug diagnostics.
+
+## How it works
+
+```mermaid
+flowchart LR
+    Pi["Pi coding agent"] --> Sentinel["pi-sentinel extension"]
+    Sentinel --> Permissions["Permission gates<br/>tools · paths · Bash · MCP · skills"]
+    Sentinel --> Network["Network domain gate"]
+    Sentinel --> Credentials["Credential scanner<br/>and masked paths"]
+    Sentinel --> Sandbox["Sandbox policy"]
+    Sandbox --> SRT["SRT backend<br/>(when enabled)"]
+    Sandbox --> Bwrap["bubblewrap backend"]
+    Sentinel --> Commands["Public slash commands"]
+```
+
+The current entry point selects SRT and bubblewrap backends. Gondolin support remains in the repository but is not selected by `src/index.ts`.
+
+When SRT is enabled, pi-sentinel makes its installed package root and the resolved `@anthropic-ai/sandbox-runtime` root visible read-only inside the sandbox. This allows shipped helpers and the architecture-specific `apply-seccomp` helper to run without exposing writes, disabling network controls, or bypassing credential masking. There is no blanket allowlist for project scripts, tests, npm lifecycle scripts, arbitrary `node_modules`, or user-configured binaries.
 
 ## Commands
 
-```text
-/sentinel [show|path|reset|help]
-/domain-gate
-/sandbox-status
-/sandbox-grant path <path> [--ro|--rw] [--ttl 30m]
-/sandbox-grant network --domain example.com [--ttl 30m]
-/sandbox-revoke <grant-id>
-```
+| Command | Purpose |
+| --- | --- |
+| `/sentinel [show\|path\|reset\|help]` | Inspect or reset pi-sentinel configuration. |
+| `/domain-gate` | Review network-domain policy and approvals. |
+| `/sandbox-status` | Check the selected sandbox backend and dependencies. |
+| `/sandbox-grant path <path> [--ro\|--rw] [--ttl <duration>]` | Grant temporary or persistent filesystem access. |
+| `/sandbox-grant network --domain <domain> [--ttl <duration>]` | Grant a network domain. |
+| `/sandbox-revoke <grant-id>` | Revoke a sandbox grant. |
 
-`yoloMode` auto-approves `ask` checks. Keep it disabled unless unattended execution is intentional.
+`yoloMode` auto-approves eligible `ask` checks. Keep it disabled unless unattended execution is intentional.
+
+## Configuration
+
+Bundled defaults live in [`config.json`](config.json). Configuration precedence, lowest to highest:
+
+1. bundled defaults;
+2. global `~/.pi/agent/permissions.json`;
+3. trusted project `<project>/.pi/permissions.json`;
+4. per-agent frontmatter;
+5. security profile overlay.
+
+Legacy global/project paths remain supported for compatibility. Use project overrides only in trusted repositories. The last matching wildcard rule wins; `permission.path` is a cross-cutting path gate.
+
+See [`schemas/permissions.schema.json`](schemas/permissions.schema.json) for the complete schema.
 
 ## Host requirements
 
-- Node.js `>=23.6.0` for the bundled Gondolin dependency.
-- Linux: SRT requires `rg`, `bwrap`, and `socat`; bubblewrap also requires a working `bwrap` installation.
-- macOS: SRT requires its native/runtime support and Command Line Tools for the Git execution shim when applicable.
-- Windows: permission and network checks work, but SRT and bubblewrap backends are unavailable.
+- Node.js `>=23.6.0`.
+- Linux SRT: `rg`, `bwrap`, and `socat`, plus a working user-namespace/bubblewrap setup.
+- Linux bubblewrap backend: the configured runner, defaulting to the bundled `bin/bwrap-run.sh`.
+- macOS: SRT runtime support and Command Line Tools when the Git execution shim is needed.
+- Windows: permission and network checks work; SRT and bubblewrap are unavailable.
 
-Set `PI_BWRAP_RUNNER` or configure `sandbox.runnerPath` only when using an explicitly reviewed runner. The default runner is resolved relative to this installed package.
+Set `PI_BWRAP_RUNNER` or `sandbox.runnerPath` only to an explicitly reviewed runner. Do not use an arbitrary external script as a sandbox runner.
 
-## SRT release gate
+## Foundation libraries
 
-This repository currently carries a historical patch for `@anthropic-ai/sandbox-runtime@0.0.59` under `patches/`. Pi Git installs use npm and do not apply pnpm patches. Do not publish or tag a security release until an upstream/fixed released dependency replaces that patch; never silently drop the hardening.
+| Library | Role |
+| --- | --- |
+| [`@earendil-works/pi-coding-agent`](https://github.com/aliou/pi-coding-agent) | Pi extension API and Bash/tool integration. |
+| [`@anthropic-ai/sandbox-runtime`](https://github.com/anthropic-experimental/sandbox-runtime) | SRT filesystem, network, and Linux sandbox runtime. |
+| [`tree-sitter-bash`](https://github.com/tree-sitter/tree-sitter-bash) + [`web-tree-sitter`](https://github.com/tree-sitter/web-tree-sitter) | Bash command parsing and path extraction. |
+| [`@earendil-works/gondolin`](https://github.com/earendil-works/gondolin) | Repository-supported sandbox implementation; not selected by the current entry point. |
+| TypeScript + Vitest | Type checking and tests. |
 
 ## Development
 
 ```bash
-npm install
+npm ci
 npm test
 npm run check
 npm run check:shell
 ```
 
-Tests live beside implementation under `src/` and in `tests/`. Package-local tests must not require this repository or any parent checkout.
+Tests live beside implementation under `src/` and in `tests/`. Package-local tests must not require this repository or a parent checkout.
 
 ## Service API
 
-Other extensions can query the published service through the future npm identity:
+Other Pi extensions can query the process-local permission service:
 
 ```typescript
 import { getPermissionsService } from "@dxta/pi-sentinel";
@@ -115,6 +126,12 @@ const service = getPermissionsService();
 const result = service?.checkPermission("bash", "git status");
 ```
 
-## Attribution and license
+Call `getPermissionsService()` per use so `/reload` and extension load order do not leave a stale reference.
 
-MIT-licensed derivative. Original upstream copyright and attribution are retained in [`LICENSE`](LICENSE). New DxTa changes are identified in repository history and release notes.
+## Security release gate
+
+This repository carries a historical hardening patch for `@anthropic-ai/sandbox-runtime@0.0.59` under [`patches/`](patches/). Git installs use npm and do not apply pnpm patches automatically. Do not publish or tag a security release until an upstream fixed release replaces the patched dependency or the install process applies the hardening explicitly.
+
+## License
+
+MIT. Original upstream attribution is retained in [`LICENSE`](LICENSE); security details are documented in [`SECURITY.md`](SECURITY.md).

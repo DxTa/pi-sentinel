@@ -4,6 +4,7 @@ import path from "node:path";
 
 import { afterEach, describe, expect, it } from "vitest";
 
+import { EXTENSION_ROOT } from "../extension-config.js";
 import { detectExternalPaths } from "./external-path-gate.js";
 import {
   createSandboxVisibilityMatcher,
@@ -97,7 +98,7 @@ describe("createSandboxVisibilityMatcher", () => {
     expect(isVisible(path.join(siblingDir, "file.txt"))).toBe(true);
   });
 
-  it("keeps unrelated home paths out of scope while allowing tool cache paths", () => {
+  it("allows pi-sentinel package assets while keeping unrelated home paths out of scope", () => {
     const isVisible = createSandboxVisibilityMatcher({
       repoRoot: "/workspace/repo",
       cwd: "/workspace/repo",
@@ -105,6 +106,7 @@ describe("createSandboxVisibilityMatcher", () => {
       config: makeConfig(),
     });
 
+    expect(isVisible(path.join(EXTENSION_ROOT, "bin/sandbox-run.mjs"))).toBe(true);
     expect(isVisible(path.join(homedir(), "private-not-bound/secret.txt"))).toBe(false);
     expect(isVisible(path.join(homedir(), ".cargo/credentials.toml"))).toBe(false);
     expect(isVisible(path.join(homedir(), ".bun/install/cache/pkg.tgz"))).toBe(false);

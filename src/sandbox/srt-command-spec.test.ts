@@ -1,9 +1,11 @@
+import { createRequire } from "node:module";
 import { tmpdir } from "node:os";
 import { mkdtemp, mkdir, rm, writeFile } from "node:fs/promises";
 import path from "node:path";
 
 import { afterEach, describe, expect, it } from "vitest";
 
+import { EXTENSION_ROOT } from "../extension-config.js";
 import type { SandboxConfig, ResolvedSandboxProfile } from "./types.js";
 import type { UnmaskedPath } from "./bwrap-command.js";
 import {
@@ -13,6 +15,7 @@ import {
 import { buildSrtRuntimeConfig } from "./srt-runtime-config.js";
 import { canonicalPath } from "./sandbox-visible-paths.js";
 
+const require = createRequire(import.meta.url);
 const tempPaths: string[] = [];
 const originalHome = process.env.HOME;
 
@@ -134,6 +137,16 @@ describe("buildSrtCommandSpec", () => {
         ? { git: "/Library/Developer/CommandLineTools/usr/bin/git" }
         : {},
     );
+    const srtPackageRoot = path.dirname(require.resolve("@anthropic-ai/sandbox-runtime/package.json"));
+    const seccompArch = process.arch === "arm64" ? "arm64" : "x64";
+    const applySeccompPath = path.join(
+      srtPackageRoot,
+      "vendor",
+      "seccomp",
+      seccompArch,
+      "apply-seccomp",
+    );
+
     expect(spec.visibleReadPaths).toEqual(expect.arrayContaining([
       canonicalPath(repoRoot),
       canonicalPath(cwd),
@@ -142,7 +155,11 @@ describe("buildSrtCommandSpec", () => {
       canonicalPath("/usr"),
       canonicalPath("/bin"),
       canonicalPath("/etc/gitconfig"),
+      canonicalPath(srtPackageRoot),
     ]));
+    expect(spec.visibleReadPaths.some((visiblePath) =>
+      canonicalPath(applySeccompPath).startsWith(`${visiblePath}/`),
+    )).toBe(true);
     expect(spec.runtimeReadAllowPaths).toEqual(expect.arrayContaining([
       canonicalPath(repoRoot),
       canonicalPath(cwd),
@@ -151,6 +168,7 @@ describe("buildSrtCommandSpec", () => {
       canonicalPath("/usr"),
       canonicalPath("/bin"),
       canonicalPath("/etc/gitconfig"),
+      canonicalPath(srtPackageRoot),
     ]));
     const homePath = canonicalPath(process.env.HOME ?? path.join(tmpdir(), "home"));
     expect(spec.visibleReadPaths).not.toContain(homePath);
@@ -165,6 +183,23 @@ describe("buildSrtCommandSpec", () => {
         strictAllowlist: true,
       },
     });
+  });
+
+  it("includes runtime package roots in async specs", async () => {
+    const repoRoot = await makeTempDir("pi-srt-spec-runtime-roots-");
+    const spec = await buildSrtCommandSpecAsync({
+      command: "echo ok",
+      cwd: repoRoot,
+      repoRoot,
+      sandboxConfig: makeConfig(),
+      profile: makeProfile(),
+    });
+    const srtPackageRoot = path.dirname(require.resolve("@anthropic-ai/sandbox-runtime/package.json"));
+
+    expect(spec.runtimeReadAllowPaths).toEqual(expect.arrayContaining([
+      canonicalPath(EXTENSION_ROOT),
+      canonicalPath(srtPackageRoot),
+    ]));
   });
 
   it("filters approved unmasked paths out of the masked shim plan", async () => {
