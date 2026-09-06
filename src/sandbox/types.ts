@@ -51,14 +51,12 @@ export interface SandboxAuthExceptionRule {
 }
 
 export interface SandboxConfig {
-  /** Whether sandboxing is enabled. Default: false. */
+  /** Whether sandboxing is enabled. Default: true. */
   enabled: boolean;
   /** Persisted coarse network capability granted to sandbox. */
   network?: boolean;
-  /** Transitional backend selector. Default: bwrap. */
+  /** Transitional backend selector. Default: srt. */
   backend?: "bwrap" | "srt";
-  /** Cross-architecture Gondolin execution. `qemu` must be explicit. */
-  gondolinEmulation?: "deny" | "qemu";
   /** Predefined profiles. */
   profiles: Record<string, SandboxProfile>;
   /** Default profile name. */

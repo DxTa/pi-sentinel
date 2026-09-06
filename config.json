@@ -16,7 +16,7 @@
   },
 
   "sandbox": {
-    "enabled": false,
+    "enabled": true,
     "backend": "srt",
     "defaultProfile": "online-dev"
   },

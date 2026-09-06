@@ -39,9 +39,8 @@ const ONLINE_DEV_PROFILE: SandboxProfile = {
 };
 
 const DEFAULT_SANDBOX_CONFIG: SandboxConfig = {
-  enabled: false,
+  enabled: true,
   backend: "srt",
-  gondolinEmulation: "deny",
   profiles: {
     "offline-dev": OFFLINE_DEV_PROFILE,
     "online-dev": ONLINE_DEV_PROFILE,
@@ -140,10 +139,9 @@ export function normalizeSandboxConfig(raw: unknown): SandboxConfig {
   }
 
   return {
-    enabled: r.enabled === true,
+    enabled: r.enabled === undefined ? DEFAULT_SANDBOX_CONFIG.enabled : r.enabled === true,
     network: r.network === true,
     backend: r.backend === "bwrap" ? "bwrap" : "srt",
-    gondolinEmulation: r.gondolinEmulation === "qemu" ? "qemu" : "deny",
     profiles,
     defaultProfile: (() => {
       if (r.defaultProfile === undefined) return DEFAULT_SANDBOX_CONFIG.defaultProfile;

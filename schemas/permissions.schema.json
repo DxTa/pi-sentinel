@@ -134,14 +134,14 @@
     },
     "sandbox": {
       "description": "Sandbox execution backend and profile selection for bash commands.",
-      "markdownDescription": "Sandbox execution settings for bash commands. `backend: \"srt\"` is the default cross-platform backend; `backend: \"bwrap\"` is the legacy Linux/bubblewrap fallback.",
+      "markdownDescription": "Sandbox execution settings for bash commands. `backend: \"srt\"` is the default on supported macOS/Linux hosts; Windows does not support SRT. `backend: \"bwrap\"` is the legacy Linux/bubblewrap fallback.",
       "type": "object",
       "additionalProperties": true,
       "properties": {
         "enabled": {
           "description": "Enable sandboxing for bash commands.",
           "type": "boolean",
-          "default": false
+          "default": true
         },
         "network": {
           "description": "Persist coarse sandbox network capability after approval.",

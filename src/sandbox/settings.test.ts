@@ -6,6 +6,28 @@ import { describe, expect, it } from "vitest";
 import { normalizeSandboxConfig, validateSandboxBindPath, validateSandboxUnmaskPath } from "./settings.js";
 
 describe("normalizeSandboxConfig", () => {
+  it("defaults to enabled SRT with online network profile", () => {
+    const config = normalizeSandboxConfig(undefined);
+
+    expect(config).toMatchObject({
+      enabled: true,
+      backend: "srt",
+      defaultProfile: "online-dev",
+    });
+    expect(config.profiles["online-dev"]?.network).toBe(true);
+  });
+
+  it("keeps sandbox enabled for partial configs", () => {
+    expect(normalizeSandboxConfig({ defaultProfile: "offline-dev" })).toMatchObject({
+      enabled: true,
+      defaultProfile: "offline-dev",
+    });
+  });
+
+  it("preserves an explicit sandbox disable", () => {
+    expect(normalizeSandboxConfig({ enabled: false }).enabled).toBe(false);
+  });
+
   it("defaults backend to srt", () => {
     expect(normalizeSandboxConfig({ enabled: true }).backend).toBe("srt");
   });

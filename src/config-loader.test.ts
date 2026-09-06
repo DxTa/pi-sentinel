@@ -1,4 +1,4 @@
-import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 
@@ -12,8 +12,10 @@ import {
 import { getGlobalConfigPath, getProjectConfigPath } from "./config-paths";
 import {
   DEFAULT_EXTENSION_CONFIG,
+  EXTENSION_ROOT,
   normalizePermissionSystemConfig,
 } from "./extension-config";
+import { normalizeSandboxConfig } from "./sandbox/settings";
 
 describe("yoloAskBashPatterns config", () => {
   it("parses string arrays from unified config", () => {
@@ -58,6 +60,20 @@ describe("yoloAskBashPatterns config", () => {
     expect(normalizePermissionSystemConfig({})).toMatchObject({
       yoloAskBashPatterns: [],
     });
+  });
+
+  it("ships enabled SRT sandbox with online-dev network mode", async () => {
+    const bundled = JSON.parse(
+      await readFile(path.join(EXTENSION_ROOT, "config.json"), "utf8"),
+    ) as { sandbox?: unknown };
+    const sandbox = normalizeSandboxConfig(bundled.sandbox);
+
+    expect(sandbox).toMatchObject({
+      enabled: true,
+      backend: "srt",
+      defaultProfile: "online-dev",
+    });
+    expect(sandbox.profiles["online-dev"]?.network).toBe(true);
   });
 });
 

@@ -14,22 +14,10 @@ The first release is Git-only. Pi installs dependencies from `package.json`; no 
 
 Bundled defaults are conservative:
 
-- sandbox disabled until enabled explicitly;
+- sandbox enabled with SRT and the network-enabled `online-dev` profile;
 - reads allowed, writes and edits denied;
 - Bash asks by default, except for `git status` and `git diff`;
-- network domains require approval unless explicitly allowed.
-
-Enable the SRT sandbox in a trusted global or project override:
-
-```json
-{
-  "sandbox": {
-    "enabled": true,
-    "backend": "srt",
-    "defaultProfile": "online-dev"
-  }
-}
-```
+- outbound domains still require approval unless explicitly allowed.
 
 ## Features
 
@@ -53,7 +41,7 @@ flowchart LR
     Sentinel --> Commands["Public slash commands"]
 ```
 
-The current entry point selects SRT and bubblewrap backends. Gondolin support remains in the repository but is not selected by `src/index.ts`.
+The current entry point selects SRT and bubblewrap backends.
 
 When SRT is enabled, pi-sentinel makes its installed package root and the resolved `@anthropic-ai/sandbox-runtime` root visible read-only inside the sandbox. This allows shipped helpers and the architecture-specific `apply-seccomp` helper to run without exposing writes, disabling network controls, or bypassing credential masking. There is no blanket allowlist for project scripts, tests, npm lifecycle scripts, arbitrary `node_modules`, or user-configured binaries.
 
@@ -90,7 +78,7 @@ See [`schemas/permissions.schema.json`](schemas/permissions.schema.json) for the
 - Linux SRT: `rg`, `bwrap`, and `socat`, plus a working user-namespace/bubblewrap setup.
 - Linux bubblewrap backend: the configured runner, defaulting to the bundled `bin/bwrap-run.sh`.
 - macOS: SRT runtime support and Command Line Tools when the Git execution shim is needed.
-- Windows: permission and network checks work; SRT and bubblewrap are unavailable.
+- Windows: permission and network checks work; SRT and bubblewrap are unavailable, so Bash is blocked by default unless sandboxing is explicitly disabled.
 
 Set `PI_BWRAP_RUNNER` or `sandbox.runnerPath` only to an explicitly reviewed runner. Do not use an arbitrary external script as a sandbox runner.
 
@@ -101,7 +89,6 @@ Set `PI_BWRAP_RUNNER` or `sandbox.runnerPath` only to an explicitly reviewed run
 | [`@earendil-works/pi-coding-agent`](https://github.com/aliou/pi-coding-agent) | Pi extension API and Bash/tool integration. |
 | [`@anthropic-ai/sandbox-runtime`](https://github.com/anthropic-experimental/sandbox-runtime) | SRT filesystem, network, and Linux sandbox runtime. |
 | [`tree-sitter-bash`](https://github.com/tree-sitter/tree-sitter-bash) + [`web-tree-sitter`](https://github.com/tree-sitter/web-tree-sitter) | Bash command parsing and path extraction. |
-| [`@earendil-works/gondolin`](https://github.com/earendil-works/gondolin) | Repository-supported sandbox implementation; not selected by the current entry point. |
 | TypeScript + Vitest | Type checking and tests. |
 
 ## Development

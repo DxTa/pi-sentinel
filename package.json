@@ -69,7 +69,6 @@
   },
   "dependencies": {
     "@anthropic-ai/sandbox-runtime": "0.0.59",
-    "@earendil-works/gondolin": "0.12.0",
     "tree-sitter-bash": "0.25.1",
     "web-tree-sitter": "0.26.9"
   },
