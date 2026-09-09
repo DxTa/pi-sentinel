@@ -65,7 +65,7 @@ import { registerDomainGateCommand } from "./network/domain-gate.js";
 import { clearSessionNetworkApprovals, getSessionNetworkApprovals, handleNetworkToolCall, handleNetworkUserBash } from "./network/network-gate-handler.js";
 import { normalizeSandboxConfig, resolveSandboxProfile, type SandboxConfig, validateSandboxGrantPath } from "./sandbox/settings.js";
 import type { ResolvedSandboxProfile, UnmaskedPath } from "./sandbox/types.js";
-import { wildcardMatch } from "./wildcard-matcher.js";
+import { shouldBypassSandboxCommand } from "./sandbox/bypass-command.js";
 import { createSrtBackend } from "./sandbox/backends/srt-backend.js";
 import { defaultSrtHelperPath, defaultSrtStatus } from "./sandbox/srt-status.js";
 import { SandboxPolicyManager, type Grant, type GrantDuration } from "./sandbox/policy-manager.js";
@@ -112,14 +112,6 @@ function getAgentDir(): string {
   return process.env.PI_CODING_AGENT_DIR || join(homedir(), ".pi", "agent");
 }
 
-/** True if the raw command string matches any sandbox-bypass glob pattern.
- *  Uses wildcardMatch so `"herdr *"` matches both `herdr` and `herdr pane list`. */
-function matchesBypassCommand(command: string, patterns: string[]): boolean {
-  if (patterns.length === 0) return false;
-  const cmd = command.trim();
-  if (cmd.length === 0) return false;
-  return patterns.some((p) => wildcardMatch(p, cmd));
-}
 
 function getExtensionDir(): string {
   return join(getAgentDir(), "extensions", "pi-sentinel");
@@ -1137,7 +1129,7 @@ export default function piPermissionSystemExtension(pi: ExtensionAPI): void {
     // 2. Sandbox wrapping with dynamic grants (mutates event.input.command)
     if (e.toolName === "bash" && sc.enabled) {
       const command = (e.input as { command?: unknown })?.command;
-      if (typeof command === "string" && !matchesBypassCommand(command, sc.bypassCommands ?? [])) {
+      if (typeof command === "string" && !shouldBypassSandboxCommand(command, sc.bypassCommands ?? [])) {
         let effectiveConfig = getEffectiveSandboxConfig(ctx.cwd);
         policyManager.updateConfig(effectiveConfig);
         let resolved = policyManager.resolveProfile(command, ctx.cwd, resolveRepoRoot(ctx.cwd));
@@ -1454,7 +1446,7 @@ export default function piPermissionSystemExtension(pi: ExtensionAPI): void {
 
     // Sandbox wrapping for user bash (same gate path as tool_call)
     if (sc.enabled) {
-      if (sc.bypassCommands?.length && matchesBypassCommand(event.command, sc.bypassCommands)) {
+      if (sc.bypassCommands?.length && shouldBypassSandboxCommand(event.command, sc.bypassCommands)) {
         return undefined;
       }
 
