@@ -1,9 +1,8 @@
 /**
- * Sandbox types for bubblewrap integration.
+ * Sandbox types for SRT integration.
  * Hardened from ape-dev src/lib/sandbox.ts.
  */
 
-export type SandboxMode = "bwrap" | "none";
 
 export interface SandboxEnvPolicy {
   /** Environment variables to pass through (exact names or patterns). */
@@ -55,8 +54,8 @@ export interface SandboxConfig {
   enabled: boolean;
   /** Persisted coarse network capability granted to sandbox. */
   network?: boolean;
-  /** Transitional backend selector. Default: srt. */
-  backend?: "bwrap" | "srt";
+  /** Sandbox backend. SRT is the only supported backend. */
+  backend?: "srt";
   /** Predefined profiles. */
   profiles: Record<string, SandboxProfile>;
   /** Default profile name. */
@@ -65,8 +64,6 @@ export interface SandboxConfig {
   roBinds?: string[];
   /** Additional read-write bind mounts (added to all profiles). */
   rwBinds?: string[];
-  /** Path to bwrap-run.sh runner. Default: auto-detect. */
-  runnerPath?: string | null;
 
   /** Command glob patterns (wildcardMatch) that skip the sandbox entirely.
    * Matched against the raw command string. Use for commands that require
@@ -81,18 +78,13 @@ export interface ResolvedSandboxProfile extends SandboxProfile {
   name: string;
 }
 
-export interface SandboxCheckResult {
-  /** Whether sandbox should be applied. */
-  sandbox: boolean;
-  /** The resolved profile (null if sandbox is disabled). */
-  profile: ResolvedSandboxProfile | null;
-  /** The bwrap command (null if sandbox is disabled). */
-  bwrapCommand: string[] | null;
-  /** Error message if sandbox can't be applied. */
-  error?: string;
+export interface UnmaskedPath {
+  /** Absolute path to the file. */
+  path: string;
+  /** Whether the file should be writable inside the sandbox. */
+  writable: boolean;
 }
 
-const SANDBOX_MODES: Set<string> = new Set(["bwrap", "none"]);
 
 /**
  * Sensitive paths that must NEVER be bind-mounted into a sandbox,
@@ -113,7 +105,6 @@ const SENSITIVE_BIND_SUFFIXES = [
 const SENSITIVE_BIND_PATHS = ["/etc/shadow", "/etc/sudoers"];
 
 export {
-  SANDBOX_MODES,
   SENSITIVE_BIND_SUFFIXES,
   SENSITIVE_BIND_PATHS,
 };

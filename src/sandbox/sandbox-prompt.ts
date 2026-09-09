@@ -1,5 +1,5 @@
 /**
- * Sandbox prompt — Ask/allow/deny UI for bwrap rule changes.
+ * Sandbox prompt — Ask/allow/deny UI for SRT policy changes.
  *
  * Uses the same UX pattern as the upstream permission system:
  * When a command needs a sandbox policy change (network access, new path),

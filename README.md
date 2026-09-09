@@ -23,7 +23,7 @@ Bundled defaults are conservative:
 
 - **Permission policy** for tools, paths, Bash commands, MCP, skills, and external directories with `allow`, `deny`, and `ask` states.
 - **Network domain gate** that extracts domains from Bash and applies allow/deny/ask rules.
-- **Sandboxed Bash** through SRT or bubblewrap, with fail-closed behavior when the selected backend is unavailable.
+- **Sandboxed Bash** through SRT, with fail-closed behavior when the runtime is unavailable.
 - **Credential protection** for sensitive environment variables and files; masked files show names while content is replaced or denied.
 - **Dynamic approvals and audit logs** for path/network grants, permission decisions, and optional debug diagnostics.
 
@@ -36,12 +36,11 @@ flowchart LR
     Sentinel --> Network["Network domain gate"]
     Sentinel --> Credentials["Credential scanner<br/>and masked paths"]
     Sentinel --> Sandbox["Sandbox policy"]
-    Sandbox --> SRT["SRT backend<br/>(when enabled)"]
-    Sandbox --> Bwrap["bubblewrap backend"]
+    Sandbox --> SRT["SRT backend"]
     Sentinel --> Commands["Public slash commands"]
 ```
 
-The current entry point selects SRT and bubblewrap backends.
+The current entry point uses SRT as its only sandbox backend.
 
 When SRT is enabled, pi-sentinel makes its installed package root and the resolved `@anthropic-ai/sandbox-runtime` root visible read-only inside the sandbox. This allows shipped helpers and the architecture-specific `apply-seccomp` helper to run without exposing writes, disabling network controls, or bypassing credential masking. There is no blanket allowlist for project scripts, tests, npm lifecycle scripts, arbitrary `node_modules`, or user-configured binaries.
 
@@ -51,7 +50,7 @@ When SRT is enabled, pi-sentinel makes its installed package root and the resolv
 | --- | --- |
 | `/sentinel [show\|path\|reset\|help]` | Inspect or reset pi-sentinel configuration. |
 | `/domain-gate` | Review network-domain policy and approvals. |
-| `/sandbox-status` | Check the selected sandbox backend and dependencies. |
+| `/sandbox-status` | Check SRT sandbox and dependencies. |
 | `/sandbox-grant path <path> [--ro\|--rw] [--ttl <duration>]` | Grant temporary or persistent filesystem access. |
 | `/sandbox-grant network --domain <domain> [--ttl <duration>]` | Grant a network domain. |
 | `/sandbox-revoke <grant-id>` | Revoke a sandbox grant. |
@@ -76,11 +75,9 @@ See [`schemas/permissions.schema.json`](schemas/permissions.schema.json) for the
 
 - Node.js `>=23.6.0`.
 - Linux SRT: `rg`, `bwrap`, and `socat`, plus a working user-namespace/bubblewrap setup.
-- Linux bubblewrap backend: the configured runner, defaulting to the bundled `bin/bwrap-run.sh`.
 - macOS: SRT runtime support and Command Line Tools when the Git execution shim is needed.
-- Windows: permission and network checks work; SRT and bubblewrap are unavailable, so Bash is blocked by default unless sandboxing is explicitly disabled.
+- Windows: permission and network checks work; SRT is unavailable, so Bash is blocked by default unless sandboxing is explicitly disabled.
 
-Set `PI_BWRAP_RUNNER` or `sandbox.runnerPath` only to an explicitly reviewed runner. Do not use an arbitrary external script as a sandbox runner.
 
 ## Foundation libraries
 
@@ -97,10 +94,9 @@ Set `PI_BWRAP_RUNNER` or `sandbox.runnerPath` only to an explicitly reviewed run
 npm ci
 npm test
 npm run check
-npm run check:shell
 ```
 
-Tests live beside implementation under `src/` and in `tests/`. Package-local tests must not require this repository or a parent checkout.
+Tests live beside implementation under `src/`. Package-local tests must not require this repository or a parent checkout.
 
 ## Service API
 

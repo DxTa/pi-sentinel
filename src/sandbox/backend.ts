@@ -2,8 +2,7 @@ import type { BashOperations } from "@earendil-works/pi-coding-agent";
 
 import type { DomainGateConfig } from "#src/network/config.js";
 
-import type { UnmaskedPath } from "./bwrap-command.js";
-import type { ResolvedSandboxProfile, SandboxConfig } from "./types.js";
+import type { UnmaskedPath, ResolvedSandboxProfile, SandboxConfig } from "./types.js";
 
 export interface SandboxWrapInput {
   command: string;

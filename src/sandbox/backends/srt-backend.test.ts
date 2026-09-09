@@ -12,7 +12,6 @@ function makeConfig(): SandboxConfig {
     defaultProfile: "online-dev",
     roBinds: [],
     rwBinds: [],
-    runnerPath: null,
   };
 }
 

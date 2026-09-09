@@ -3,7 +3,7 @@
  *
  * This extension provides:
  * - Network domain gating (from domain-gate.ts)
- * - Bubblewrap OS-level sandboxing (from ape-dev, hardened)
+ * - SRT sandboxing through sandbox-runtime
  * - Dynamic sandbox rules with ask/allow/deny UX
  * - Unified config with permission, network, and sandbox sections
  */
@@ -63,11 +63,9 @@ import { registerSentinelCreds } from "./sentinel-creds/index";
 import { loadDomainPolicy, type DomainGateConfig } from "./network/config.js";
 import { registerDomainGateCommand } from "./network/domain-gate.js";
 import { clearSessionNetworkApprovals, getSessionNetworkApprovals, handleNetworkToolCall, handleNetworkUserBash } from "./network/network-gate-handler.js";
-import { normalizeSandboxConfig, type SandboxConfig, validateSandboxGrantPath } from "./sandbox/settings.js";
-import type { ResolvedSandboxProfile } from "./sandbox/types.js";
+import { normalizeSandboxConfig, resolveSandboxProfile, type SandboxConfig, validateSandboxGrantPath } from "./sandbox/settings.js";
+import type { ResolvedSandboxProfile, UnmaskedPath } from "./sandbox/types.js";
 import { wildcardMatch } from "./wildcard-matcher.js";
-import { checkSandboxStatus } from "./sandbox/status.js";
-import { createBwrapBackend } from "./sandbox/backends/bwrap-backend.js";
 import { createSrtBackend } from "./sandbox/backends/srt-backend.js";
 import { defaultSrtHelperPath, defaultSrtStatus } from "./sandbox/srt-status.js";
 import { SandboxPolicyManager, type Grant, type GrantDuration } from "./sandbox/policy-manager.js";
@@ -80,7 +78,6 @@ import {
   formatMaskedAccessSuggestion,
   isPathMasked,
 } from "./sandbox/masked-file-gate.js";
-import { resolveSandboxProfile, type UnmaskedPath } from "./sandbox/bwrap-command.js";
 import { detectExternalPaths, formatExternalPathPrompt, resolveRepoRoot } from "./sandbox/external-path-gate.js";
 import {
   getScopedConfigPath,
@@ -701,9 +698,7 @@ export default function piPermissionSystemExtension(pi: ExtensionAPI): void {
     loadConfig,
     normalizeSandboxConfig,
     createPolicyManager: (cfg) => new SandboxPolicyManager(cfg),
-    createBackend: (cfg) => cfg.backend === "srt"
-      ? createSrtBackend({ helperPath: () => defaultSrtHelperPath(null) })
-      : createBwrapBackend(),
+    createBackend: () => createSrtBackend({ helperPath: () => defaultSrtHelperPath(null) }),
   });
 
   const getNetworkConfig = (cwd?: string): DomainGateConfig | undefined =>
@@ -716,14 +711,9 @@ export default function piPermissionSystemExtension(pi: ExtensionAPI): void {
   };
   const getPolicyManager = (): SandboxPolicyManager =>
     sandboxRuntime.getRuntime().policyManager;
-  const getSandboxBackend = (cwd?: string) => {
-    const sandboxConfig = getSandboxConfig(cwd);
-    return sandboxConfig.backend === "srt"
-      ? createSrtBackend({
-          helperPath: () => defaultSrtHelperPath(null),
-        })
-      : createBwrapBackend();
-  };
+  const getSandboxBackend = (_cwd?: string) => createSrtBackend({
+    helperPath: () => defaultSrtHelperPath(null),
+  });
 
   function getEffectiveSandboxConfig(cwd: string): SandboxConfig {
     return getSandboxConfig(cwd);
@@ -862,7 +852,7 @@ export default function piPermissionSystemExtension(pi: ExtensionAPI): void {
         ctx.ui.notify("Sandbox: disabled", "info");
         return;
       }
-      const backendKind = sc.backend ?? "bwrap";
+      const backendKind = sc.backend ?? "srt";
       const profile = sc.profiles[sc.defaultProfile];
       const grants = getPolicyManager().listGrants();
       const persistentNetwork = getPersistentSandboxNetworkRecords(ctx.cwd);
@@ -877,22 +867,14 @@ export default function piPermissionSystemExtension(pi: ExtensionAPI): void {
         `Backend: ${backendKind}`,
         `Profile: ${sc.defaultProfile} (network: ${profile?.network || sc.network ? "on" : "off"})`,
       ];
-      if (backendKind === "srt") {
-        const status = defaultSrtStatus(sc.runnerPath ?? null);
-        info.push(`SRT package: ${status.packageAvailable ? "available" : "missing"}`);
-        info.push(`Runner: ${status.entrypointPath ?? "not configured"} (${status.entrypointExists ? "exists" : "missing"})`);
-        if (status.dependencyChecks.length > 0) {
-          info.push(`Dependencies: ${status.dependencyChecks.map((dep) => `${dep.name}=${dep.available ? "ok" : "missing"}`).join(", ")}`);
-        }
-        info.push(`Active grants: ${grants.length}`);
-        if (status.error) info.push(`Error: ${status.error}`);
-      } else {
-        const status = checkSandboxStatus(sc.runnerPath ?? null);
-        info.push(`bwrap binary: ${status.bwrapBinary ? "available" : "missing"}${status.bwrapVersion ? ` (${status.bwrapVersion})` : ""}`);
-        info.push(`Runner: ${status.runnerPath ?? "not configured"} (${status.runnerExists ? "exists" : "missing"})`);
-        info.push(`Active grants: ${grants.length}`);
-        if (status.error) info.push(`Error: ${status.error}`);
+      const status = defaultSrtStatus(null);
+      info.push(`SRT package: ${status.packageAvailable ? "available" : "missing"}`);
+      info.push(`Runner: ${status.entrypointPath ?? "not configured"} (${status.entrypointExists ? "exists" : "missing"})`);
+      if (status.dependencyChecks.length > 0) {
+        info.push(`Dependencies: ${status.dependencyChecks.map((dep) => `${dep.name}=${dep.available ? "ok" : "missing"}`).join(", ")}`);
       }
+      info.push(`Active grants: ${grants.length}`);
+      if (status.error) info.push(`Error: ${status.error}`);
       for (const g of grants) {
         const expires = g.expiresAt ? `expires ${g.expiresAt.toISOString()}` : "session end";
         info.push(`  ${g.id}: ${g.type} ${g.value}${g.mode ? ` (${g.mode})` : ""} [${expires}]`);
@@ -1261,7 +1243,6 @@ export default function piPermissionSystemExtension(pi: ExtensionAPI): void {
             .map((g) => g.value),
         );
 
-        // 2b. Masked/auth-sensitive file access gate — works for both bwrap and SRT.
         // This covers explicit masked file references (.env, ~/.ssh/id_ed25519, etc.)
         // and implicit auth needs like `git push` / `ssh host` that may not mention
         // the key path on the command line.
@@ -1471,19 +1452,6 @@ export default function piPermissionSystemExtension(pi: ExtensionAPI): void {
     if (sc.enabled) {
       if (sc.bypassCommands?.length && matchesBypassCommand(event.command, sc.bypassCommands)) {
         return undefined;
-      }
-      if ((sc.backend ?? "bwrap") === "bwrap") {
-        const status = checkSandboxStatus(sc.runnerPath ?? null);
-        if (!status.available) {
-          return {
-            result: {
-              output: `Sandbox enabled but bwrap not available: ${status.error}`,
-              exitCode: 1,
-              cancelled: false,
-              truncated: false,
-            },
-          };
-        }
       }
 
       // Same masked-file gate for user_bash

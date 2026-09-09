@@ -6,7 +6,6 @@ import path from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
 import piPermissionSystemExtension from "./index.ts";
-import { checkSandboxStatus } from "./sandbox/status.js";
 
 const tempPaths: string[] = [];
 
@@ -851,29 +850,4 @@ describe("piPermissionSystemExtension SRT default smoke", () => {
     expect(context.ui.select).not.toHaveBeenCalled();
   });
 
-  it("keeps explicit bwrap backend as legacy fallback", async () => {
-    const agentDir = await makeTempDir("pi-permission-agent-");
-    const projectDir = await makeTempDir("pi-permission-project-");
-    process.env.PI_CODING_AGENT_DIR = agentDir;
-    await writeExtensionConfig(agentDir, {
-      sandbox: { enabled: true, backend: "bwrap", defaultProfile: "online-dev" },
-    });
-
-    const pi = createFakePi();
-    piPermissionSystemExtension(pi as never);
-
-    const event = { toolName: "bash", input: { command: "echo ok" } };
-    const result = await pi.handlers.get("tool_call")?.(event, createContext(projectDir) as never);
-
-    if (checkSandboxStatus(null).available) {
-      expect(result).toBeUndefined();
-      expect(event.input.command).toContain("bwrap");
-    } else {
-      expect(result).toEqual({
-        block: true,
-        reason: expect.stringContaining("bwrap"),
-      });
-      expect(event.input.command).toBe("echo ok");
-    }
-  });
 });

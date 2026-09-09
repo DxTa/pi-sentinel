@@ -20,8 +20,7 @@
 import { homedir } from "node:os";
 import { resolve, join, basename } from "node:path";
 import { existsSync } from "node:fs";
-import type { SandboxProfile } from "./types.js";
-import type { UnmaskedPath } from "./bwrap-command.js";
+import type { SandboxProfile, UnmaskedPath } from "./types.js";
 import type { MaskedAuthKind } from "./auth-path-detection.js";
 
 /**
@@ -283,7 +282,7 @@ export interface MaskedFilePromptInfo {
 }
 
 /**
- * Convert masked file paths to UnmaskedPath entries for the bwrap builder.
+ * Convert masked file paths to UnmaskedPath entries for the SRT command spec.
  * Default to read-only access to prevent write escalation.
  */
 export function maskedPathsToUnmasked(paths: string[], writable = false): UnmaskedPath[] {

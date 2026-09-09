@@ -10,8 +10,7 @@
  */
 
 import type { SandboxConfig, SandboxProfile, ResolvedSandboxProfile } from "./types.js";
-import { normalizeSandboxConfig, resolveBwrapRunnerPath, validateSandboxGrantPath } from "./settings.js";
-import { resolveSandboxProfile } from "./bwrap-command.js";
+import { normalizeSandboxConfig, resolveSandboxProfile, validateSandboxGrantPath } from "./settings.js";
 import { DEFAULT_MASKED_PATTERNS, isPathMasked } from "./masked-file-gate.js";
 import { existsSync, realpathSync } from "node:fs";
 import { resolve } from "node:path";

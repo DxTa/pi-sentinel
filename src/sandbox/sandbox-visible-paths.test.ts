@@ -45,7 +45,6 @@ function makeConfig(overrides: Partial<SandboxConfig> = {}): SandboxConfig {
     defaultProfile: "offline-dev",
     roBinds: [],
     rwBinds: [],
-    runnerPath: null,
     ...overrides,
   };
 }

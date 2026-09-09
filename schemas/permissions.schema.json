@@ -133,8 +133,8 @@
       }
     },
     "sandbox": {
-      "description": "Sandbox execution backend and profile selection for bash commands.",
-      "markdownDescription": "Sandbox execution settings for bash commands. `backend: \"srt\"` is the default on supported macOS/Linux hosts; Windows does not support SRT. `backend: \"bwrap\"` is the legacy Linux/bubblewrap fallback.",
+      "description": "SRT sandbox execution and profile selection for bash commands.",
+      "markdownDescription": "SRT is the only supported sandbox backend on macOS/Linux hosts; Windows does not support SRT. On Linux, SRT requires system bwrap, rg, and socat executables.",
       "type": "object",
       "additionalProperties": true,
       "properties": {
@@ -149,10 +149,9 @@
           "default": false
         },
         "backend": {
-          "description": "Sandbox backend. srt is default; bwrap remains legacy fallback.",
+          "description": "Sandbox backend. SRT is the only supported backend.",
           "enum": [
-            "srt",
-            "bwrap"
+            "srt"
           ],
           "default": "srt"
         },
@@ -160,13 +159,6 @@
           "description": "Default sandbox profile name.",
           "type": "string",
           "default": "online-dev"
-        },
-        "runnerPath": {
-          "description": "Optional backend runner/helper path override.",
-          "type": [
-            "string",
-            "null"
-          ]
         },
         "roBinds": {
           "description": "Additional read-only paths visible inside sandbox.",
