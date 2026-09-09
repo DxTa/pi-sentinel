@@ -39,15 +39,15 @@ describe("resolveConfinedConfigPath", () => {
     );
   });
 
-  it("rejects symlinked workspace config parents", async () => {
+  it("resolves symlinked workspace config parents", async () => {
     const workspace = await makeTempDir("pi-scoped-workspace-");
     const outside = await makeTempDir("pi-scoped-outside-");
     await symlink(outside, path.join(workspace, ".pi"));
 
-    expect(() => resolveConfinedConfigPath(
+    expect(resolveConfinedConfigPath(
       path.join(workspace, ".pi", "permissions.json"),
       workspace,
-    )).toThrow(/symlink|workspace/i);
+    )).toBe(path.join(await realpath(outside), "permissions.json"));
   });
 });
 
@@ -69,32 +69,35 @@ describe("config shape validation", () => {
   });
 });
 
-describe("workspace config confinement", () => {
-  it("rejects workspace config reads through symlinked parents", async () => {
+describe("workspace config symlinks", () => {
+  it("reads workspace config through a symlinked parent", async () => {
     const agentDir = await makeTempDir("pi-agent-");
     const workspace = await makeTempDir("pi-workspace-");
     const outside = await makeTempDir("pi-outside-");
     await writeFile(path.join(outside, "permissions.json"), JSON.stringify({ network: { enabled: true } }), "utf8");
     await symlink(outside, path.join(workspace, ".pi"));
 
-    expect(() => loadMergedScopedConfig(agentDir, workspace)).toThrow(/symlink|workspace/i);
+    expect(loadMergedScopedConfig(agentDir, workspace).merged.network).toMatchObject({ enabled: true });
   });
 
-  it("fails permission persistence through symlinked workspace parents", async () => {
+  it("persists workspace config through a symlinked parent", async () => {
     const workspace = await makeTempDir("pi-workspace-");
     const outside = await makeTempDir("pi-outside-");
     const outsideConfig = path.join(outside, "permissions.json");
     await writeFile(outsideConfig, "{}", "utf8");
     await symlink(outside, path.join(workspace, ".pi"));
 
-    expect(() => persistPermissionRuleToConfig(
+    persistPermissionRuleToConfig(
       path.join(workspace, ".pi", "permissions.json"),
       "bash",
       "echo unsafe",
       "allow",
       workspace,
-    )).toThrow(/symlink|workspace/i);
-    expect(JSON.parse(await readFile(outsideConfig, "utf8"))).toEqual({});
+    );
+
+    expect(JSON.parse(await readFile(outsideConfig, "utf8"))).toEqual({
+      permission: { bash: { "echo unsafe": "allow" } },
+    });
   });
 });
 
@@ -159,15 +162,19 @@ describe("persistSandboxNetworkGrantToConfig", () => {
     expect(() => removeSandboxNetworkGrantFromConfig(configPath)).toThrow(/Failed to read/);
   });
 
-  it("fails when config target is a symlink", async () => {
+  it.each(["permissions.json", "sentinel.json"])("persists through a symlinked %s target", async (fileName) => {
     const dir = await makeTempDir("pi-scoped-config-");
     const realPath = path.join(dir, "real.json");
-    const linkPath = path.join(dir, "permissions.json");
+    const linkPath = path.join(dir, fileName);
     await writeFile(realPath, JSON.stringify({ sandbox: { enabled: true } }), "utf8");
     await symlink(realPath, linkPath);
 
-    expect(() => persistSandboxNetworkGrantToConfig(linkPath)).toThrow(/Failed to persist/);
-    expect(JSON.parse(await readFile(realPath, "utf8"))).toEqual({ sandbox: { enabled: true } });
+    persistSandboxNetworkGrantToConfig(linkPath);
+
+    expect(await realpath(linkPath)).toBe(realPath);
+    expect(JSON.parse(await readFile(realPath, "utf8"))).toEqual({
+      sandbox: { enabled: true, network: true },
+    });
   });
 });
 
@@ -318,17 +325,19 @@ describe("persistNetworkGrantToConfig", () => {
     expect((await stat(path.dirname(configPath))).mode & 0o777).toBe(0o700);
   });
 
-  it("does not follow symlinked config targets", async () => {
+  it("follows symlinked config targets", async () => {
     const dir = await makeTempDir("pi-scoped-config-");
     const realPath = path.join(dir, "real.json");
     const linkPath = path.join(dir, "permissions.json");
     await writeFile(realPath, JSON.stringify({ debugLog: false }), "utf8");
     await symlink(realPath, linkPath);
 
-    expect(() => persistNetworkGrantToConfig(linkPath, "api.github.com")).toThrow("Failed to persist network grant");
+    persistNetworkGrantToConfig(linkPath, "api.github.com");
 
-    expect(JSON.parse(await readFile(realPath, "utf8"))).toEqual({
+    expect(await realpath(linkPath)).toBe(realPath);
+    expect(JSON.parse(await readFile(realPath, "utf8"))).toMatchObject({
       debugLog: false,
+      network: { allowedDomains: ["api.github.com"] },
     });
   });
 

@@ -78,6 +78,25 @@ function readConfigLayer(path: string): JsonObject {
   return readConfigFile(path);
 }
 
+function canonicalizeConfigPath(configPath: string): string {
+  const resolvedPath = resolve(configPath);
+  try {
+    return realpathSync.native(resolvedPath);
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
+  }
+
+  const missingParents: string[] = [];
+  let parent = dirname(resolvedPath);
+  while (!existsSync(parent)) {
+    const next = dirname(parent);
+    if (next === parent) throw new Error(`Config parent does not exist: '${configPath}'.`);
+    missingParents.unshift(basename(parent));
+    parent = next;
+  }
+  return resolve(realpathSync.native(parent), ...missingParents, basename(resolvedPath));
+}
+
 export function writeConfigFile(
   path: string,
   config: JsonObject,
@@ -86,12 +105,12 @@ export function writeConfigFile(
   let targetPath = path;
   let tempPath: string | undefined;
   try {
-    if (workspaceRoot) targetPath = resolveConfinedConfigPath(path, workspaceRoot);
+    targetPath = workspaceRoot
+      ? resolveConfinedConfigPath(path, workspaceRoot)
+      : canonicalizeConfigPath(path);
     if (existsSync(targetPath)) {
       const stat = lstatSync(targetPath);
-      if (stat.isSymbolicLink() || !stat.isFile()) {
-        return false;
-      }
+      if (!stat.isFile()) return false;
     }
 
     mkdirSync(dirname(targetPath), { recursive: true, mode: 0o700 });
@@ -260,11 +279,20 @@ export function resolveConfinedConfigPath(configPath: string, workspaceRoot: str
   const resolvedPath = resolve(configPath);
   const logicalRoot = resolve(workspaceRoot);
   const canonicalRoot = realpathSync.native(logicalRoot);
-  if (existsSync(resolvedPath)) {
+  let followsSymlink = false;
+
+  try {
     const configStat = lstatSync(resolvedPath);
-    if (configStat.isSymbolicLink() || !configStat.isFile()) {
+    if (configStat.isSymbolicLink()) {
+      followsSymlink = true;
+      if (!lstatSync(realpathSync.native(resolvedPath)).isFile()) {
+        throw new Error(`Workspace config target is not a regular file: '${configPath}'.`);
+      }
+    } else if (!configStat.isFile()) {
       throw new Error(`Workspace config target is not a regular file: '${configPath}'.`);
     }
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
   }
 
   const missingParents: string[] = [];
@@ -284,6 +312,7 @@ export function resolveConfinedConfigPath(configPath: string, workspaceRoot: str
     if (!parentStat.isDirectory() && !parentStat.isSymbolicLink()) {
       throw new Error(`Workspace config parent is not a directory: '${configPath}'.`);
     }
+    followsSymlink ||= parentStat.isSymbolicLink();
     const next = dirname(current);
     if (next === current) break;
     current = next;
@@ -293,17 +322,8 @@ export function resolveConfinedConfigPath(configPath: string, workspaceRoot: str
   if (relativeParent.startsWith(`..${sep}`) || relativeParent === ".." || resolve(logicalRoot, relativeParent) !== parent) {
     throw new Error(`Workspace config path escapes workspace: '${configPath}'.`);
   }
-  let logicalParent = logicalRoot;
-  for (const component of relativeParent.split(sep).filter(Boolean)) {
-    logicalParent = resolve(logicalParent, component);
-    if (existsSync(logicalParent) && lstatSync(logicalParent).isSymbolicLink()) {
-      throw new Error(`Workspace config parent is a symlink: '${configPath}'.`);
-    }
-  }
-
-  const canonicalParent = realpathSync.native(parent);
-  const canonicalPath = resolve(canonicalParent, ...missingParents, basename(resolvedPath));
-  if (!isPathWithinDirectory(canonicalPath, canonicalRoot)) {
+  const canonicalPath = canonicalizeConfigPath(resolvedPath);
+  if (!isPathWithinDirectory(canonicalPath, canonicalRoot) && !followsSymlink) {
     throw new Error(`Workspace config path escapes workspace: '${configPath}'.`);
   }
   return canonicalPath;
