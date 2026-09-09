@@ -4,7 +4,8 @@ set -euo pipefail
 SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
 RUNNER="$SCRIPT_DIR/../bin/bwrap-run.sh"
 TEST_DIR="$(mktemp -d /tmp/pi-mask-int-XXXXXX)"
-trap 'rm -rf "$TEST_DIR"' EXIT
+FAKE_HOME="$(mktemp -d /tmp/pi-mask-home-XXXXXX)"
+trap 'rm -rf "$TEST_DIR" "$FAKE_HOME"' EXIT
 
 cd "$TEST_DIR"
 git init -q
@@ -13,13 +14,14 @@ printf 'CERT_SECRET=hidden\n' > certfile.pem
 printf 'KEY_SECRET=hidden\n' > keyfile.key
 mkdir -p src
 printf "console.log('safe')\n" > src/index.js
-FAKE_HOME="$TEST_DIR/fake-home"
-mkdir -p "$FAKE_HOME/.ssh"
+mkdir -p "$FAKE_HOME/.ssh" "$FAKE_HOME/.config" "$FAKE_HOME/.pi/agent"
 printf 'SSH_PRIVATE_KEY_SECRET\n' > "$FAKE_HOME/.ssh/id_test"
+printf 'CONFIG_SECRET=hidden\n' > "$FAKE_HOME/.config/secret.env"
+printf '{"permission":{"bash":"deny"}}\n' > "$FAKE_HOME/.pi/agent/sentinel.json"
 
 run_sandbox() {
-  "$RUNNER" --cwd "$TEST_DIR" --repo-root "$TEST_DIR" --network off \
-    --masked-paths '**/.env,**/*.pem,**/*.key,~/.ssh/*' -- "$@"
+  HOME="$FAKE_HOME" "$RUNNER" --cwd "$TEST_DIR" --repo-root "$TEST_DIR" --network off \
+    --masked-paths '**/.env,**/*.pem,**/*.key,~/.ssh/*,~/.config/secret.env' -- "$@"
 }
 
 assert_eq() {
@@ -82,13 +84,19 @@ assert_contains 'grep can indicate masked key' 'keyfile.key:(masked)' "$out"
 out="$(HOME="$FAKE_HOME" run_sandbox cat "$FAKE_HOME/.ssh/id_test")"
 assert_eq 'home-level masked path outside repo is masked' '(masked)' "$out"
 
-out="$($RUNNER --cwd "$TEST_DIR" --repo-root "$TEST_DIR" --network off \
+out="$(HOME="$FAKE_HOME" run_sandbox cat "$FAKE_HOME/.config/secret.env")"
+assert_eq 'generic config bind cannot overwrite masks' '(masked)' "$out"
+
+HOME="$FAKE_HOME" run_sandbox bash -c 'printf tampered > "$HOME/.pi/agent/sentinel.json"' >/dev/null 2>&1 || true
+assert_eq 'Sentinel control-plane config remains unchanged' '{"permission":{"bash":"deny"}}' "$(cat "$FAKE_HOME/.pi/agent/sentinel.json")"
+
+out="$(HOME="$FAKE_HOME" $RUNNER --cwd "$TEST_DIR" --repo-root "$TEST_DIR" --network off \
   --masked-paths '**/.env,**/*.pem,**/*.key' \
   --approved-unmask-path "$TEST_DIR/.env" --ro-bind "$TEST_DIR/.env" \
   -- cat .env)"
 assert_eq 'approved unmask shows real content' 'SECRET_KEY=topsecret123' "$out"
 
-PLACEHOLDER_ROOT="$HOME/.pi/agent/tmp/pi-mask-placeholders"
+PLACEHOLDER_ROOT="$FAKE_HOME/.pi/agent/tmp/pi-mask-placeholders"
 rm -rf "$PLACEHOLDER_ROOT" 2>/dev/null || true
 run_sandbox true
 if find "$PLACEHOLDER_ROOT" -mindepth 1 -maxdepth 1 -type d -print -quit 2>/dev/null | grep -q .; then

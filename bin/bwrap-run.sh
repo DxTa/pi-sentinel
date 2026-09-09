@@ -356,7 +356,7 @@ trap 'rm -rf "$MASK_PLACEHOLDER_DIR"' EXIT
 # ── Build bwrap command ──
 
 STATE_DIRS=(
-  "$HOME/.pi"
+  "$HOME/.pi/agent/tmp"
 )
 
 for state_dir in ${STATE_DIRS[@]+"${STATE_DIRS[@]}"}; do
@@ -386,6 +386,9 @@ BWRAP_CMD+=(
   --proc /proc
   --tmpfs /tmp
   --dir /home
+  --dir "$HOME"
+  --tmpfs "$HOME/.pi"
+  --dir "$HOME/.pi/agent"
   --bind "$REPO_ROOT" "$REPO_ROOT"
 )
 
@@ -476,24 +479,15 @@ for path in \
   append_ro_bind_if_exists "$path"
 done
 
-# ── Pi agent state (read-write for runtime) ──
+# ── Pi sandbox helper state (read-only) ──
 
 for state_dir in ${STATE_DIRS[@]+"${STATE_DIRS[@]}"}; do
-  append_rw_bind_if_exists "$state_dir"
+  append_ro_bind_if_exists "$state_dir"
 done
 
 # ── Protected sockets: masked before and after generic binds ──
 # Final call below is required because later directory binds can overlay masks.
 mask_protected_sockets
-
-# ── Masked paths from config (secrets inside repo) ──
-
-for pattern in ${MASKED_PATTERNS[@]+"${MASKED_PATTERNS[@]}"}; do
-  # Handle home-relative patterns
-  local_pattern="${pattern/#\~\//$HOME/}"
-  # Expand globs in repo root
-  mask_glob_pattern "$local_pattern" "$REPO_ROOT"
-done
 
 # ── Additional bind mounts from config ──
 
@@ -564,6 +558,41 @@ fi
 
 # Reapply protected socket masks after every generic/config/runtime bind.
 mask_protected_sockets
+
+# ── Masked paths from config (secrets inside repo) ──
+# These binds must be last so generic/config binds cannot overwrite masks.
+
+for pattern in ${MASKED_PATTERNS[@]+"${MASKED_PATTERNS[@]}"}; do
+  local_pattern="${pattern/#\~\//$HOME/}"
+  mask_glob_pattern "$local_pattern" "$REPO_ROOT"
+done
+
+# Explicitly approved unmask paths are the only binds allowed to override masks.
+is_approved_unmask_path() {
+  local candidate="$1"
+  local resolved_candidate
+  resolved_candidate="$(readlink -f "$candidate")"
+  for approved in ${APPROVED_UNMASK_PATHS[@]+"${APPROVED_UNMASK_PATHS[@]}"}; do
+    if [[ "$resolved_candidate" == "$(readlink -f "$approved")" ]]; then
+      return 0
+    fi
+  done
+  return 1
+}
+
+for bind_path in ${RO_BINDS[@]+"${RO_BINDS[@]}"}; do
+  if is_approved_unmask_path "$bind_path"; then
+    resolved_bind="$(resolve_existing_path "$bind_path")"
+    BWRAP_CMD+=(--ro-bind "$resolved_bind" "$resolved_bind")
+  fi
+done
+
+for bind_path in ${RW_BINDS[@]+"${RW_BINDS[@]}"}; do
+  if is_approved_unmask_path "$bind_path"; then
+    resolved_bind="$(resolve_existing_path "$bind_path")"
+    BWRAP_CMD+=(--bind "$resolved_bind" "$resolved_bind")
+  fi
+done
 
 # ── Environment variables: pass through all by default, deny specific patterns ──
 # Instead of --clearenv + selective allowlist (which blocks CLI auth tokens),

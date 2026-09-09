@@ -20,7 +20,10 @@ type Harness = {
   auditLogPath: string;
 };
 
-function createHarness(overrides: Record<string, unknown> = {}): Harness {
+function createHarness(
+  overrides: Record<string, unknown> = {},
+  configLoader?: (cwd?: string) => Record<string, unknown>,
+): Harness {
   const handlers = new Map<string, Handler[]>();
   const emitted: Array<{ channel: string; payload: unknown }> = [];
   const selected: { title: string; options: string[] }[] = [];
@@ -42,13 +45,13 @@ function createHarness(overrides: Record<string, unknown> = {}): Harness {
 
   registerSentinelCreds(pi as never, {
     promptWaitTracker: new PromptWaitTracker(eventBus),
-    getConfig: () => ({
+    getConfig: configLoader ?? (() => ({
       sentinelCreds: {
         enabled: true,
         auditLogPath,
         ...overrides,
       },
-    }),
+    })),
   });
 
   return { handlers, emitted, selected, auditLogPath };
@@ -85,6 +88,15 @@ function promptEvents(harness: Harness) {
 async function runToolCall(harness: Harness, event: unknown, ctx: unknown): Promise<unknown> {
   let result: unknown;
   for (const handler of harness.handlers.get("tool_call") ?? []) {
+    const next = await handler(event, ctx);
+    if (next !== undefined) result = next;
+  }
+  return result;
+}
+
+async function runToolResult(harness: Harness, event: unknown, ctx: unknown = {}): Promise<unknown> {
+  let result: unknown;
+  for (const handler of harness.handlers.get("tool_result") ?? []) {
     const next = await handler(event, ctx);
     if (next !== undefined) result = next;
   }
@@ -258,5 +270,244 @@ describe("sentinel-creds structured prompt integration", () => {
       channel: "herdr:blocked",
       payload: { active: false, label: "Waiting for env exposure approval" },
     });
+  });
+
+  it("redacts secrets in text result blocks while preserving image blocks", async () => {
+    const harness = createHarness({
+      envShield: false,
+      scanBashReads: false,
+    });
+    const image = { type: "image", data: "aW1hZ2U=", mimeType: "image/png" };
+    const secret = "AKIA1234567890ABCDEF";
+
+    const result = await runToolResult(harness, {
+      toolCallId: "read-1",
+      toolName: "read",
+      input: { path: "config.env" },
+      content: [
+        { type: "text", text: `AWS_ACCESS_KEY_ID=${secret}` },
+        image,
+        { type: "text", text: `BACKUP_AWS_ACCESS_KEY_ID=${secret}` },
+      ],
+      isError: false,
+    });
+
+    expect(result).toEqual({
+      content: [
+        { type: "text", text: "AWS_ACCESS_KEY_ID=[REDACTED: AWS Access Key]" },
+        image,
+        { type: "text", text: "BACKUP_AWS_ACCESS_KEY_ID=[REDACTED: AWS Access Key]" },
+      ],
+    });
+  });
+
+  it("redacts scanned blocks when another text block cannot be scanned", async () => {
+    const harness = createHarness({
+      envShield: false,
+      scanBashReads: false,
+    });
+    const secret = "AKIA1234567890ABCDEF";
+    const oversizedText = "x".repeat(1_048_577);
+
+    const result = await runToolResult(harness, {
+      toolCallId: "read-mixed",
+      toolName: "read",
+      input: { path: "mixed-output" },
+      content: [
+        { type: "text", text: `AWS_ACCESS_KEY_ID=${secret}` },
+        { type: "text", text: oversizedText },
+      ],
+      isError: false,
+    });
+
+    expect(result).toEqual({
+      content: [
+        { type: "text", text: "AWS_ACCESS_KEY_ID=[REDACTED: AWS Access Key]" },
+        { type: "text", text: "[sentinel-creds] Output withheld because secret scanning was unavailable." },
+      ],
+    });
+  });
+
+  it("honors raw reveal for persistently whitelisted reads", async () => {
+    const root = mkdtempSync(join(tmpdir(), "sentinel-whitelist-"));
+    const secretPath = join(root, "secret.env");
+    const secret = "AKIA1234567890ABCDEF";
+    const harness = createHarness({
+      envShield: false,
+      scanBashReads: false,
+      allowRawReveal: true,
+      readAllowedPaths: [secretPath],
+    });
+
+    const result = await runToolResult(harness, {
+      toolCallId: "read-whitelisted",
+      toolName: "read",
+      input: { path: secretPath },
+      content: [{ type: "text", text: `AWS_ACCESS_KEY_ID=${secret}` }],
+      isError: false,
+    });
+
+    expect(result).toBeUndefined();
+  });
+
+  it("uses the workspace false override for raw reveal", async () => {
+    const root = mkdtempSync(join(tmpdir(), "sentinel-workspace-"));
+    const secretPath = join(root, "secret.env");
+    const secret = "AKIA1234567890ABCDEF";
+    const harness = createHarness({}, (cwd) => ({
+      sentinelCreds: {
+        enabled: true,
+        envShield: false,
+        scanBashReads: false,
+        allowRawReveal: cwd !== root,
+        readAllowedPaths: cwd === root ? [secretPath] : [],
+      },
+    }));
+    await harness.handlers.get("session_start")?.[0](
+      { reason: "startup" },
+      { cwd: root, hasUI: false },
+    );
+
+    const result = await runToolResult(harness, {
+      toolCallId: "read-workspace-false",
+      toolName: "read",
+      input: { path: secretPath },
+      content: [{ type: "text", text: `AWS_ACCESS_KEY_ID=${secret}` }],
+      isError: false,
+    }, { cwd: root });
+
+    expect(result).toEqual({
+      content: [{ type: "text", text: "AWS_ACCESS_KEY_ID=[REDACTED: AWS Access Key]" }],
+    });
+  });
+
+  it("uses the workspace true override for raw reveal", async () => {
+    const root = mkdtempSync(join(tmpdir(), "sentinel-workspace-"));
+    const secretPath = join(root, "secret.env");
+    const secret = "AKIA1234567890ABCDEF";
+    const harness = createHarness({}, (cwd) => ({
+      sentinelCreds: {
+        enabled: true,
+        envShield: false,
+        scanBashReads: false,
+        allowRawReveal: cwd === root,
+        readAllowedPaths: cwd === root ? [secretPath] : [],
+      },
+    }));
+    await harness.handlers.get("session_start")?.[0](
+      { reason: "startup" },
+      { cwd: root, hasUI: false },
+    );
+
+    const result = await runToolResult(harness, {
+      toolCallId: "read-workspace-true",
+      toolName: "read",
+      input: { path: secretPath },
+      content: [{ type: "text", text: `AWS_ACCESS_KEY_ID=${secret}` }],
+      isError: false,
+    }, { cwd: root });
+
+    expect(result).toBeUndefined();
+  });
+
+  it("uses the session workspace for relative persistent whitelist paths", async () => {
+    const root = mkdtempSync(join(tmpdir(), "sentinel-relative-"));
+    const secretPath = join(root, "secret.env");
+    const secret = "AKIA1234567890ABCDEF";
+    const harness = createHarness({}, (cwd) => ({
+      sentinelCreds: {
+        enabled: true,
+        envShield: false,
+        scanBashReads: false,
+        allowRawReveal: cwd === root,
+        readAllowedPaths: cwd === root ? [secretPath] : [],
+      },
+    }));
+    await harness.handlers.get("session_start")?.[0](
+      { reason: "startup" },
+      { cwd: root, hasUI: false },
+    );
+
+    const result = await runToolResult(harness, {
+      toolCallId: "read-relative-whitelist",
+      toolName: "read",
+      input: { path: "secret.env" },
+      content: [{ type: "text", text: `AWS_ACCESS_KEY_ID=${secret}` }],
+      isError: false,
+    }, { cwd: root });
+
+    expect(result).toBeUndefined();
+  });
+
+  it("uses the session workspace for relative one-time raw reveal", async () => {
+    const root = mkdtempSync(join(tmpdir(), "sentinel-relative-"));
+    const secretPath = join(root, "secret.env");
+    const secret = "AKIA1234567890ABCDEF";
+    writeFileSync(secretPath, `AWS_ACCESS_KEY_ID=${secret}\n`, "utf8");
+    const harness = createHarness({
+      envShield: false,
+      scanBashReads: false,
+      allowRawReveal: true,
+    });
+    await harness.handlers.get("session_start")?.[0](
+      { reason: "startup" },
+      { cwd: root, hasUI: false },
+    );
+
+    await runToolCall(
+      harness,
+      { toolCallId: "read-relative-once", toolName: "read", input: { path: "secret.env" } },
+      createContext(harness.selected, root, "Allow once"),
+    );
+
+    const result = await runToolResult(harness, {
+      toolCallId: "read-relative-once",
+      toolName: "read",
+      input: { path: "secret.env" },
+      content: [{ type: "text", text: `AWS_ACCESS_KEY_ID=${secret}` }],
+      isError: false,
+    }, { cwd: root });
+
+    expect(result).toBeUndefined();
+  });
+
+  it("does not reuse raw-reveal allowance across tool calls for same path", async () => {
+    const root = mkdtempSync(join(tmpdir(), "sentinel-result-"));
+    const secretPath = join(root, "secret.env");
+    const secret = "AKIA1234567890ABCDEF";
+    writeFileSync(secretPath, `AWS_ACCESS_KEY_ID=${secret}\n`, "utf8");
+    const harness = createHarness({
+      envShield: false,
+      scanBashReads: false,
+      allowRawReveal: true,
+    });
+
+    await runToolCall(
+      harness,
+      { toolCallId: "read-1", toolName: "read", input: { path: secretPath } },
+      createContext(harness.selected, root, "Allow once"),
+    );
+
+    const result = await runToolResult(harness, {
+      toolCallId: "read-2",
+      toolName: "read",
+      input: { path: secretPath },
+      content: [{ type: "text", text: `AWS_ACCESS_KEY_ID=${secret}` }],
+      isError: false,
+    });
+
+    expect(result).toEqual({
+      content: [{ type: "text", text: "AWS_ACCESS_KEY_ID=[REDACTED: AWS Access Key]" }],
+    });
+
+    const matchingResult = await runToolResult(harness, {
+      toolCallId: "read-1",
+      toolName: "read",
+      input: { path: secretPath },
+      content: [{ type: "text", text: `AWS_ACCESS_KEY_ID=${secret}` }],
+      isError: false,
+    });
+
+    expect(matchingResult).toBeUndefined();
   });
 });

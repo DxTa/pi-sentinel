@@ -58,19 +58,6 @@ const DEFAULT_MAX_SCAN_ENTRIES = 50_000;
 const DEFAULT_MAX_SCAN_DEPTH = 40;
 const DEFAULT_MAX_SCAN_DURATION_MS = DEFAULT_SCAN_DURATION_MS;
 
-/**
- * Absolute path prefixes whose subtrees are huge non-secret runtime caches.
- * They are runtime read-allow paths but hold no masked-secret patterns, so
- * scanning them is wasted work that can blow the entry cap and block commands.
- */
-const PRUNE_PATH_PREFIXES: string[] = (() => {
-  const home = homedir();
-  return [
-    resolve(home, ".local/share/uv"),
-    resolve(home, ".cache/uv"),
-  ];
-})();
-
 // SRT excludes temporary roots from its runtime read allowlist. Scanning them
 // for concrete masks only adds unbounded host state to every invocation.
 const tempRoot = resolve(tmpdir());
@@ -83,12 +70,6 @@ const ASYNC_UNSCANNABLE_EXACT_ROOTS = [
   tempRoot,
   tempRootAlias,
 ];
-
-function isUnderPrunePrefix(absPath: string): boolean {
-  return PRUNE_PATH_PREFIXES.some(
-    (prefix) => absPath === prefix || absPath.startsWith(prefix + "/"),
-  );
-}
 
 function dedupe(values: string[]): string[] {
   return [...new Set(values.map((value) => resolve(value)))];
@@ -142,11 +123,6 @@ function collectConcreteMaskedFiles(
     const current = stack.pop()!;
     assertScanWithinBudget(scanDeadline, maxScanDurationMs, current.path);
 
-    // Prune huge non-secret runtime state subtrees. These are runtime
-    // read-allow paths but contain no masked-secret patterns and can exceed
-    // the scan cap, blocking every bash call.
-    if (isUnderPrunePrefix(current.path)) continue;
-
     entriesSeen += 1;
     if (entriesSeen > maxEntries) {
       throw new Error(`Masked file scan exceeded ${maxEntries} entries at ${current.path}`);
@@ -187,31 +163,8 @@ function collectConcreteMaskedFiles(
       continue;
     }
 
-    // Skip vendored/build/cache/junk subtrees during the masked-file scan.
-    // These dirs contain no secret patterns (.env/.pem/.key/ssh/...), but they
-    // balloon the entry count past the scan cap (e.g. YouCompleteMe rust-analyzer
-    // HTML docs = 50k+ files), which throws and blocks every bash call.
-    const PRUNE_DIR_NAMES = new Set([
-      ".git",
-      "node_modules",
-      ".venv",
-      "venv",
-      "__pycache__",
-      ".mypy_cache",
-      ".pytest_cache",
-      ".ruff_cache",
-      ".cache",
-      ".turbo",
-      "dist",
-      "build",
-      "target",
-      "site-packages",
-      "vim_runtime",
-    ]);
-
     for (const entry of entries) {
       assertScanWithinBudget(scanDeadline, maxScanDurationMs, current.path);
-      if (entry.isDirectory() && PRUNE_DIR_NAMES.has(entry.name)) continue;
       stack.push({ path: join(current.path, entry.name), depth: current.depth + 1 });
     }
   }
@@ -391,7 +344,6 @@ async function collectConcreteMaskedFilesAsync(
   while (stack.length > 0) {
     const current = stack.pop()!;
     assertScanWithinBudget(scanDeadline, maxScanDurationMs, current.path);
-    if (isUnderPrunePrefix(current.path)) continue;
     entriesSeen += 1;
     if (entriesSeen > maxEntries) {
       throw new Error(`Masked file scan exceeded ${maxEntries} entries at ${current.path}`);
@@ -449,26 +401,8 @@ async function collectConcreteMaskedFilesAsync(
       continue;
     }
 
-    const pruneDirNames = new Set([
-      ".git",
-      "node_modules",
-      ".venv",
-      "venv",
-      "__pycache__",
-      ".mypy_cache",
-      ".pytest_cache",
-      ".ruff_cache",
-      ".cache",
-      ".turbo",
-      "dist",
-      "build",
-      "target",
-      "site-packages",
-      "vim_runtime",
-    ]);
     for (const entry of entries) {
       assertScanWithinBudget(scanDeadline, maxScanDurationMs, current.path);
-      if (entry.isDirectory() && pruneDirNames.has(entry.name)) continue;
       stack.push({ path: join(current.path, entry.name), depth: current.depth + 1 });
     }
   }
