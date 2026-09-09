@@ -488,9 +488,11 @@ export default function piPermissionSystemExtension(pi: ExtensionAPI): void {
       shouldAutoApprovePermissionState("ask", runtime.config, {
         toolName: request.toolName,
         command: request.command,
+        forcePromptInYolo: request.forcePromptInYolo,
       }),
     resolveFallbackTargetSessionId: (ctx) =>
       resolveInteractiveSessionFallback(runtime, ctx.cwd),
+
   };
 
   refreshExtensionConfig(runtime);
@@ -518,9 +520,11 @@ export default function piPermissionSystemExtension(pi: ExtensionAPI): void {
             (!ctx.hasUI && Boolean(fallbackTargetSessionId)),
           toolName: details?.toolName,
           command: details?.command,
+          forcePromptInYolo: details?.forcePromptInYolo,
         });
       },
       promptPermission: (ctx, details) => prompter.prompt(ctx, details),
+
     },
   );
 

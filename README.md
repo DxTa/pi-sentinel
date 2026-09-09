@@ -55,9 +55,10 @@ When SRT is enabled, pi-sentinel makes its installed package root and the resolv
 | `/sandbox-grant network --domain <domain> [--ttl <duration>]` | Grant a network domain. |
 | `/sandbox-revoke <grant-id>` | Revoke a sandbox grant. |
 
-`yoloMode` auto-approves eligible `ask` checks. Keep it disabled unless unattended execution is intentional.
+`yoloMode` auto-approves eligible `ask` checks, including external reads and local writes, but still prompts for first-time external writes and protected bash patterns. Keep it disabled unless unattended execution is intentional.
 
 ## Configuration
+
 
 Bundled defaults live in [`config.json`](config.json). Configuration precedence, lowest to highest:
 

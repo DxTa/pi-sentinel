@@ -11,7 +11,6 @@ import type {
   RequestPermissionOptions,
 } from "./permission-dialog";
 import {
-  isYoloModeEnabled,
   matchesYoloAskBashPattern,
   shouldAutoApprovePermissionState,
 } from "./yolo-mode";
@@ -31,6 +30,7 @@ export interface PromptPermissionDetails {
   command?: string;
   target?: string;
   toolInputPreview?: string;
+  forcePromptInYolo?: boolean;
   /** Override label for the "for this session" dialog option. */
   sessionLabel?: string;
 }
@@ -93,10 +93,16 @@ export class PermissionPrompter implements PermissionPrompterApi {
     const yoloContext = {
       toolName: details.toolName,
       command: details.command,
+      forcePromptInYolo:
+        details.forcePromptInYolo === true
+        || matchesYoloAskBashPattern(
+          {
+            toolName: details.toolName,
+            command: details.command,
+          },
+          config,
+        ),
     };
-    const forcePromptInYolo =
-      isYoloModeEnabled(config)
-      && matchesYoloAskBashPattern(yoloContext, config);
 
     if (shouldAutoApprovePermissionState("ask", config, yoloContext)) {
       this.writeReviewEntry("permission_request.auto_approved", details);
@@ -122,7 +128,7 @@ export class PermissionPrompter implements PermissionPrompterApi {
         {
           toolName: details.toolName,
           command: details.command,
-          forcePromptInYolo,
+          forcePromptInYolo: yoloContext.forcePromptInYolo,
         },
       );
 

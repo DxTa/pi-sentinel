@@ -72,6 +72,8 @@ export function describeExternalDirectoryGate(
   );
 
   const pattern = deriveApprovalPattern(normalizedExtPath);
+  const forcePromptInYolo =
+    tcc.toolName === "write" || tcc.toolName === "edit" ? true : undefined;
 
   return {
     surface: "external_directory",
@@ -94,6 +96,7 @@ export function describeExternalDirectoryGate(
       toolCallId: tcc.toolCallId,
       toolName: tcc.toolName,
       path: externalDirectoryPath,
+      ...(forcePromptInYolo ? { forcePromptInYolo: true } : {}),
     },
     logContext: {
       source: "tool_call",
