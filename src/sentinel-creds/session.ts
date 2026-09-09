@@ -107,10 +107,10 @@ export class CredsSession {
   private readWhitelist: Map<string, WhitelistEntry>;
   private cwd: string;
   private config: SentinelCredsConfig;
-  /** Paths allowed for this request — result scanner should skip them. */
-  private allowedReadResults: Set<string> = new Set();
-  /** Commands allowed for this request — result scanner should skip them. */
-  private allowedBashResults: Set<string> = new Set();
+  /** Read results explicitly allowed for a specific tool call. */
+  private allowedReadResults = new Map<string, string>();
+  /** Bash results explicitly allowed for a specific tool call. */
+  private allowedBashResults = new Map<string, string>();
 
   constructor(cwd: string, config: SentinelCredsConfig) {
     this.cwd = cwd;
@@ -118,8 +118,9 @@ export class CredsSession {
     this.readWhitelist = loadReadWhitelist(cwd);
   }
 
-  reset(config: SentinelCredsConfig): void {
+  reset(config: SentinelCredsConfig, cwd = this.cwd): void {
     this.scanCache.clear();
+    this.cwd = cwd;
     this.config = config;
     this.readWhitelist = loadReadWhitelist(this.cwd);
     this.allowedReadResults.clear();
@@ -173,35 +174,31 @@ export class CredsSession {
     saveReadWhitelist(this.cwd, this.readWhitelist);
   }
 
-  allowReadResult(absolutePath: string): void {
-    this.allowedReadResults.add(absolutePath);
+  allowReadResult(toolCallId: string, absolutePath: string): void {
+    this.allowedReadResults.set(toolCallId, absolutePath);
   }
 
-  isReadResultAllowed(absolutePath: string): boolean {
-    return this.allowedReadResults.has(absolutePath) || this.isReadWhitelisted(absolutePath);
+  isReadResultAllowed(toolCallId: string, absolutePath: string): boolean {
+    return this.allowedReadResults.get(toolCallId) === absolutePath || this.isReadWhitelisted(absolutePath);
   }
 
-  allowBashResult(command: string): void {
-    this.allowedBashResults.add(command);
+  allowBashResult(toolCallId: string, command: string): void {
+    this.allowedBashResults.set(toolCallId, command);
   }
 
-  isBashResultAllowed(command: string): boolean {
-    return this.allowedBashResults.has(command);
+  isBashResultAllowed(toolCallId: string, command: string): boolean {
+    return this.allowedBashResults.get(toolCallId) === command;
   }
 
-  consumeReadResultAllowance(absolutePath: string): boolean {
-    if (this.allowedReadResults.has(absolutePath)) {
-      this.allowedReadResults.delete(absolutePath);
-      return true;
-    }
-    return false;
+  consumeReadResultAllowance(toolCallId: string, absolutePath: string): boolean {
+    if (!this.isReadResultAllowed(toolCallId, absolutePath)) return false;
+    this.allowedReadResults.delete(toolCallId);
+    return true;
   }
 
-  consumeBashResultAllowance(command: string): boolean {
-    if (this.allowedBashResults.has(command)) {
-      this.allowedBashResults.delete(command);
-      return true;
-    }
-    return false;
+  consumeBashResultAllowance(toolCallId: string, command: string): boolean {
+    if (!this.isBashResultAllowed(toolCallId, command)) return false;
+    this.allowedBashResults.delete(toolCallId);
+    return true;
   }
 }

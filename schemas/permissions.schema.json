@@ -24,10 +24,11 @@
       "default": true
     },
     "yoloMode": {
-      "description": "Auto-approve ask-state permission checks, including subagent approval forwarding.",
-      "markdownDescription": "Auto-approve `ask`-state permission checks, including subagent approval forwarding.\n\n⚠️ **Use with caution** — this disables all interactive confirmation prompts unless an explicit yolo bash exception matches.",
+      "description": "Auto-approve eligible ask-state permission checks, including subagent approval forwarding.",
+      "markdownDescription": "Auto-approve eligible `ask`-state permission checks, including subagent approval forwarding.\n\n⚠️ **Use with caution** — yolo still prompts for protected bash patterns and first-time external writes.",
       "type": "boolean",
       "default": false
+
     },
     "yoloAskBashPatterns": {
       "description": "Bash command wildcard patterns that still prompt even when yolo mode is enabled.",
@@ -133,8 +134,8 @@
       }
     },
     "sandbox": {
-      "description": "Sandbox execution backend and profile selection for bash commands.",
-      "markdownDescription": "Sandbox execution settings for bash commands. `backend: \"srt\"` is the default on supported macOS/Linux hosts; Windows does not support SRT. `backend: \"bwrap\"` is the legacy Linux/bubblewrap fallback.",
+      "description": "SRT sandbox execution and profile selection for bash commands.",
+      "markdownDescription": "SRT is the only supported sandbox backend on macOS/Linux hosts; Windows does not support SRT. On Linux, SRT requires system bwrap, rg, and socat executables.",
       "type": "object",
       "additionalProperties": true,
       "properties": {
@@ -149,10 +150,9 @@
           "default": false
         },
         "backend": {
-          "description": "Sandbox backend. srt is default; bwrap remains legacy fallback.",
+          "description": "Sandbox backend. SRT is the only supported backend.",
           "enum": [
-            "srt",
-            "bwrap"
+            "srt"
           ],
           "default": "srt"
         },
@@ -160,13 +160,6 @@
           "description": "Default sandbox profile name.",
           "type": "string",
           "default": "online-dev"
-        },
-        "runnerPath": {
-          "description": "Optional backend runner/helper path override.",
-          "type": [
-            "string",
-            "null"
-          ]
         },
         "roBinds": {
           "description": "Additional read-only paths visible inside sandbox.",

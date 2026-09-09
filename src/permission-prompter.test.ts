@@ -164,6 +164,52 @@ describe("PermissionPrompter", () => {
     ]);
   });
 
+  it("prompts when forcePromptInYolo is set for non-bash external writes", async () => {
+    const requestPermissionDecisionFromUi = vi.fn(async () => ({
+      approved: true,
+      state: "approved" as const,
+    }));
+    const reviewLog: Array<{ event: string; details: Record<string, unknown> }> = [];
+
+    const prompter = new PermissionPrompter({
+      promptWaitTracker: new PromptWaitTracker({ emit() {} }),
+      getConfig: () => ({
+        debugLog: false,
+        permissionReviewLog: true,
+        yoloMode: true,
+        yoloAskBashPatterns: [],
+      }),
+      writeReviewLog(event, details) {
+        reviewLog.push({ event, details });
+      },
+      subagentSessionsDir: "/tmp/subagents",
+      forwardingDir: "/tmp/forwarding",
+      requestPermissionDecisionFromUi,
+    });
+
+    const result = await prompter.prompt({
+      hasUI: true,
+      ui: {
+        setStatus() {},
+      },
+    } as never, {
+      requestId: "req-4",
+      source: "tool_call",
+      agentName: null,
+      message: "Need permission",
+      toolName: "write",
+      path: "../notes.txt",
+      forcePromptInYolo: true,
+    } as any);
+
+    expect(result).toEqual({ approved: true, state: "approved" });
+    expect(requestPermissionDecisionFromUi).toHaveBeenCalledOnce();
+    expect(reviewLog.map((entry) => entry.event)).toEqual([
+      "permission_request.waiting",
+      "permission_request.approved",
+    ]);
+  });
+
   it.each([
     "rm -rf /Volumes/NvmeExt1/openimages/OpenImages/.shards",
     "rm *",
@@ -233,7 +279,7 @@ describe("PermissionPrompter", () => {
     });
 
     const result = await prompter.prompt({ hasUI: true, ui: {} } as never, {
-      requestId: "req-4",
+      requestId: "req-5",
       source: "tool_call",
       agentName: null,
       message: "Need permission",

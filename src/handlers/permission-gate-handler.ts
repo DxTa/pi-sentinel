@@ -4,7 +4,13 @@ import type {
 } from "@earendil-works/pi-coding-agent";
 
 import { toRecord } from "#src/common";
+import {
+  getPathBearingToolPath,
+  isPathOutsideWorkingDirectory,
+  normalizePathForComparison,
+} from "#src/path-utils";
 import { suggestSessionPattern } from "#src/pattern-suggest";
+
 import {
   emitDecisionEvent,
   type PermissionEventBus,
@@ -22,7 +28,9 @@ import {
   getToolNameFromValue,
   type ToolRegistry,
 } from "#src/tool-registry";
+import { shouldRelaxBundledToolDenyInYolo } from "#src/yolo-mode";
 import { describeBashExternalDirectoryGate } from "./gates/bash-external-directory";
+
 import { describeBashPathGate } from "./gates/bash-path";
 import type { GateRunnerDeps } from "./gates/descriptor";
 import { isGateBypass } from "./gates/descriptor";
@@ -247,14 +255,39 @@ export class PermissionGateHandler {
     }
 
     // ── Normal tool permission gate (descriptor + runner) ────────────────────
-    const toolCheck = checkPermission(
+    const toolSessionRules = getSessionRuleset();
+    const toolPath = getPathBearingToolPath(tcc.toolName, tcc.input);
+    const normalizedExternalToolPath =
+      toolPath && tcc.cwd && isPathOutsideWorkingDirectory(toolPath, tcc.cwd)
+        ? normalizePathForComparison(toolPath, tcc.cwd)
+        : null;
+    const hasExternalDirectoryApproval =
+      normalizedExternalToolPath !== null
+      && checkPermission(
+        "external_directory",
+        { path: normalizedExternalToolPath },
+        tcc.agentName ?? undefined,
+        toolSessionRules,
+      ).state === "allow";
+    const baseToolCheck = checkPermission(
       tcc.toolName,
       tcc.input,
       tcc.agentName ?? undefined,
-      getSessionRuleset(),
+      toolSessionRules,
     );
+    const toolCheck = shouldRelaxBundledToolDenyInYolo({
+      config: session.config,
+      toolName: tcc.toolName,
+      path: toolPath,
+      cwd: tcc.cwd,
+      toolPermission: baseToolCheck,
+      hasExternalDirectoryApproval,
+    })
+      ? { ...baseToolCheck, state: "ask" as const }
+      : baseToolCheck;
     const toolDescriptor = describeToolGate(tcc, toolCheck);
     toolDescriptor.preCheck = toolCheck;
+
     const toolResult = await runGateCheck(
       toolDescriptor,
       tcc.agentName,

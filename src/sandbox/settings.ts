@@ -14,13 +14,13 @@ import type {
   SandboxConfig,
   SandboxEnvPolicy,
   SandboxProfile,
+  ResolvedSandboxProfile,
 } from "./types.js";
 
 export type { SandboxConfig, SandboxEnvPolicy, SandboxProfile };
-import { SENSITIVE_BIND_SUFFIXES, SENSITIVE_BIND_PATHS } from "./types.js";
 import { DEFAULT_MASKED_PATTERNS } from "./masked-file-gate.js";
+import { SENSITIVE_BIND_SUFFIXES, SENSITIVE_BIND_PATHS } from "./types.js";
 import { awaitWithinScanBudget, isScanBudgetExceeded } from "./scan-budget.js";
-import { EXTENSION_ROOT } from "../extension-config.js";
 
 const OFFLINE_DEV_PROFILE: SandboxProfile = {
   network: false,
@@ -48,7 +48,6 @@ const DEFAULT_SANDBOX_CONFIG: SandboxConfig = {
   defaultProfile: "online-dev",
   roBinds: [],
   rwBinds: [],
-  runnerPath: null,
   bypassCommands: [],
   authExceptions: [],
 };
@@ -103,6 +102,10 @@ export function normalizeSandboxConfig(raw: unknown): SandboxConfig {
   }
 
   // Merge profiles with defaults
+  if (r.backend !== undefined && r.backend !== "srt") {
+    throw new Error("Invalid sandbox.backend; only 'srt' is supported.");
+  }
+
   const profiles: Record<string, SandboxProfile> = {
     ...DEFAULT_SANDBOX_CONFIG.profiles,
   };
@@ -141,7 +144,7 @@ export function normalizeSandboxConfig(raw: unknown): SandboxConfig {
   return {
     enabled: r.enabled === undefined ? DEFAULT_SANDBOX_CONFIG.enabled : r.enabled === true,
     network: r.network === true,
-    backend: r.backend === "bwrap" ? "bwrap" : "srt",
+    backend: "srt",
     profiles,
     defaultProfile: (() => {
       if (r.defaultProfile === undefined) return DEFAULT_SANDBOX_CONFIG.defaultProfile;
@@ -152,10 +155,6 @@ export function normalizeSandboxConfig(raw: unknown): SandboxConfig {
     })(),
     roBinds: coerceBindList(r.roBinds),
     rwBinds: coerceBindList(r.rwBinds),
-    runnerPath:
-      r.runnerPath === null || r.runnerPath === undefined
-        ? null
-        : String(r.runnerPath),
     bypassCommands: Array.isArray(r.bypassCommands)
       ? (r.bypassCommands as string[]).map(String).filter((s) => s.length > 0)
       : [],
@@ -251,16 +250,6 @@ function validateSpecialBindTarget(resolved: string): void {
   }
 }
 
-export function validateSandboxUnmaskPath(candidate: string): void {
-  const resolved = resolve(candidate);
-  if (isBroadSandboxPath(resolved)) {
-    throw new Error(`Refusing broad sandbox unmask path: ${resolved}`);
-  }
-  if (SENSITIVE_BIND_PATHS.some((path) => resolve(path) === resolved)) {
-    throw new Error(`Refusing sensitive sandbox unmask path: ${resolved}`);
-  }
-  validateSpecialBindTarget(resolved);
-}
 
 export function validateSandboxBindPath(candidate: string): void {
   const resolved = resolve(candidate);
@@ -343,25 +332,22 @@ export async function resolveSandboxBindPathsWithinScanBudget(
   return dedupeStrings(resolved);
 }
 
+
 /**
- * Resolve the bwrap runner script path.
+ * Resolve the active sandbox profile from config.
  */
-export function resolveBwrapRunnerPath(configRunnerPath: string | null): string {
-  if (configRunnerPath) {
-    const expanded = configRunnerPath.startsWith("~")
-      ? join(homedir(), configRunnerPath.slice(1))
-      : configRunnerPath;
-    return resolve(expanded);
+export function resolveSandboxProfile(
+  config: SandboxConfig,
+  profileName?: string,
+): ResolvedSandboxProfile {
+  const name = profileName ?? config.defaultProfile;
+  const profile = Object.hasOwn(config.profiles, name)
+    ? config.profiles[name]
+    : undefined;
+  if (!profile) {
+    throw new Error("Unknown sandbox profile '" + name + "'. Available: " + Object.keys(config.profiles).join(", "));
   }
-  const override = process.env.PI_BWRAP_RUNNER;
-  if (override) {
-    const expanded = override.startsWith("~")
-      ? join(homedir(), override.slice(1))
-      : override;
-    return resolve(expanded);
-  }
-  // Default location: co-located with the installed extension package
-  return resolve(EXTENSION_ROOT, "bin", "bwrap-run.sh");
+  return { ...profile, name };
 }
 
 export { DEFAULT_SANDBOX_CONFIG };

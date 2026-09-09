@@ -232,7 +232,7 @@ export function registerSentinelCreds(pi: ExtensionAPI, deps: SentinelCredsDeps)
 
   pi.on("session_start", async (_event, ctx) => {
     config = loadSentinelCredsConfig(deps.getConfig(ctx.cwd) as { sentinelCreds?: Partial<SentinelCredsConfig> });
-    session.reset(config);
+    session.reset(config, ctx.cwd);
     if (ctx?.hasUI) {
       promptWaitTracker.clear(ctx);
     }
@@ -383,7 +383,7 @@ export function registerSentinelCreds(pi: ExtensionAPI, deps: SentinelCredsDeps)
       );
 
       if (choice === "Allow once") {
-        session.allowReadResult(absolutePath);
+        session.allowReadResult(event.toolCallId, absolutePath);
         auditDecision(config, "outputScanner", "read", event.input as Record<string, unknown>, "allow_once_redacted", "User allowed one read; output redaction remains enabled.");
         return;
       }
@@ -586,7 +586,7 @@ export function registerSentinelCreds(pi: ExtensionAPI, deps: SentinelCredsDeps)
         );
 
         if (choice === "Allow once") {
-          session.allowBashResult(command);
+          session.allowBashResult(event.toolCallId, command);
           auditDecision(config, "outputScanner", "bash", event.input as Record<string, unknown>, "allow_once_redacted", "User allowed bash command once; output redaction remains enabled.");
           return;
         }
@@ -717,53 +717,82 @@ export function registerSentinelCreds(pi: ExtensionAPI, deps: SentinelCredsDeps)
   // ════════════════════════════════════════════════════════════════════════
 
   if (config.resultScanning) {
-    pi.on("tool_result" as never, (async (event: {
-      toolName: string;
-      input?: Record<string, unknown>;
-      result?: unknown;
-    }) => {
-      const toolName = event.toolName;
+    pi.on("tool_result", async (event, ctx) => {
+      const { toolName } = event;
       if (toolName !== "read" && toolName !== "bash" && toolName !== "grep" && toolName !== "search") {
         return undefined;
       }
 
-      const content = event.result as string;
-      if (!content || typeof content !== "string") return undefined;
-
-      const runtimeConfig = loadSentinelCredsConfig(deps.getConfig() as { sentinelCreds?: Partial<SentinelCredsConfig> });
+      const runtimeConfig = loadSentinelCredsConfig(deps.getConfig(ctx.cwd) as { sentinelCreds?: Partial<SentinelCredsConfig> });
 
       if (toolName === "read") {
         const rawPath = event.input?.path;
         if (rawPath && typeof rawPath === "string") {
           const absolutePath = session.resolvePath(rawPath);
-          const wasAllowed = session.isReadResultAllowed(absolutePath);
-          session.consumeReadResultAllowance(absolutePath);
+          const wasAllowed = session.isReadResultAllowed(event.toolCallId, absolutePath);
+          session.consumeReadResultAllowance(event.toolCallId, absolutePath);
           if (wasAllowed && runtimeConfig.allowRawReveal) return undefined;
         }
       }
 
       if (toolName === "bash") {
-        const command = (event.input?.command ?? "") as string;
-        const wasAllowed = command ? session.isBashResultAllowed(command) : false;
-        if (command) session.consumeBashResultAllowance(command);
+        const command = typeof event.input?.command === "string" ? event.input.command : "";
+        const wasAllowed = command && session.isBashResultAllowed(event.toolCallId, command);
+        if (command) session.consumeBashResultAllowance(event.toolCallId, command);
         if (wasAllowed && runtimeConfig.allowRawReveal) return undefined;
       }
 
-      const result = await scanContentForSecrets(content);
-      if (!result.hasSecrets) return undefined;
+      const scannedBlocks = await Promise.all(
+        event.content.map(async (block) => {
+          if (block.type !== "text") return { block };
+          if (Buffer.byteLength(block.text, "utf8") > MAX_SCAN_BYTES) {
+            return { block, scanUnavailable: true };
+          }
+          try {
+            return { block, result: await scanContentForSecrets(block.text) };
+          } catch {
+            return { block, scanUnavailable: true };
+          }
+        }),
+      );
 
-      const redacted = redactSecrets(content, result.matches);
-      if (redacted === content) return undefined;
+      if (scannedBlocks.some(({ scanUnavailable }) => scanUnavailable)) {
+        const content = scannedBlocks.map(({ block, result, scanUnavailable }) => {
+          if (scanUnavailable && block.type === "text") {
+            return { ...block, text: "[sentinel-creds] Output withheld because secret scanning was unavailable." };
+          }
+          if (block.type !== "text" || !result?.hasSecrets) return block;
+          const redacted = redactSecrets(block.text, result.matches);
+          return redacted === block.text ? block : { ...block, text: redacted };
+        });
+        emitDangerous(pi, config, {
+          feature: "outputScanner",
+          toolName,
+          input: { redactedSecrets: true },
+          description: "Withheld tool output because secret scanning was unavailable.",
+          labels: ["Secret scan unavailable"],
+        });
+        return { content };
+      }
+
+      const matches = scannedBlocks.flatMap(({ result }) => result?.matches ?? []);
+      if (matches.length === 0) return undefined;
+
+      const content = scannedBlocks.map(({ block, result }) => {
+        if (block.type !== "text" || !result?.hasSecrets) return block;
+        const redacted = redactSecrets(block.text, result.matches);
+        return redacted === block.text ? block : { ...block, text: redacted };
+      });
 
       emitDangerous(pi, config, {
         feature: "outputScanner",
         toolName,
         input: { redactedSecrets: true },
-        description: `Redacted ${result.matches.length} secret(s) from tool output.`,
-        labels: [...new Set(result.matches.map((m) => m.label))],
+        description: `Redacted ${matches.length} secret(s) from tool output.`,
+        labels: [...new Set(matches.map((match) => match.label))],
       });
 
-      return { result: redacted };
-    }) as never);
+      return { content };
+    });
   }
 }

@@ -97,9 +97,10 @@ function buildSettingItems(
       id: "yoloMode",
       label: "YOLO mode",
       description:
-        "Auto-approve ask-state permission checks, including subagent approval forwarding",
+        "Auto-approve eligible ask-state permission checks while still prompting for protected bash commands and first-time external writes",
       currentValue: toOnOff(config.yoloMode),
       values: ON_OFF,
+
     },
     {
       id: "permissionReviewLog",

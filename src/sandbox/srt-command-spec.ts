@@ -1,7 +1,6 @@
 import { existsSync } from "node:fs";
 import type { DomainGateConfig } from "#src/network/config.js";
 
-import type { UnmaskedPath } from "./bwrap-command.js";
 import { resolveSandboxBindPaths, resolveSandboxBindPathsWithinScanBudget } from "./settings.js";
 import {
   buildSandboxRuntimeReadAllowPaths,
@@ -17,7 +16,7 @@ import {
 } from "./masked-command-shim.js";
 import { DEFAULT_SCAN_DURATION_MS } from "./scan-budget.js";
 import { buildSrtNetworkPlanFromConfig, type SrtNetworkPlan } from "./srt-network-plan.js";
-import type { ResolvedSandboxProfile, SandboxConfig, SandboxResourceLimits } from "./types.js";
+import type { UnmaskedPath, ResolvedSandboxProfile, SandboxConfig, SandboxResourceLimits } from "./types.js";
 
 export interface SrtCommandSpecInput {
   command: string;

@@ -3,7 +3,8 @@ import { describe, expect, it, vi } from "vitest";
 import { runGateCheck } from "./runner";
 
 describe("runGateCheck", () => {
-  it("persists workspace approval patterns", async () => {
+  it("persists workspace approval patterns and records them for current session", async () => {
+    const approveSessionRule = vi.fn();
     const persistPermissionRule = vi.fn();
 
     const result = await runGateCheck(
@@ -42,7 +43,7 @@ describe("runGateCheck", () => {
           command: "git push origin main",
         }),
         getSessionRuleset: () => [],
-        approveSessionRule: vi.fn(),
+        approveSessionRule,
         persistPermissionRule,
         writeReviewLog: vi.fn(),
         emitDecision: vi.fn(),
@@ -55,6 +56,7 @@ describe("runGateCheck", () => {
     );
 
     expect(result).toEqual({ action: "allow" });
+    expect(approveSessionRule).toHaveBeenCalledWith("bash", "git push *");
     expect(persistPermissionRule).toHaveBeenCalledWith(
       "workspace",
       "bash",

@@ -2,7 +2,7 @@ import { existsSync } from "node:fs";
 import type { BashOperations } from "@earendil-works/pi-coding-agent";
 
 import type { SandboxBackend, SandboxOperationsInput, SandboxWrapInput, SandboxWrapResult } from "../backend.js";
-import { wildcardMatch } from "../../wildcard-matcher.js";
+import { shouldBypassSandboxCommand } from "../bypass-command.js";
 import type { SrtCommandSpec } from "../srt-command-spec.js";
 import { buildSrtCommandSpec, buildSrtCommandSpecAsync } from "../srt-command-spec.js";
 import { buildSrtRuntimeConfig } from "../srt-runtime-config.js";
@@ -74,12 +74,6 @@ const DEFAULT_DEPS: SrtBackendDeps = {
   loadSpawn: async () => await import("node:child_process"),
 };
 
-function matchesBypassCommand(command: string, patterns?: string[]): boolean {
-  if (!patterns || patterns.length === 0) return false;
-  const cmd = command.trim();
-  if (cmd.length === 0) return false;
-  return patterns.some((p) => wildcardMatch(p, cmd));
-}
 
 function killProcessGroup(pid: number | undefined, signal: NodeJS.Signals): void {
   if (!pid || process.platform === "win32") return;
@@ -144,7 +138,7 @@ export function createSrtBackend(
   return {
     kind: "srt",
     wrapCommand: async (input: SandboxWrapInput): Promise<SandboxWrapResult> => {
-      if (matchesBypassCommand(input.command, input.sandboxConfig.bypassCommands)) {
+      if (shouldBypassSandboxCommand(input.command, input.sandboxConfig.bypassCommands)) {
         return { command: input.command };
       }
 
@@ -176,7 +170,7 @@ export function createSrtBackend(
     createBashOperations(input: SandboxOperationsInput): BashOperations {
       return {
         exec: async (command, workDir, options) => {
-          if (matchesBypassCommand(command, input.sandboxConfig.bypassCommands)) {
+          if (shouldBypassSandboxCommand(command, input.sandboxConfig.bypassCommands)) {
             const { spawn } = await resolvedDeps.loadSpawn();
             const child = spawn("bash", ["-lc", command], {
               cwd: workDir ?? input.cwd,

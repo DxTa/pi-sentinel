@@ -14,7 +14,7 @@ import type { GateOutcome } from "./types";
  * Execute the full check→log→emit→approve cycle for a gate descriptor.
  *
  * This is the single site for:
- * - Permission checking (or using pre-resolved state)
+ * - Permission checking (or using pre-check/pre-resolved state)
  * - Session-hit fast path
  * - Interactive prompt orchestration
  * - Decision event emission
@@ -137,7 +137,7 @@ export async function runGateCheck(
     matchedPattern: check.matchedPattern ?? null,
   });
 
-  // 6. Record session approval(s) or persist scoped approval(s)
+  // 6. Record immediate session approval(s) and persist scoped approval(s)
   if (gateResult.action === "allow" && approvalKind && descriptor.sessionApproval) {
     const patterns = "patterns" in descriptor.sessionApproval
       ? descriptor.sessionApproval.patterns
@@ -146,13 +146,15 @@ export async function runGateCheck(
     for (const pattern of patterns) {
       if (approvalKind === "session") {
         deps.approveSessionRule(descriptor.sessionApproval.surface, pattern);
-      } else {
-        deps.persistPermissionRule(
-          approvalKind,
-          descriptor.sessionApproval.surface,
-          pattern,
-        );
+        continue;
       }
+
+      deps.approveSessionRule(descriptor.sessionApproval.surface, pattern);
+      deps.persistPermissionRule(
+        approvalKind,
+        descriptor.sessionApproval.surface,
+        pattern,
+      );
     }
   }
 

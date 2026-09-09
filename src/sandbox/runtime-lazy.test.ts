@@ -6,7 +6,7 @@ describe("createSandboxRuntimeLoader", () => {
     const loadConfig = vi.fn(() => ({ network: { enabled: true } as never, sandbox: { enabled: true } }));
     const normalizeSandboxConfig = vi.fn((raw) => ({ enabled: Boolean((raw as { enabled?: boolean })?.enabled) } as never));
     const createPolicyManager = vi.fn(() => ({ id: "pm", updateConfig: vi.fn() } as never));
-    const createBackend = vi.fn(() => ({ kind: "bwrap" } as never));
+    const createBackend = vi.fn(() => ({ kind: "srt" } as never));
 
     const loader = createSandboxRuntimeLoader({
       loadConfig,
@@ -28,14 +28,14 @@ describe("createSandboxRuntimeLoader", () => {
     expect(createBackend).toHaveBeenCalledTimes(1);
     expect(createBackend).toHaveBeenCalledWith({ enabled: true });
     expect(runtime.policyManager).toEqual(expect.objectContaining({ id: "pm" }));
-    expect(runtime.backend).toEqual({ kind: "bwrap" });
+    expect(runtime.backend).toEqual({ kind: "srt" });
   });
 
   it("memoizes runtime across calls", () => {
     const loadConfig = vi.fn(() => ({ network: undefined, sandbox: {} }));
     const normalizeSandboxConfig = vi.fn(() => ({ enabled: false } as never));
     const createPolicyManager = vi.fn(() => ({ id: "pm", updateConfig: vi.fn() } as never));
-    const createBackend = vi.fn(() => ({ kind: "bwrap" } as never));
+    const createBackend = vi.fn(() => ({ kind: "srt" } as never));
 
     const loader = createSandboxRuntimeLoader({
       loadConfig,
@@ -63,7 +63,7 @@ describe("createSandboxRuntimeLoader", () => {
       loadConfig,
       normalizeSandboxConfig: vi.fn(() => ({ enabled: false } as never)),
       createPolicyManager: vi.fn(() => policyManager),
-      createBackend: vi.fn(() => ({ kind: "bwrap" } as never)),
+      createBackend: vi.fn(() => ({ kind: "srt" } as never)),
     });
 
     loader.clearGrants();
@@ -82,7 +82,7 @@ describe("createSandboxRuntimeLoader", () => {
       loadConfig: vi.fn(() => ({ network: undefined, sandbox: {} })),
       normalizeSandboxConfig: vi.fn(() => ({ enabled: false } as never)),
       createPolicyManager,
-      createBackend: vi.fn(() => ({ kind: "bwrap" } as never)),
+      createBackend: vi.fn(() => ({ kind: "srt" } as never)),
     });
 
     loader.getRuntime();
@@ -101,13 +101,13 @@ describe("createSandboxRuntimeLoader", () => {
     const normalizeSandboxConfig = vi
       .fn((raw) => ({
         enabled: Boolean((raw as { enabled?: boolean })?.enabled),
-        backend: (raw as { backend?: string })?.backend ?? "bwrap",
+        backend: (raw as { backend?: string })?.backend ?? "srt",
       } as never));
     const policyManager = { id: "pm", updateConfig: vi.fn() } as never;
     const createPolicyManager = vi.fn(() => policyManager);
     const createBackend = vi
       .fn()
-      .mockReturnValueOnce({ kind: "bwrap" } as never)
+      .mockReturnValueOnce({ kind: "srt" } as never)
       .mockReturnValueOnce({ kind: "srt" } as never);
 
     const loader = createSandboxRuntimeLoader({
@@ -127,7 +127,7 @@ describe("createSandboxRuntimeLoader", () => {
     expect(policyManager.updateConfig).toHaveBeenCalledWith({ enabled: false, backend: "srt" });
     expect(createPolicyManager).toHaveBeenCalledTimes(1);
     expect(createBackend).toHaveBeenCalledTimes(2);
-    expect(createBackend).toHaveBeenNthCalledWith(1, { enabled: true, backend: "bwrap" });
+    expect(createBackend).toHaveBeenNthCalledWith(1, { enabled: true, backend: "srt" });
     expect(createBackend).toHaveBeenNthCalledWith(2, { enabled: false, backend: "srt" });
   });
 });

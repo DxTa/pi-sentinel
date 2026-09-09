@@ -12,7 +12,6 @@ function makeConfig(): SandboxConfig {
     defaultProfile: "online-dev",
     roBinds: [],
     rwBinds: [],
-    runnerPath: null,
   };
 }
 
@@ -234,4 +233,25 @@ describe("createSrtBackend", () => {
     expect(decoded.unmatchedHostAction).toBe("deny");
     expect(result).toEqual({ exitCode: 0 });
   });
+  it("bypasses built-in git transport commands without SRT wrapping", async () => {
+    const backend = createSrtBackend({
+      helperPath: () => "/helper.mjs",
+      checkSrtStatus: () => ({
+        available: true,
+        platform: "darwin",
+        packageAvailable: true,
+        entrypointPath: "/helper.mjs",
+        entrypointExists: true,
+        dependencyChecks: [],
+      }),
+    });
+
+    await expect(backend.wrapCommand({
+      command: "git push origin main",
+      sandboxConfig: makeConfig(),
+      cwd: "/repo",
+      preResolvedProfile: makeProfile(),
+    })).resolves.toEqual({ command: "git push origin main" });
+  });
+
 });

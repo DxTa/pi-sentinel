@@ -251,4 +251,73 @@ describe("processForwardedPermissionRequests", () => {
       state: "approved_for_session",
     });
   });
+
+  it("forces a prompt for non-bash forwarded writes marked forcePromptInYolo", async () => {
+    const forwardingDir = mkdtempSync(join(tmpdir(), "forwarded-permission-"));
+    const location = createPermissionForwardingLocation(forwardingDir, "parent-session");
+    mkdirSync(location.requestsDir, { recursive: true });
+    mkdirSync(location.responsesDir, { recursive: true });
+
+    const request: ForwardedPermissionRequest = {
+      id: `${Date.now()}-subagent-${process.pid}`,
+      createdAt: Date.now(),
+      requesterSessionId: "child-session",
+      targetSessionId: "parent-session",
+      requesterAgentName: "worker",
+      message: "Need permission",
+      toolName: "write",
+      forcePromptInYolo: true,
+    } as any;
+    writeFileSync(
+      join(location.requestsDir, `${request.id}.json`),
+      JSON.stringify(request),
+      "utf-8",
+    );
+
+    const requestPermissionDecisionFromUi = vi.fn(async () => ({
+      approved: true,
+      state: "approved_for_session" as const,
+    }));
+
+    await processForwardedPermissionRequests(
+      {
+        hasUI: true,
+        ui: {
+          setStatus() {},
+        },
+        sessionManager: {
+          getSessionId() {
+            return "parent-session";
+          },
+        },
+      } as never,
+      {
+        forwardingDir,
+        subagentSessionsDir: "/tmp/subagents",
+        logger: {
+          writeReviewLog() {
+            return undefined;
+          },
+          writeDebugLog() {
+            return undefined;
+          },
+        },
+        promptWaitTracker: new PromptWaitTracker({ emit() {} }),
+        writeReviewLog() {
+          return undefined;
+        },
+        requestPermissionDecisionFromUi,
+        shouldAutoApprove: vi.fn(() => true),
+      },
+    );
+
+    expect(requestPermissionDecisionFromUi).toHaveBeenCalledOnce();
+    const response = JSON.parse(
+      readFileSync(join(location.responsesDir, `${request.id}.json`), "utf-8"),
+    ) as { approved: boolean; state: string };
+    expect(response).toMatchObject({
+      approved: true,
+      state: "approved_for_session",
+    });
+  });
 });

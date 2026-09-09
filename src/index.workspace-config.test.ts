@@ -107,7 +107,6 @@ describe("piPermissionSystemExtension workspace config", () => {
   it("ignores legacy project-grants file when building sandbox config", { timeout: 30_000 }, async () => {
     const agentDir = await makeTempDir("pi-agent-");
     const projectDir = await makeTempDir("pi-project-");
-    const helperPath = path.join(agentDir, "sandbox-run.mjs");
     // Keep old package path as a legacy fixture; renamed extension must ignore it.
     const legacyGrantPath = path.join(projectDir, ".pi", "pi-permission-system", "project-grants.json");
     process.env.PI_CODING_AGENT_DIR = agentDir;
@@ -115,7 +114,6 @@ describe("piPermissionSystemExtension workspace config", () => {
     const globalConfigPath = path.join(agentDir, "permissions.json");
     await mkdir(path.dirname(globalConfigPath), { recursive: true });
     await mkdir(path.dirname(legacyGrantPath), { recursive: true });
-    await writeFile(helperPath, "export {};\n", "utf8");
     await writeFile(
       globalConfigPath,
       JSON.stringify({
@@ -128,7 +126,6 @@ describe("piPermissionSystemExtension workspace config", () => {
           enabled: true,
           backend: "srt",
           defaultProfile: "online-dev",
-          runnerPath: helperPath,
         },
       }),
       "utf8",

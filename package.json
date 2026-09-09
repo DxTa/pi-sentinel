@@ -75,7 +75,6 @@
   "scripts": {
     "check": "tsc --noEmit",
     "test": "vitest run",
-    "test:watch": "vitest",
-    "check:shell": "bash -n bin/bwrap-run.sh tests/*.sh"
+    "test:watch": "vitest"
   }
 }

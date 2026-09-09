@@ -73,14 +73,11 @@ describe("buildMaskedCommandShimPlan", () => {
     await writeFile(nestedEnv, "SECRET=1\n", "utf8");
     await writeFile(dependencyPem, "SECRET=2\n", "utf8");
 
-    // PRUNE_DIR_NAMES skips node_modules (and other vendored/build trees) to
-    // avoid blowing the scan cap. SRT runtime --masked-paths (**/*.pem) still
-    // masks dependencyPem at runtime, so pruning the concrete deny list is safe.
-    expect(buildMaskedCommandShimPlan("echo ok", makeProfile(), cwd)).toEqual({
-      maskedFilePaths: [],
-      maskedDenyPaths: [nestedEnv],
-      shimCommands: [],
-    });
+    const plan = buildMaskedCommandShimPlan("echo ok", makeProfile(), cwd);
+    expect(plan.maskedFilePaths).toEqual([]);
+    expect(plan.maskedDenyPaths).toEqual(expect.arrayContaining([nestedEnv, dependencyPem]));
+    expect(plan.maskedDenyPaths).toHaveLength(2);
+    expect(plan.shimCommands).toEqual([]);
   });
 
   it("does not follow symlink loops while scanning", async () => {

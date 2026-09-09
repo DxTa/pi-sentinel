@@ -6,8 +6,7 @@ import path from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 
 import { EXTENSION_ROOT } from "../extension-config.js";
-import type { SandboxConfig, ResolvedSandboxProfile } from "./types.js";
-import type { UnmaskedPath } from "./bwrap-command.js";
+import type { SandboxConfig, ResolvedSandboxProfile, UnmaskedPath } from "./types.js";
 import {
   buildSrtCommandSpec,
   buildSrtCommandSpecAsync,
@@ -47,12 +46,11 @@ function makeProfile(overrides: Partial<ResolvedSandboxProfile> = {}): ResolvedS
 function makeConfig(overrides: Partial<SandboxConfig> = {}): SandboxConfig {
   return {
     enabled: true,
-    backend: "bwrap",
+    backend: "srt",
     profiles: {},
     defaultProfile: "online-dev",
     roBinds: [],
     rwBinds: [],
-    runnerPath: null,
     ...overrides,
   };
 }
