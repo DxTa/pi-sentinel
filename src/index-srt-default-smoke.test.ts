@@ -1,5 +1,5 @@
 import { execFileSync } from "node:child_process";
-import { mkdir, mkdtemp, realpath, readFile, rename, rm, symlink, writeFile } from "node:fs/promises";
+import { chmod, mkdir, mkdtemp, realpath, readFile, rename, rm, symlink, writeFile } from "node:fs/promises";
 import { homedir, tmpdir } from "node:os";
 import path from "node:path";
 
@@ -8,6 +8,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import piPermissionSystemExtension from "./index.ts";
 
 const tempPaths: string[] = [];
+const canSimulateReadOnlyDirectory = process.platform !== "win32" && process.getuid?.() !== 0;
 
 async function makeTempDir(prefix: string): Promise<string> {
   const dir = await mkdtemp(path.join(tmpdir(), prefix));
@@ -314,7 +315,7 @@ describe("piPermissionSystemExtension SRT default smoke", () => {
       .not.toContain(await realpath(projectDir));
   });
 
-  it("keeps persistent path grant live when revoke cannot be saved", async () => {
+  it.skipIf(!canSimulateReadOnlyDirectory)("keeps persistent path grant live when revoke cannot be saved", async () => {
     const agentDir = await makeTempDir("pi-permission-agent-");
     const projectDir = await makeTempDir("pi-permission-project-");
     process.env.PI_CODING_AGENT_DIR = agentDir;
@@ -345,16 +346,20 @@ describe("piPermissionSystemExtension SRT default smoke", () => {
     }), "utf8");
     await rm(permissionsPath);
     await symlink(replacementPath, permissionsPath);
-
-    await expect(revokeCommand.handler(grantId!, context)).rejects.toThrow();
-    await statusCommand.handler("", context);
-    const status = (context.ui.notify as ReturnType<typeof vi.fn>).mock.calls.at(-1)?.[0] as string;
-    expect(status).toContain("Active grants: 1");
-    expect(status).toContain(grantId!);
-    expect(status).not.toContain("[persistent]");
+    await chmod(agentDir, 0o500);
+    try {
+      await expect(revokeCommand.handler(grantId!, context)).rejects.toThrow();
+      await statusCommand.handler("", context);
+      const status = (context.ui.notify as ReturnType<typeof vi.fn>).mock.calls.at(-1)?.[0] as string;
+      expect(status).toContain("Active grants: 1");
+      expect(status).toContain(grantId!);
+      expect(status).not.toContain("[persistent]");
+    } finally {
+      await chmod(agentDir, 0o700);
+    }
   });
 
-  it("rolls back sandbox capability revoke when a later layer cannot be saved", async () => {
+  it.skipIf(!canSimulateReadOnlyDirectory)("rolls back sandbox capability revoke when a later layer cannot be saved", async () => {
     const agentDir = await makeTempDir("pi-permission-agent-");
     const projectDir = await makeTempDir("pi-permission-project-");
     const legacyTarget = await makeTempDir("pi-permission-legacy-");
@@ -378,9 +383,13 @@ describe("piPermissionSystemExtension SRT default smoke", () => {
     const revokeCommand = pi.commands.get("sandbox-revoke") as {
       handler: (args: string, ctx: unknown) => Promise<void>;
     };
-
-    await expect(revokeCommand.handler("sandbox-network-global", context)).rejects.toThrow();
-    expect(JSON.parse(await readFile(path.join(agentDir, "permissions.json"), "utf8")).sandbox.network).toBe(true);
+    await chmod(legacyTarget, 0o500);
+    try {
+      await expect(revokeCommand.handler("sandbox-network-global", context)).rejects.toThrow();
+      expect(JSON.parse(await readFile(path.join(agentDir, "permissions.json"), "utf8")).sandbox.network).toBe(true);
+    } finally {
+      await chmod(legacyTarget, 0o700);
+    }
   });
 
   it("asks for domain and sandbox approval before wrapping an offline network command", async () => {
@@ -703,7 +712,7 @@ describe("piPermissionSystemExtension SRT default smoke", () => {
     });
   });
 
-  it("blocks user bash when persistent sandbox approval cannot be saved", async () => {
+  it.skipIf(!canSimulateReadOnlyDirectory)("blocks user bash when persistent sandbox approval cannot be saved", async () => {
     const agentDir = await makeTempDir("pi-permission-agent-");
     const projectDir = await makeTempDir("pi-permission-project-");
     process.env.PI_CODING_AGENT_DIR = agentDir;
@@ -729,13 +738,18 @@ describe("piPermissionSystemExtension SRT default smoke", () => {
 
     const pi = createFakePi();
     piPermissionSystemExtension(pi as never);
-    const context = createContext(projectDir, { hasUI: true, choices: ["Allow globally"] });
-    const result = await pi.handlers.get("user_bash")?.(
-      { command: "curl https://example.com", cwd: projectDir },
-      context as never,
-    );
+    await chmod(agentDir, 0o500);
+    try {
+      const context = createContext(projectDir, { hasUI: true, choices: ["Allow globally"] });
+      const result = await pi.handlers.get("user_bash")?.(
+        { command: "curl https://example.com", cwd: projectDir },
+        context as never,
+      );
 
-    expect(result).toMatchObject({ result: { exitCode: 1, output: expect.stringContaining("failed to persist") } });
+      expect(result).toMatchObject({ result: { exitCode: 1, output: expect.stringContaining("failed to persist") } });
+    } finally {
+      await chmod(agentDir, 0o700);
+    }
   });
 
   it("blocks user bash before wrapping when sandbox approval is denied", async () => {
