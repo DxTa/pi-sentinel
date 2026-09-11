@@ -61,6 +61,7 @@ export interface SandboxVisibilityContext {
   cwd: string;
   profile: ResolvedSandboxProfile;
   config?: SandboxConfig;
+  resolvedBinds?: string[];
 }
 
 export function canonicalPath(value: string): string {
@@ -150,15 +151,7 @@ export function buildSandboxVisiblePaths(
   const repoRoot = canonicalPath(context.repoRoot);
   const cwd = canonicalPath(context.cwd);
   const home = canonicalPath(homedir());
-  const bindPrefixes = [
-    ...(context.config?.roBinds ?? []),
-    ...(context.config?.rwBinds ?? []),
-    ...(context.profile.roBinds ?? []),
-    ...(context.profile.rwBinds ?? []),
-  ].map((bind) => {
-    const expanded = expandHomePath(bind);
-    return canonicalPath(isAbsolute(expanded) ? expanded : resolve(repoRoot, expanded));
-  });
+  const bindPrefixes = bindPaths(context, repoRoot).map(canonicalPath);
 
   const homeVisiblePaths = KNOWN_HOME_VISIBLE_PATHS.map((relPath) =>
     canonicalPath(resolve(home, relPath)),
@@ -184,15 +177,7 @@ export function buildSandboxRuntimeReadAllowPaths(
   const repoRoot = canonicalPath(context.repoRoot);
   const cwd = canonicalPath(context.cwd);
   const home = canonicalPath(homedir());
-  const bindPrefixes = [
-    ...(context.config?.roBinds ?? []),
-    ...(context.config?.rwBinds ?? []),
-    ...(context.profile.roBinds ?? []),
-    ...(context.profile.rwBinds ?? []),
-  ].map((bind) => {
-    const expanded = expandHomePath(bind);
-    return canonicalPath(isAbsolute(expanded) ? expanded : resolve(repoRoot, expanded));
-  });
+  const bindPrefixes = bindPaths(context, repoRoot).map(canonicalPath);
 
   const homeVisiblePaths = KNOWN_HOME_VISIBLE_PATHS.map((relPath) =>
     canonicalPath(resolve(home, relPath)),
@@ -223,12 +208,13 @@ async function canonicalizeVisiblePaths(
 }
 
 function bindPaths(context: SandboxVisibilityContext, repoRoot: string): string[] {
-  return [
+  const binds = context.resolvedBinds ?? [
     ...(context.config?.roBinds ?? []),
     ...(context.config?.rwBinds ?? []),
     ...(context.profile.roBinds ?? []),
     ...(context.profile.rwBinds ?? []),
-  ].map((bind) => {
+  ];
+  return binds.map((bind) => {
     const expanded = expandHomePath(bind);
     return isAbsolute(expanded) ? expanded : resolve(repoRoot, expanded);
   });

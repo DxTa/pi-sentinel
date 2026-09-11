@@ -183,6 +183,39 @@ describe("buildSrtCommandSpec", () => {
     });
   });
 
+  it("omits missing optional binds from sync and async specs", { timeout: 30_000 }, async () => {
+    const repoRoot = await makeTempDir("pi-srt-spec-stale-bind-");
+    process.env.HOME = repoRoot;
+    const existingRoBind = path.join(repoRoot, "existing-ro");
+    const existingRwBind = path.join(repoRoot, "existing-rw");
+    const missingBind = path.join(repoRoot, "missing");
+    await mkdir(existingRoBind, { recursive: true });
+    await mkdir(existingRwBind, { recursive: true });
+
+    const input = {
+      command: "echo ok",
+      cwd: repoRoot,
+      repoRoot,
+      sandboxConfig: makeConfig({
+        roBinds: [existingRoBind, missingBind],
+        rwBinds: [existingRwBind, missingBind],
+      }),
+      profile: makeProfile(),
+    };
+
+    const specs = [
+      buildSrtCommandSpec(input),
+      await buildSrtCommandSpecAsync(input),
+    ];
+
+    for (const spec of specs) {
+      expect(spec.roBinds).toEqual([canonicalPath(existingRoBind)]);
+      expect(spec.rwBinds).toEqual([canonicalPath(existingRwBind)]);
+      expect(spec.visibleReadPaths).not.toContain(canonicalPath(missingBind));
+      expect(spec.runtimeReadAllowPaths).not.toContain(canonicalPath(missingBind));
+    }
+  });
+
   it("includes runtime package roots in async specs", async () => {
     const repoRoot = await makeTempDir("pi-srt-spec-runtime-roots-");
     const spec = await buildSrtCommandSpecAsync({

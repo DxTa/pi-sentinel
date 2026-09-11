@@ -109,12 +109,14 @@ export function buildSrtCommandSpec(input: SrtCommandSpecInput): SrtCommandSpec 
     cwd,
     profile: input.profile,
     config: input.sandboxConfig,
+    resolvedBinds: [...roBinds, ...rwBinds],
   });
   const runtimeReadAllowPaths = buildSandboxRuntimeReadAllowPaths({
     repoRoot,
     cwd,
     profile: input.profile,
     config: input.sandboxConfig,
+    resolvedBinds: [...roBinds, ...rwBinds],
   });
 
   const unmaskedPaths = (input.unmaskedPaths ?? []).map((entry) => ({
@@ -180,6 +182,7 @@ export async function buildSrtCommandSpecAsync(
     cwd,
     profile: input.profile,
     config: input.sandboxConfig,
+    resolvedBinds: [...roBinds, ...rwBinds],
   };
   const visibleReadPaths = await buildSandboxVisiblePathsWithinScanBudget(
     visibilityContext,

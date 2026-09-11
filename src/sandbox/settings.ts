@@ -4,7 +4,7 @@
  */
 
 import { existsSync, lstatSync, realpathSync } from "node:fs";
-import { lstat, realpath } from "node:fs/promises";
+import { realpath } from "node:fs/promises";
 import { resolve, isAbsolute } from "node:path";
 import { homedir } from "node:os";
 import { dirname, join } from "node:path";
@@ -273,6 +273,12 @@ export function validateSandboxBindPath(candidate: string): void {
   }
 }
 
+function isMissingPathError(error: unknown): boolean {
+  if (!error || typeof error !== "object") return false;
+  const code = (error as NodeJS.ErrnoException).code;
+  return code === "ENOENT" || code === "ENOTDIR";
+}
+
 /**
  * Resolve and validate bind paths.
  * Uses realpath to prevent symlink escapes.
@@ -292,12 +298,13 @@ export function resolveSandboxBindPaths(
         : text;
     const candidate = isAbsolute(expanded) ? expanded : join(root, expanded);
     const abs = resolve(candidate);
-    if (!existsSync(abs)) {
-      throw new Error(`Sandbox bind path does not exist: ${abs}`);
+    try {
+      const canonical = realpathSync.native(abs);
+      validateSandboxGrantPath(canonical);
+      resolved.push(canonical);
+    } catch (error) {
+      if (!isMissingPathError(error)) throw error;
     }
-    const canonical = realpathSync.native(abs);
-    validateSandboxGrantPath(canonical);
-    resolved.push(canonical);
   }
   return dedupeStrings(resolved);
 }
@@ -320,14 +327,18 @@ export async function resolveSandboxBindPathsWithinScanBudget(
     const candidate = isAbsolute(expanded) ? expanded : join(root, expanded);
     const abs = resolve(candidate);
     try {
-      await awaitWithinScanBudget(lstat(abs), deadline, durationMs, abs);
+      const canonical = await awaitWithinScanBudget(
+        realpath(abs),
+        deadline,
+        durationMs,
+        abs,
+      );
+      validateSandboxGrantPath(canonical);
+      resolved.push(canonical);
     } catch (error) {
       if (isScanBudgetExceeded(error)) throw error;
-      throw new Error(`Sandbox bind path does not exist: ${abs}`);
+      if (!isMissingPathError(error)) throw error;
     }
-    const canonical = await awaitWithinScanBudget(realpath(abs), deadline, durationMs, abs);
-    validateSandboxGrantPath(canonical);
-    resolved.push(canonical);
   }
   return dedupeStrings(resolved);
 }
