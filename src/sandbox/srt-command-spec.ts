@@ -1,6 +1,7 @@
 import { existsSync } from "node:fs";
 import type { DomainGateConfig } from "#src/network/config.js";
 
+import { commandContainsUvExecutable } from "../handlers/gates/bash-path-extractor.js";
 import { resolveSandboxBindPaths, resolveSandboxBindPathsWithinScanBudget } from "./settings.js";
 import {
   buildSandboxRuntimeReadAllowPaths,
@@ -107,6 +108,7 @@ export function buildSrtCommandSpec(input: SrtCommandSpecInput): SrtCommandSpec 
   const visibleReadPaths = buildSandboxVisiblePaths({
     repoRoot,
     cwd,
+    command: input.command,
     profile: input.profile,
     config: input.sandboxConfig,
     resolvedBinds: [...roBinds, ...rwBinds],
@@ -114,6 +116,7 @@ export function buildSrtCommandSpec(input: SrtCommandSpecInput): SrtCommandSpec 
   const runtimeReadAllowPaths = buildSandboxRuntimeReadAllowPaths({
     repoRoot,
     cwd,
+    command: input.command,
     profile: input.profile,
     config: input.sandboxConfig,
     resolvedBinds: [...roBinds, ...rwBinds],
@@ -180,6 +183,8 @@ export async function buildSrtCommandSpecAsync(
   const visibilityContext = {
     repoRoot,
     cwd,
+    command: input.command,
+    commandUsesUv: await commandContainsUvExecutable(input.command),
     profile: input.profile,
     config: input.sandboxConfig,
     resolvedBinds: [...roBinds, ...rwBinds],

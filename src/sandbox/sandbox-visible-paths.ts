@@ -47,11 +47,11 @@ const KNOWN_SYSTEM_PREFIXES: string[] = [
 const KNOWN_HOME_VISIBLE_PATHS: string[] = [
   ".local/bin",
   ".local/lib",
-  ".local/share/uv",
-  ".cache/uv",
   ".cargo/bin",
   ".bun/bin",
 ];
+const UV_HOME_VISIBLE_PATHS: string[] = [".local/share/uv", ".cache/uv"];
+const DIRECT_UV_COMMAND_PATTERN = /^\s*(?:(?:env|command|exec|sudo)\s+)*(?:\S*\/)?uvx?(?!\s*\(\s*\))(?=$|\s)/;
 
 const KNOWN_HOME_FILES: string[] = [];
 const require = createRequire(import.meta.url);
@@ -59,6 +59,10 @@ const require = createRequire(import.meta.url);
 export interface SandboxVisibilityContext {
   repoRoot: string;
   cwd: string;
+  /** Shell command controls whether command-specific tool roots are visible. */
+  command?: string;
+  /** Parsed command classification for async callers; omitted uses strict fallback. */
+  commandUsesUv?: boolean;
   profile: ResolvedSandboxProfile;
   config?: SandboxConfig;
   resolvedBinds?: string[];
@@ -123,6 +127,19 @@ function pathMatchesPrefix(absPath: string, prefix: string): boolean {
   return absPath === prefix || absPath.startsWith(prefix + "/");
 }
 
+function homeVisiblePathsForCommand(
+  command: string | undefined,
+  commandUsesUv: boolean | undefined,
+): string[] {
+  const includeUvRoots = commandUsesUv ?? (
+    command === undefined ||
+    (!/\\\r?\n/.test(command) && DIRECT_UV_COMMAND_PATTERN.test(command))
+  );
+  return includeUvRoots
+    ? [...KNOWN_HOME_VISIBLE_PATHS, ...UV_HOME_VISIBLE_PATHS]
+    : KNOWN_HOME_VISIBLE_PATHS;
+}
+
 function getRuntimePackageRoots(): string[] {
   const roots = [EXTENSION_ROOT];
   try {
@@ -153,7 +170,7 @@ export function buildSandboxVisiblePaths(
   const home = canonicalPath(homedir());
   const bindPrefixes = bindPaths(context, repoRoot).map(canonicalPath);
 
-  const homeVisiblePaths = KNOWN_HOME_VISIBLE_PATHS.map((relPath) =>
+  const homeVisiblePaths = homeVisiblePathsForCommand(context.command, context.commandUsesUv).map((relPath) =>
     canonicalPath(resolve(home, relPath)),
   );
   const homeFiles = KNOWN_HOME_FILES.map((relPath) => canonicalPath(resolve(home, relPath)));
@@ -179,7 +196,7 @@ export function buildSandboxRuntimeReadAllowPaths(
   const home = canonicalPath(homedir());
   const bindPrefixes = bindPaths(context, repoRoot).map(canonicalPath);
 
-  const homeVisiblePaths = KNOWN_HOME_VISIBLE_PATHS.map((relPath) =>
+  const homeVisiblePaths = homeVisiblePathsForCommand(context.command, context.commandUsesUv).map((relPath) =>
     canonicalPath(resolve(home, relPath)),
   );
   const homeFiles = KNOWN_HOME_FILES.map((relPath) => canonicalPath(resolve(home, relPath)));
@@ -233,7 +250,7 @@ export async function buildSandboxVisiblePathsWithinScanBudget(
     durationMs,
   );
   const homeVisiblePaths = await canonicalizeVisiblePaths(
-    KNOWN_HOME_VISIBLE_PATHS.map((relativePath) => resolve(homedir(), relativePath)),
+    homeVisiblePathsForCommand(context.command, context.commandUsesUv).map((relativePath) => resolve(homedir(), relativePath)),
     deadline,
     durationMs,
   );

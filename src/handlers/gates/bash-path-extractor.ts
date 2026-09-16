@@ -71,6 +71,15 @@ function resetParserForTesting(): void {
  * path extraction — their text content is not a command argument.
  */
 const SKIP_SUBTREE_TYPES = new Set(["heredoc_body", "heredoc_end", "comment"]);
+const NON_EXECUTING_COMMAND_SUBTREE_TYPES = new Set([
+  "function_definition",
+  "if_statement",
+  "for_statement",
+  "while_statement",
+  "until_statement",
+  "case_statement",
+]);
+const UV_WRAPPER_NAMES = new Set(["env", "command", "exec", "sudo"]);
 
 /**
  * Resolve the "shell value" of an argument node — the string the shell
@@ -606,6 +615,219 @@ function collectPathCandidateTokensFallback(command: string): string[] {
   }
 
   return extracted;
+}
+
+interface HereDocSpec {
+  readonly delimiter: string;
+  readonly stripTabs: boolean;
+}
+
+type ShellQuote = "'" | '"' | null;
+
+function isEscaped(line: string, index: number): boolean {
+  let backslashes = 0;
+  for (let cursor = index - 1; cursor >= 0 && line[cursor] === "\\"; cursor -= 1) {
+    backslashes += 1;
+  }
+  return backslashes % 2 === 1;
+}
+
+interface HereDocDelimiter {
+  readonly delimiter: string;
+  readonly nextIndex: number;
+  readonly unsupported: boolean;
+}
+
+function parseHereDocDelimiter(line: string, start: number): HereDocDelimiter {
+  let cursor = start;
+  let quote: "'" | '"' | null = null;
+  let delimiter = "";
+  let unsupported = false;
+
+  while (cursor < line.length) {
+    const char = line[cursor]!;
+    if (quote === "'") {
+      if (char === "'") quote = null;
+      else delimiter += char;
+      cursor += 1;
+      continue;
+    }
+    if (quote === '"') {
+      if (char === '"') {
+        quote = null;
+        cursor += 1;
+      } else if (char === "\\" && cursor + 1 < line.length) {
+        delimiter += line[cursor + 1]!;
+        cursor += 2;
+      } else {
+        delimiter += char;
+        cursor += 1;
+      }
+      continue;
+    }
+    if (/[\t ;|&<>]/.test(char)) break;
+    if (char === "'" || char === '"') {
+      quote = char;
+      cursor += 1;
+    } else if (char === "\\" && cursor + 1 < line.length) {
+      delimiter += line[cursor + 1]!;
+      cursor += 2;
+    } else {
+      if (char === "$" || char === "`") unsupported = true;
+      delimiter += char;
+      cursor += 1;
+    }
+  }
+
+  return {
+    delimiter,
+    nextIndex: cursor,
+    unsupported: unsupported || quote !== null || delimiter.length === 0,
+  };
+}
+
+interface HereDocScanResult {
+  readonly specs: HereDocSpec[];
+  readonly quote: ShellQuote;
+  readonly unsupported: boolean;
+}
+
+function findHereDocSpecs(line: string, initialQuote: ShellQuote): HereDocScanResult {
+  const specs: HereDocSpec[] = [];
+  let quote = initialQuote;
+  for (let index = 0; index < line.length; index += 1) {
+    const char = line[index]!;
+    if (quote === "'") {
+      if (char === "'") quote = null;
+      continue;
+    }
+    if (quote === '"') {
+      if (char === '"' && !isEscaped(line, index)) quote = null;
+      continue;
+    }
+    if (char === "'" || char === '"') {
+      quote = char;
+      continue;
+    }
+    if (char === "\\") {
+      index += 1;
+      continue;
+    }
+    if (char === "#" && (index === 0 || /[\s;|&()]/.test(line[index - 1]!))) break;
+    if (char !== "<" || line[index + 1] !== "<" || line[index + 2] === "<") continue;
+
+    let cursor = index + 2;
+    const stripTabs = line[cursor] === "-";
+    if (stripTabs) cursor += 1;
+    while (/[\t ]/.test(line[cursor] ?? "")) cursor += 1;
+    const delimiter = parseHereDocDelimiter(line, cursor);
+    if (delimiter.unsupported) return { specs, quote, unsupported: true };
+    specs.push({ delimiter: delimiter.delimiter, stripTabs });
+    index = delimiter.nextIndex - 1;
+  }
+  return { specs, quote, unsupported: false };
+}
+
+function stripHeredocBodies(command: string): string | null {
+  let pending: HereDocSpec[] = [];
+  let quote: ShellQuote = null;
+  let unsupported = false;
+  const lines = command.split("\n").map((line) => {
+    if (pending.length > 0) {
+      const heredoc = pending[0]!;
+      const candidate = heredoc.stripTabs ? line.replace(/^\t+/, "") : line;
+      if (candidate === heredoc.delimiter) {
+        pending = pending.slice(1);
+        return line;
+      }
+      return " ".repeat(line.length);
+    }
+    const result = findHereDocSpecs(line, quote);
+    if (result.unsupported) {
+      unsupported = true;
+      return line;
+    }
+    pending = result.specs;
+    quote = result.quote;
+    return line;
+  });
+  return unsupported ? null : lines.join("\n");
+}
+
+function isUvExecutable(text: string): boolean {
+  const name = basename(text);
+  return name === "uv" || name === "uvx";
+}
+
+function extractUvExecutable(node: TSNode): boolean {
+  const commandName = extractCommandName(node);
+  if (!commandName) return false;
+  if (isUvExecutable(commandName)) return true;
+  if (!UV_WRAPPER_NAMES.has(commandName)) return false;
+
+  const args: string[] = [];
+  let seenCommandName = false;
+  for (let index = 0; index < node.childCount; index += 1) {
+    const child = node.child(index);
+    if (!child) continue;
+    if (child.type === "command_name") {
+      seenCommandName = true;
+      continue;
+    }
+    if (child.type === "variable_assignment") continue;
+    if (!seenCommandName && ARG_NODE_TYPES.has(child.type)) {
+      seenCommandName = true;
+      continue;
+    }
+    if (ARG_NODE_TYPES.has(child.type)) args.push(resolveNodeText(child));
+  }
+
+  if (commandName === "env") {
+    for (const arg of args) {
+      if (arg === "--") continue;
+      if (arg.startsWith("-") || SHELL_ASSIGNMENT_PATTERN.test(arg)) continue;
+      return isUvExecutable(arg);
+    }
+    return false;
+  }
+  return args.length > 0 && isUvExecutable(args[0]!);
+}
+
+
+function containsUvCommand(node: TSNode, inBooleanList = false): boolean {
+  if (SKIP_SUBTREE_TYPES.has(node.type) || NON_EXECUTING_COMMAND_SUBTREE_TYPES.has(node.type)) {
+    return false;
+  }
+  const booleanContext = inBooleanList || (node.type === "list" && /&&|\|\|/.test(node.text));
+  if (node.type === "command" && !booleanContext && extractUvExecutable(node)) {
+    return true;
+  }
+  for (let index = 0; index < node.childCount; index += 1) {
+    const child = node.child(index);
+    if (child && containsUvCommand(child, booleanContext)) return true;
+  }
+  return false;
+}
+
+
+/** Detect literal uv/uvx command nodes; parser failure uses strict fallback. */
+export async function commandContainsUvExecutable(command: string): Promise<boolean> {
+  if (shouldForceTokenizerFallback()) return false;
+
+  try {
+    const parser = await getParser();
+    const sanitizedCommand = stripHeredocBodies(command);
+    if (sanitizedCommand === null) return false;
+    const tree = parser.parse(sanitizedCommand);
+    if (!tree) return false;
+    try {
+      return containsUvCommand(tree.rootNode);
+    } finally {
+      tree.delete();
+    }
+  } catch {
+    return false;
+  }
 }
 
 async function extractPathCandidateTokens(command: string): Promise<string[]> {

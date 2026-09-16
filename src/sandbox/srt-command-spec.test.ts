@@ -6,13 +6,17 @@ import path from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 
 import { EXTENSION_ROOT } from "../extension-config.js";
+import { commandContainsUvExecutable } from "../handlers/gates/bash-path-extractor.js";
 import type { SandboxConfig, ResolvedSandboxProfile, UnmaskedPath } from "./types.js";
 import {
   buildSrtCommandSpec,
   buildSrtCommandSpecAsync,
 } from "./srt-command-spec.js";
 import { buildSrtRuntimeConfig } from "./srt-runtime-config.js";
-import { canonicalPath } from "./sandbox-visible-paths.js";
+import {
+  buildSandboxRuntimeReadAllowPaths,
+  canonicalPath,
+} from "./sandbox-visible-paths.js";
 
 const require = createRequire(import.meta.url);
 const tempPaths: string[] = [];
@@ -68,6 +72,103 @@ const privateScriptPath = path.join(
 );
 
 describe("buildSrtCommandSpec", () => {
+  it("scopes UV runtime roots to commands that invoke UV", { timeout: 30_000 }, async () => {
+    const repoRoot = await makeTempDir("pi-srt-spec-uv-roots-");
+    const uvRoots = [
+      path.join(process.env.HOME!, ".local/share/uv"),
+      path.join(process.env.HOME!, ".cache/uv"),
+    ].map(canonicalPath);
+    const makeInput = (command: string) => ({
+      command,
+      cwd: repoRoot,
+      repoRoot,
+      sandboxConfig: makeConfig(),
+      profile: makeProfile(),
+    });
+    const makeVisibilityContext = (command: string) => ({
+      command,
+      cwd: repoRoot,
+      repoRoot,
+      config: makeConfig(),
+      profile: makeProfile(),
+    });
+
+    const uvCommands = [
+      "uv run pytest",
+      "  uv run pytest",
+      "uvx ruff",
+      "/usr/local/bin/uv run pytest",
+      "env uv run pytest",
+      "command uvx ruff",
+      "exec /usr/local/bin/uv run pytest",
+      "sudo uv run pytest",
+      "echo preparing\nuv run pytest",
+      "printf '%s\\n' '<<EOF'\nuv run pytest",
+      "# <<EOF\nuv run pytest",
+      "message='\n<<EOF\n'\nuv run pytest",
+      "message=\"\n<<EOF\n\"\nuv run pytest",
+      "cat <<EOF\nignored\nEOF\nuv run pytest",
+      "cat <<-EOF\n\tignored\n\tEOF\nuv run pytest",
+    ];
+    const nonUvCommands = [
+      "/usr/bin/true",
+      "echo uv",
+      "git commit -m uv",
+      "printf '%s\\n' uv",
+      "echo 'uv run pytest'",
+      "cat <<EOF\n; uv run pytest\nEOF",
+      "cat <<EOF\n  EOF\n; uv run pytest\nEOF",
+      "cat <<A <<B\n; uv run pytest\nA\n; uv run pytest\nB",
+      "echo $((uv + 1))",
+      "items=( uv )\nprintf '%s\\n' \"${items[0]}\"",
+      "uv () { :; }\nprintf '%s\\n' done",
+      "helper() { uv run pytest; }\ncat ~/.cache/uv/sensitive-file",
+      "if false; then uv run pytest; fi\ncat ~/.cache/uv/sensitive-file",
+      "false && uv run pytest\ncat ~/.cache/uv/sensitive-file",
+      "cat <<E\"OF\"\nE\"OF\"\nuv run pytest\nEOF\ncat ~/.cache/uv/sensitive-file",
+    ];
+    const uvSpec = buildSrtCommandSpec(makeInput(uvCommands[0]!));
+    const uvAsyncSpec = await buildSrtCommandSpecAsync(makeInput(uvCommands[0]!));
+    const nonUvSpec = buildSrtCommandSpec(makeInput(nonUvCommands[0]!));
+    const nonUvAsyncSpec = await buildSrtCommandSpecAsync(makeInput(nonUvCommands[1]!));
+    const nonUvArraySyncSpec = buildSrtCommandSpec(makeInput(nonUvCommands[9]!));
+    const nonUvContinuationFunctionSyncSpec = buildSrtCommandSpec(
+      makeInput("uv \\\n() { :; }\ncat ~/.cache/uv/sensitive-file"),
+    );
+
+    for (const spec of [uvSpec, uvAsyncSpec]) {
+      expect(spec.runtimeReadAllowPaths).toEqual(expect.arrayContaining(uvRoots));
+    }
+    for (const spec of [
+      nonUvSpec,
+      nonUvAsyncSpec,
+      nonUvArraySyncSpec,
+      nonUvContinuationFunctionSyncSpec,
+    ]) {
+      expect(spec.runtimeReadAllowPaths).not.toEqual(expect.arrayContaining(uvRoots));
+    }
+    for (const command of uvCommands.slice(1)) {
+      const spec = await buildSrtCommandSpecAsync(makeInput(command));
+      expect(spec.runtimeReadAllowPaths, command).toEqual(expect.arrayContaining(uvRoots));
+    }
+    for (const command of nonUvCommands.slice(1)) {
+      const paths = buildSandboxRuntimeReadAllowPaths(makeVisibilityContext(command));
+      expect(paths).not.toEqual(expect.arrayContaining(uvRoots));
+    }
+    for (const command of nonUvCommands.slice(5)) {
+      const spec = await buildSrtCommandSpecAsync(makeInput(command));
+      expect(spec.runtimeReadAllowPaths, command).not.toEqual(expect.arrayContaining(uvRoots));
+    }
+    const previousFallback = process.env.PI_PERMISSION_SYSTEM_DISABLE_TREE_SITTER;
+    process.env.PI_PERMISSION_SYSTEM_DISABLE_TREE_SITTER = "1";
+    try {
+      await expect(commandContainsUvExecutable("uv run pytest")).resolves.toBe(false);
+    } finally {
+      if (previousFallback === undefined) delete process.env.PI_PERMISSION_SYSTEM_DISABLE_TREE_SITTER;
+      else process.env.PI_PERMISSION_SYSTEM_DISABLE_TREE_SITTER = previousFallback;
+    }
+  });
+
   it("fails closed when async filesystem preparation exceeds its budget", async () => {
     const repoRoot = await makeTempDir("pi-srt-spec-budget-");
 
