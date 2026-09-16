@@ -171,7 +171,7 @@ describe("persistSandboxNetworkGrantToConfig", () => {
 
     persistSandboxNetworkGrantToConfig(linkPath);
 
-    expect(await realpath(linkPath)).toBe(realPath);
+    expect(await realpath(linkPath)).toBe(await realpath(realPath));
     expect(JSON.parse(await readFile(realPath, "utf8"))).toEqual({
       sandbox: { enabled: true, network: true },
     });
@@ -334,7 +334,7 @@ describe("persistNetworkGrantToConfig", () => {
 
     persistNetworkGrantToConfig(linkPath, "api.github.com");
 
-    expect(await realpath(linkPath)).toBe(realPath);
+    expect(await realpath(linkPath)).toBe(await realpath(realPath));
     expect(JSON.parse(await readFile(realPath, "utf8"))).toMatchObject({
       debugLog: false,
       network: { allowedDomains: ["api.github.com"] },
