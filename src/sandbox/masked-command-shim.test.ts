@@ -9,6 +9,7 @@ import {
   buildMaskedCommandShimPlanAsync,
 } from "./masked-command-shim.js";
 import type { SandboxProfile } from "./types.js";
+import { DEFAULT_SCAN_DURATION_MS } from "./scan-budget.js";
 
 const tempPaths: string[] = [];
 
@@ -189,5 +190,11 @@ describe("buildMaskedCommandShimPlan", () => {
       maskedDenyPaths: [bindPem],
       shimCommands: [],
     });
+  });
+});
+
+describe("masked scan budget", () => {
+  it("uses a five-second default budget", () => {
+    expect(DEFAULT_SCAN_DURATION_MS).toBe(5_000);
   });
 });

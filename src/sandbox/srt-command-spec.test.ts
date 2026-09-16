@@ -3,7 +3,7 @@ import { tmpdir } from "node:os";
 import { mkdtemp, mkdir, rm, writeFile } from "node:fs/promises";
 import path from "node:path";
 
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it } from "vitest";
 
 import { EXTENSION_ROOT } from "../extension-config.js";
 import type { SandboxConfig, ResolvedSandboxProfile, UnmaskedPath } from "./types.js";
@@ -17,6 +17,12 @@ import { canonicalPath } from "./sandbox-visible-paths.js";
 const require = createRequire(import.meta.url);
 const tempPaths: string[] = [];
 const originalHome = process.env.HOME;
+
+beforeEach(async () => {
+  const isolatedHome = await mkdtemp(path.join(tmpdir(), "pi-srt-spec-home-"));
+  tempPaths.push(isolatedHome);
+  process.env.HOME = isolatedHome;
+});
 
 async function makeTempDir(prefix: string): Promise<string> {
   const dir = await mkdtemp(path.join(tmpdir(), prefix));

@@ -1,4 +1,4 @@
-export const DEFAULT_SCAN_DURATION_MS = 2_000;
+export const DEFAULT_SCAN_DURATION_MS = 5_000;
 
 export class ScanBudgetExceededError extends Error {
   constructor(
