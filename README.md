@@ -21,6 +21,7 @@ Bundled defaults are conservative:
 - generated `pi-clipboard-<uuid>.*` files referenced during a session are removed at session shutdown;
 - Docker socket access is host-admin equivalent: Docker can mount or read host paths despite the SRT filesystem boundary; direct Docker and Compose commands remain approval-gated.
 - Direct Docker commands receive read-only `~/.docker` visibility for CLI plugins; Docker credential files remain masked, and broad `~/.config` is not exposed.
+- If Docker finds `~/.docker/config.json`, first use prompts for a read-only sandbox grant; deny keeps registry credentials masked.
 - Docker socket access is fail-closed on platforms where this SRT version cannot enforce path-scoped Unix sockets; `allowAllUnixSockets` is not used.
 - outbound domains still require approval unless explicitly allowed.
 

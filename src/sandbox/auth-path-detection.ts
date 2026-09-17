@@ -3,6 +3,8 @@ import { existsSync, readFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { join, resolve } from "node:path";
 
+import { isDockerCommand } from "./bypass-command.js";
+
 export type MaskedAuthKind =
   | "ssh-auth"
   | "aws-auth"
@@ -131,6 +133,17 @@ export async function detectImplicitAuthAccess(
       return {
         kind: "ssh-auth",
         candidatePaths: dedupe([...privateKeys, ...auxFiles]),
+        needsSocketFallback: false,
+      };
+    }
+  }
+
+  if (isDockerCommand(trimmed)) {
+    const configPath = resolve(homedir(), ".docker/config.json");
+    if (existsSync(configPath)) {
+      return {
+        kind: "docker-auth",
+        candidatePaths: [configPath],
         needsSocketFallback: false,
       };
     }

@@ -1,4 +1,5 @@
 import { execFileSync } from "node:child_process";
+import { existsSync } from "node:fs";
 import { chmod, mkdir, mkdtemp, realpath, readFile, rename, rm, symlink, writeFile } from "node:fs/promises";
 import { homedir, tmpdir } from "node:os";
 import path from "node:path";
@@ -164,7 +165,7 @@ describe("piPermissionSystemExtension SRT default smoke", () => {
     const event = { toolName: "bash", input: { command: "docker info" } };
     const result = await pi.handlers.get("tool_call")?.(
       event,
-      createContext(projectDir) as never,
+      createContext(projectDir, { hasUI: true, choices: ["Allow once"] }) as never,
     );
 
     const dockerSockets = resolveDockerSocketPaths();
@@ -178,6 +179,11 @@ describe("piPermissionSystemExtension SRT default smoke", () => {
     expect(helperInput.runtimeConfig.network.allowUnixSockets).toEqual(
       expect.arrayContaining(dockerSockets),
     );
+    if (existsSync(path.join(homedir(), ".docker/config.json"))) {
+      expect(helperInput.runtimeConfig.filesystem.allowRead).toContain(
+        path.join(homedir(), ".docker/config.json"),
+      );
+    }
   });
 
   it("includes Pi infrastructure directories in SRT read paths", async () => {
