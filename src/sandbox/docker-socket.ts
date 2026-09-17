@@ -43,8 +43,8 @@ export function resolveDockerSocketPaths(
     try {
       const canonical = realpathSync.native(candidate);
       if (!statSync(canonical).isSocket()) continue;
-      paths.add(resolve(candidate));
       paths.add(canonical);
+      paths.add(resolve(candidate));
     } catch {
       // Missing or inaccessible socket; try next known location.
     }

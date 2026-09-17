@@ -6,6 +6,7 @@ import { basename, dirname, isAbsolute, resolve } from "node:path";
 
 import { EXTENSION_ROOT } from "../extension-config.js";
 import type { ResolvedSandboxProfile, SandboxConfig } from "./types.js";
+import { isDockerCommand } from "./bypass-command.js";
 import {
   assertScanWithinBudget,
   awaitWithinScanBudget,
@@ -44,6 +45,7 @@ const KNOWN_SYSTEM_PREFIXES: string[] = [
   "/private/var/select",
 ];
 
+const DOCKER_HOME_VISIBLE_PATHS: string[] = [".docker"];
 const KNOWN_HOME_VISIBLE_PATHS: string[] = [
   ".local/bin",
   ".local/lib",
@@ -135,9 +137,12 @@ function homeVisiblePathsForCommand(
     command === undefined ||
     (!/\\\r?\n/.test(command) && DIRECT_UV_COMMAND_PATTERN.test(command))
   );
-  return includeUvRoots
+  const paths = includeUvRoots
     ? [...KNOWN_HOME_VISIBLE_PATHS, ...UV_HOME_VISIBLE_PATHS]
     : KNOWN_HOME_VISIBLE_PATHS;
+  return command !== undefined && isDockerCommand(command)
+    ? [...paths, ...DOCKER_HOME_VISIBLE_PATHS]
+    : paths;
 }
 
 function getRuntimePackageRoots(): string[] {

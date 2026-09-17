@@ -10,6 +10,7 @@ export interface SrtRuntimeConfig {
     strictAllowlist: boolean;
     allowUnixSockets?: string[];
   };
+  dockerHost?: string;
   filesystem: {
     allowRead: string[];
     allowWrite: string[];
@@ -24,6 +25,9 @@ function dedupe(values: string[]): string[] {
 
 export function buildSrtRuntimeConfig(spec: SrtCommandSpec): SrtRuntimeConfig {
   const dockerRequested = spec.allowDocker && isDockerCommand(spec.command);
+  if (dockerRequested && process.platform !== "darwin") {
+    throw new Error("Docker socket path enforcement unavailable on this SRT platform; command blocked.");
+  }
   const dockerSocketPaths = dockerRequested ? resolveDockerSocketPaths() : [];
   if (dockerRequested && dockerSocketPaths.length === 0) {
     throw new Error("Docker socket unavailable; command blocked.");
@@ -40,6 +44,7 @@ export function buildSrtRuntimeConfig(spec: SrtCommandSpec): SrtRuntimeConfig {
   const tempPaths = new Set(getSandboxTempPaths());
   const allowRead = dedupe([
     ...spec.runtimeReadAllowPaths.filter((path) => !tempPaths.has(path)),
+    ...dockerSocketPaths,
     ...approvedRead,
   ]);
   const deniedMaskedReads = deniedMaskedPaths
@@ -52,6 +57,7 @@ export function buildSrtRuntimeConfig(spec: SrtCommandSpec): SrtRuntimeConfig {
   ]);
 
   return {
+    ...(dockerSocketPaths.length > 0 ? { dockerHost: `unix://${dockerSocketPaths[0]}` } : {}),
     network: {
       allowedDomains: spec.networkPlan.config.allowedDomains,
       deniedDomains: spec.networkPlan.config.deniedDomains,

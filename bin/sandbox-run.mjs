@@ -309,7 +309,8 @@ async function main() {
   let shim = { env: {}, cleanup: async () => {} }
   try {
     shim = await prepareShims(helperInput)
-    await SandboxManager.initialize(helperInput.runtimeConfig, createUnmatchedHostCallback(helperInput))
+    const { dockerHost, ...runtimeConfig } = helperInput.runtimeConfig
+    await SandboxManager.initialize(runtimeConfig, createUnmatchedHostCallback(helperInput))
     const wrapped = await SandboxManager.wrapWithSandboxArgv(helperInput.command)
     const wrappedEnv = wrapped.env ?? {}
     const env = filterChildEnvironment(
@@ -317,6 +318,7 @@ async function main() {
       { ...process.env, ...wrappedEnv, ...shim.env },
       new Set(Object.keys(wrappedEnv)),
     )
+    if (dockerHost) env.DOCKER_HOST = dockerHost
     return await runChild(wrapped.argv, helperInput.cwd, env)
   } finally {
     try {

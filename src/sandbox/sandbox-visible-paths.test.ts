@@ -128,6 +128,27 @@ describe("createSandboxVisibilityMatcher", () => {
     expect(isVisible(path.join(infrastructureRoot, "agents/agents-index.tsv"))).toBe(true);
   });
 
+  it("exposes Docker CLI directory read-only only for direct Docker commands", () => {
+    const dockerIsVisible = createSandboxVisibilityMatcher({
+      repoRoot: "/workspace/repo",
+      cwd: "/workspace/repo",
+      command: "docker compose version",
+      profile: makeProfile(),
+      config: makeConfig(),
+    });
+    const otherCommandIsVisible = createSandboxVisibilityMatcher({
+      repoRoot: "/workspace/repo",
+      cwd: "/workspace/repo",
+      command: "cat ~/.docker/config.json",
+      profile: makeProfile(),
+      config: makeConfig(),
+    });
+
+    expect(dockerIsVisible(path.join(homedir(), ".docker/cli-plugins/docker-compose"))).toBe(true);
+    expect(otherCommandIsVisible(path.join(homedir(), ".docker/private-cache/metadata.json"))).toBe(false);
+    expect(dockerIsVisible(path.join(homedir(), ".config/cloud/credentials"))).toBe(false);
+  });
+
   it("treats current sandbox temp roots and common /tmp aliases as visible", () => {
     const isVisible = createSandboxVisibilityMatcher({
       repoRoot: "/workspace/repo",
