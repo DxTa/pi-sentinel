@@ -402,6 +402,11 @@ async function resolveMaskedAuthAccess(
   const kinds = new Set<MaskedAuthKind>(kindByPath.values());
   if (kinds.size === 0) kinds.add(authDecision.kind);
   const approved = approvedMaskedPathsForKinds(repoRoot, kinds, legacyActiveGrantPaths);
+  if (implicitAuth?.kind === "docker-auth") {
+    for (const [path, kind] of kindByPath) {
+      if (kind === "docker-auth") approved.add(path);
+    }
+  }
   const pendingPaths = [...kindByPath.keys()].filter((path) => !approved.has(path));
 
   const unmaskedPaths: UnmaskedPath[] = [...kindByPath.keys()]

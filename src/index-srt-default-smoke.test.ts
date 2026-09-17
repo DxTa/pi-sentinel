@@ -165,7 +165,7 @@ describe("piPermissionSystemExtension SRT default smoke", () => {
     const event = { toolName: "bash", input: { command: "docker info" } };
     const result = await pi.handlers.get("tool_call")?.(
       event,
-      createContext(projectDir, { hasUI: true, choices: ["Allow once"] }) as never,
+      createContext(projectDir) as never,
     );
 
     const dockerSockets = resolveDockerSocketPaths();
