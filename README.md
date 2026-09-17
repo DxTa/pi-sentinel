@@ -18,6 +18,7 @@ Bundled defaults are conservative:
 - reads allowed, writes and edits denied;
 - Bash asks by default, except for `git status` and `git diff`;
 - after approval, bundled profiles permit Docker CLI access through its validated Unix socket by default; set `allowDocker: false` to disable it;
+- generated `pi-clipboard-<uuid>.*` files referenced during a session are removed at session shutdown;
 - Docker socket access is host-admin equivalent: Docker can mount or read host paths despite the SRT filesystem boundary; direct Docker and Compose commands remain approval-gated.
 - outbound domains still require approval unless explicitly allowed.
 

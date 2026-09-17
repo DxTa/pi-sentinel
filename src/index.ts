@@ -105,6 +105,7 @@ import { resolveAuthExceptionPolicy, type ResolvedAuthException } from "./sandbo
 import { existsSync, lstatSync, realpathSync, unlinkSync } from "node:fs";
 import { dirname, isAbsolute, join, resolve } from "node:path";
 import { homedir } from "node:os";
+import { createPiClipboardTempCleanup } from "./clipboard-temp-cleanup.js";
 
 // ── Config helpers ───────────────────────────────────────────────────────
 
@@ -454,6 +455,7 @@ export default function piPermissionSystemExtension(pi: ExtensionAPI): void {
   // ── Upstream setup (identical to original index.ts) ───────────────────
   const runtime = createExtensionRuntime();
   const promptWaitTracker = new PromptWaitTracker(pi.events);
+  const clipboardTempCleanup = createPiClipboardTempCleanup();
 
   const prompter = new PermissionPrompter({
     promptWaitTracker,
@@ -664,6 +666,7 @@ export default function piPermissionSystemExtension(pi: ExtensionAPI): void {
 
   let activeWorkspaceCwd = process.cwd();
   pi.on("session_start", (event, ctx) => {
+    clipboardTempCleanup.reset();
     activeWorkspaceCwd = ctx.cwd;
     sandboxAuthorizationUnavailable = false;
     promptWaitTracker.clear(runtime.runtimeContext ?? undefined);
@@ -678,6 +681,7 @@ export default function piPermissionSystemExtension(pi: ExtensionAPI): void {
     lifecycle.handleResourcesDiscover(event),
   );
   pi.on("session_shutdown", () => {
+    clipboardTempCleanup.cleanup();
     promptWaitTracker.clear(runtime.runtimeContext ?? undefined);
     sessionBypassApprovals.clear();
     clearSessionNetworkApprovals();
@@ -686,7 +690,10 @@ export default function piPermissionSystemExtension(pi: ExtensionAPI): void {
     return lifecycle.handleSessionShutdown();
   });
   pi.on("before_agent_start", (event, ctx) => agentPrep.handle(event, ctx));
-  pi.on("input", (event, ctx) => gates.handleInput(event, ctx));
+  pi.on("input", (event, ctx) => {
+    clipboardTempCleanup.trackText(event.text);
+    return gates.handleInput(event, ctx);
+  });
   // NOTE: tool_call and user_bash are handled below with our additions
 
   // ── Our additions: lazy config/runtime, commands ─────────────────────
@@ -1088,6 +1095,7 @@ export default function piPermissionSystemExtension(pi: ExtensionAPI): void {
   pi.on("tool_call", (event: unknown, ctx: ExtensionContext) => (async () => {
     activeWorkspaceCwd = ctx.cwd;
     const e = event as { toolName?: string; input?: unknown };
+    clipboardTempCleanup.trackValue(e.input);
     let sc: SandboxConfig;
     let policyManager: SandboxPolicyManager;
     try {
@@ -1712,7 +1720,8 @@ export default function piPermissionSystemExtension(pi: ExtensionAPI): void {
     return undefined;
   };
 
-  pi.on("user_bash", (event: { command: string; cwd: string }, ctx: ExtensionContext) =>
-    handleUserBash(event, ctx).catch(() => blockedUserBash("Permission authorization failed; command blocked.")),
-  );
+  pi.on("user_bash", (event: { command: string; cwd: string }, ctx: ExtensionContext) => {
+    clipboardTempCleanup.trackText(event.command);
+    return handleUserBash(event, ctx).catch(() => blockedUserBash("Permission authorization failed; command blocked."));
+  });
 }
