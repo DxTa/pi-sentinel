@@ -15,6 +15,20 @@ describe("normalizeSandboxConfig", () => {
       defaultProfile: "online-dev",
     });
     expect(config.profiles["online-dev"]?.network).toBe(true);
+    expect(config.profiles["online-dev"]?.allowDocker).toBe(true);
+    expect(config.profiles["offline-dev"]?.allowDocker).toBe(true);
+  });
+
+  it("defaults custom profiles to Docker access unless explicitly disabled", () => {
+    const config = normalizeSandboxConfig({
+      profiles: {
+        "custom-dev": { network: false },
+        "no-docker": { network: false, allowDocker: false },
+      },
+    });
+
+    expect(config.profiles["custom-dev"]?.allowDocker).toBe(true);
+    expect(config.profiles["no-docker"]?.allowDocker).toBe(false);
   });
 
   it("keeps sandbox enabled for partial configs", () => {

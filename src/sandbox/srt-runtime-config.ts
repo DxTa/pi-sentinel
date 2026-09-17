@@ -1,4 +1,6 @@
 import type { SrtCommandSpec } from "./srt-command-spec.js";
+import { isDockerCommand } from "./bypass-command.js";
+import { resolveDockerSocketPaths } from "./docker-socket.js";
 import { getSandboxTempPaths } from "./sandbox-visible-paths.js";
 
 export interface SrtRuntimeConfig {
@@ -6,6 +8,7 @@ export interface SrtRuntimeConfig {
     allowedDomains: string[];
     deniedDomains: string[];
     strictAllowlist: boolean;
+    allowUnixSockets?: string[];
   };
   filesystem: {
     allowRead: string[];
@@ -20,8 +23,10 @@ function dedupe(values: string[]): string[] {
 }
 
 export function buildSrtRuntimeConfig(spec: SrtCommandSpec): SrtRuntimeConfig {
-  if (spec.allowDocker) {
-    throw new Error("SRT helper path does not yet support Docker socket passthrough.");
+  const dockerRequested = spec.allowDocker && isDockerCommand(spec.command);
+  const dockerSocketPaths = dockerRequested ? resolveDockerSocketPaths() : [];
+  if (dockerRequested && dockerSocketPaths.length === 0) {
+    throw new Error("Docker socket unavailable; command blocked.");
   }
 
   if (spec.envDenyPatterns.length > 0) {
@@ -51,6 +56,7 @@ export function buildSrtRuntimeConfig(spec: SrtCommandSpec): SrtRuntimeConfig {
       allowedDomains: spec.networkPlan.config.allowedDomains,
       deniedDomains: spec.networkPlan.config.deniedDomains,
       strictAllowlist: spec.networkPlan.unmatchedHostAction === "deny",
+      ...(dockerSocketPaths.length > 0 ? { allowUnixSockets: dockerSocketPaths } : {}),
     },
     filesystem: {
       allowRead,

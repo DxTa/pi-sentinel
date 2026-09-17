@@ -105,13 +105,14 @@ export function buildSrtCommandSpec(input: SrtCommandSpecInput): SrtCommandSpec 
     [...(input.sandboxConfig.rwBinds ?? []), ...(input.profile.rwBinds ?? [])],
     repoRoot,
   ).map(canonicalPath);
+  const resolvedBinds = [...roBinds, ...rwBinds, ...(input.sandboxConfig.infrastructureReadPaths ?? [])];
   const visibleReadPaths = buildSandboxVisiblePaths({
     repoRoot,
     cwd,
     command: input.command,
     profile: input.profile,
     config: input.sandboxConfig,
-    resolvedBinds: [...roBinds, ...rwBinds],
+    resolvedBinds,
   });
   const runtimeReadAllowPaths = buildSandboxRuntimeReadAllowPaths({
     repoRoot,
@@ -119,7 +120,7 @@ export function buildSrtCommandSpec(input: SrtCommandSpecInput): SrtCommandSpec 
     command: input.command,
     profile: input.profile,
     config: input.sandboxConfig,
-    resolvedBinds: [...roBinds, ...rwBinds],
+    resolvedBinds,
   });
 
   const unmaskedPaths = (input.unmaskedPaths ?? []).map((entry) => ({
@@ -180,6 +181,7 @@ export async function buildSrtCommandSpecAsync(
     deadline,
     maxScanDurationMs,
   );
+  const resolvedBinds = [...roBinds, ...rwBinds, ...(input.sandboxConfig.infrastructureReadPaths ?? [])];
   const visibilityContext = {
     repoRoot,
     cwd,
@@ -187,7 +189,7 @@ export async function buildSrtCommandSpecAsync(
     commandUsesUv: await commandContainsUvExecutable(input.command),
     profile: input.profile,
     config: input.sandboxConfig,
-    resolvedBinds: [...roBinds, ...rwBinds],
+    resolvedBinds,
   };
   const visibleReadPaths = await buildSandboxVisiblePathsWithinScanBudget(
     visibilityContext,

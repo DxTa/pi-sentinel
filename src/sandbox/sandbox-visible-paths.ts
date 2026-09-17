@@ -228,6 +228,7 @@ function bindPaths(context: SandboxVisibilityContext, repoRoot: string): string[
   const binds = context.resolvedBinds ?? [
     ...(context.config?.roBinds ?? []),
     ...(context.config?.rwBinds ?? []),
+    ...(context.config?.infrastructureReadPaths ?? []),
     ...(context.profile.roBinds ?? []),
     ...(context.profile.rwBinds ?? []),
   ];

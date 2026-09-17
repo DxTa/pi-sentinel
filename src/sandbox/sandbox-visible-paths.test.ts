@@ -116,6 +116,18 @@ describe("createSandboxVisibilityMatcher", () => {
     expect(isVisible(path.join(homedir(), ".bun/bin/bun"))).toBe(true);
   });
 
+  it("treats configured infrastructure paths as visible", () => {
+    const infrastructureRoot = path.join(homedir(), ".pi", "agent");
+    const isVisible = createSandboxVisibilityMatcher({
+      repoRoot: "/workspace/repo",
+      cwd: "/workspace/repo",
+      profile: makeProfile(),
+      config: makeConfig({ infrastructureReadPaths: [infrastructureRoot] }),
+    });
+
+    expect(isVisible(path.join(infrastructureRoot, "agents/agents-index.tsv"))).toBe(true);
+  });
+
   it("treats current sandbox temp roots and common /tmp aliases as visible", () => {
     const isVisible = createSandboxVisibilityMatcher({
       repoRoot: "/workspace/repo",

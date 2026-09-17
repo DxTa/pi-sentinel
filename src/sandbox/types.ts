@@ -21,7 +21,7 @@ export interface SandboxResourceLimits {
 export interface SandboxProfile {
   /** Whether this profile allows network access. */
   network: boolean;
-  /** Whether Docker socket is accessible. Default: false. */
+  /** Whether Docker socket access is available. Defaults to true. */
   allowDocker?: boolean;
   /** Additional read-only bind mounts. */
   roBinds?: string[];
@@ -64,6 +64,8 @@ export interface SandboxConfig {
   roBinds?: string[];
   /** Additional read-write bind mounts (added to all profiles). */
   rwBinds?: string[];
+  /** Internal read-only paths required by Pi infrastructure. */
+  infrastructureReadPaths?: string[];
 
   /** Command glob patterns (wildcardMatch) that skip the sandbox entirely.
    * Matched against the raw command string. Use for commands that require

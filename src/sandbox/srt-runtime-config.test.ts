@@ -1,7 +1,8 @@
-import { describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 
 import { buildSrtRuntimeConfig } from "./srt-runtime-config.js";
 import type { SrtCommandSpec } from "./srt-command-spec.js";
+import * as dockerSocket from "./docker-socket.js";
 
 function makeSpec(overrides: Partial<SrtCommandSpec> = {}): SrtCommandSpec {
   return {
@@ -35,6 +36,7 @@ function makeSpec(overrides: Partial<SrtCommandSpec> = {}): SrtCommandSpec {
 }
 
 describe("buildSrtRuntimeConfig", () => {
+  afterEach(() => vi.restoreAllMocks());
   it("translates command spec into filesystem and network config", () => {
     expect(buildSrtRuntimeConfig(makeSpec())).toEqual({
       network: {
@@ -99,11 +101,20 @@ describe("buildSrtRuntimeConfig", () => {
     ).toThrowError("SRT helper path does not yet support env deny pattern parity.");
   });
 
-  it("fails closed when Docker passthrough would be required", () => {
+  it("allows validated Docker sockets without allowing all Unix sockets", () => {
+    const network = buildSrtRuntimeConfig(
+      makeSpec({ command: "docker info", allowDocker: true }),
+    ).network;
+
+    expect(network.allowUnixSockets).toEqual(expect.arrayContaining(["/var/run/docker.sock"]));
+    expect(network).not.toHaveProperty("allowAllUnixSockets");
+  });
+
+  it("fails closed when Docker socket resolution returns no socket", () => {
+    vi.spyOn(dockerSocket, "resolveDockerSocketPaths").mockReturnValue([]);
+
     expect(() =>
-      buildSrtRuntimeConfig(
-        makeSpec({ allowDocker: true }),
-      ),
-    ).toThrowError("SRT helper path does not yet support Docker socket passthrough.");
+      buildSrtRuntimeConfig(makeSpec({ command: "docker info", allowDocker: true })),
+    ).toThrowError("Docker socket unavailable; command blocked.");
   });
 });

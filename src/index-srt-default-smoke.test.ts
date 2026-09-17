@@ -6,6 +6,7 @@ import path from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
 import piPermissionSystemExtension from "./index.ts";
+import { resolveDockerSocketPaths } from "./sandbox/docker-socket.js";
 
 const tempPaths: string[] = [];
 const canSimulateReadOnlyDirectory = process.platform !== "win32" && process.getuid?.() !== 0;
@@ -144,6 +145,68 @@ describe("piPermissionSystemExtension SRT default smoke", () => {
     expect(result).toBeUndefined();
     expect(event.input.command).toContain("sandbox-run.mjs");
     expect(event.input.command).toContain("PI_SRT_HELPER_INPUT_B64=");
+  });
+
+  it("allows Docker commands by default in the online profile", async () => {
+    const agentDir = await makeTempDir("pi-permission-agent-");
+    const projectDir = await makeTempDir("pi-permission-project-");
+    process.env.PI_CODING_AGENT_DIR = agentDir;
+    await writeExtensionConfig(agentDir, {
+      permission: {
+        "*": "allow",
+        bash: { "*": "allow" },
+        external_directory: { "*": "allow" },
+      },
+    });
+
+    const pi = createFakePi();
+    piPermissionSystemExtension(pi as never);
+    const event = { toolName: "bash", input: { command: "docker info" } };
+    const result = await pi.handlers.get("tool_call")?.(
+      event,
+      createContext(projectDir) as never,
+    );
+
+    const dockerSockets = resolveDockerSocketPaths();
+    if (dockerSockets.length === 0) {
+      expect(result).toMatchObject({ block: true, reason: "Docker socket unavailable; command blocked." });
+      return;
+    }
+
+    expect(result).toBeUndefined();
+    const helperInput = extractHelperInput(event.input.command);
+    expect(helperInput.runtimeConfig.network.allowUnixSockets).toEqual(
+      expect.arrayContaining(dockerSockets),
+    );
+  });
+
+  it("includes Pi infrastructure directories in SRT read paths", async () => {
+    const agentDir = await makeTempDir("pi-permission-agent-");
+    const projectDir = await makeTempDir("pi-permission-project-");
+    const agentsDir = path.join(agentDir, "agents");
+    const indexPath = path.join(agentsDir, "agents-index.tsv");
+    process.env.PI_CODING_AGENT_DIR = agentDir;
+    await mkdir(agentsDir, { recursive: true });
+    await writeFile(indexPath, "agent\tdescription\n", "utf8");
+    await writeExtensionConfig(agentDir, {
+      permission: {
+        "*": "allow",
+        bash: { "*": "allow" },
+        external_directory: { "*": "allow" },
+      },
+    });
+
+    const pi = createFakePi();
+    piPermissionSystemExtension(pi as never);
+    const event = { toolName: "bash", input: { command: `cat ${indexPath}` } };
+    const result = await pi.handlers.get("tool_call")?.(
+      event,
+      createContext(projectDir) as never,
+    );
+
+    expect(result).toBeUndefined();
+    const helperInput = extractHelperInput(event.input.command);
+    expect(helperInput.runtimeConfig.filesystem.allowRead.some((entry) => entry.endsWith(path.basename(agentDir)))).toBe(true);
   });
 
   it("uses git repo root when command runs from a subdirectory", async () => {
@@ -709,6 +772,43 @@ describe("piPermissionSystemExtension SRT default smoke", () => {
         exitCode: 1,
         output: expect.stringContaining("command blocked"),
       },
+    });
+  });
+
+  it("reports protected socket refusal for invalid external paths", async () => {
+    const agentDir = await makeTempDir("pi-permission-agent-");
+    const projectDir = await makeTempDir("pi-permission-project-");
+    process.env.PI_CODING_AGENT_DIR = agentDir;
+    await writeExtensionConfig(agentDir, {
+      permission: {
+        "*": "allow",
+        bash: { "*": "allow" },
+        external_directory: { "*": "allow" },
+      },
+      sandbox: {
+        enabled: true,
+        backend: "srt",
+        defaultProfile: "offline-dev",
+        profiles: {
+          "offline-dev": {
+            network: false,
+            env: { allow: [], deny: [] },
+            maskedPaths: [],
+          },
+        },
+      },
+    });
+
+    const pi = createFakePi();
+    piPermissionSystemExtension(pi as never);
+    const result = await pi.handlers.get("tool_call")?.(
+      { toolName: "bash", input: { command: "ls -ld /var/run" } },
+      createContext(projectDir, { hasUI: true, choices: ["Allow once"] }) as never,
+    );
+
+    expect(result).toMatchObject({
+      block: true,
+      reason: expect.stringContaining("protected socket location"),
     });
   });
 

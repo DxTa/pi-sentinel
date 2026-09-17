@@ -24,6 +24,7 @@ import { awaitWithinScanBudget, isScanBudgetExceeded } from "./scan-budget.js";
 
 const OFFLINE_DEV_PROFILE: SandboxProfile = {
   network: false,
+  allowDocker: true,
   roBinds: [],
   rwBinds: [],
   env: {
@@ -36,6 +37,7 @@ const OFFLINE_DEV_PROFILE: SandboxProfile = {
 const ONLINE_DEV_PROFILE: SandboxProfile = {
   ...OFFLINE_DEV_PROFILE,
   network: true,
+  allowDocker: true,
 };
 
 const DEFAULT_SANDBOX_CONFIG: SandboxConfig = {
@@ -127,7 +129,7 @@ export function normalizeSandboxConfig(raw: unknown): SandboxConfig {
         const p = profile as Record<string, unknown>;
         profiles[name] = {
           network: p.network === true,
-          allowDocker: p.allowDocker === true,
+          allowDocker: p.allowDocker === undefined ? true : p.allowDocker === true,
           roBinds: coerceBindList(p.roBinds),
           rwBinds: coerceBindList(p.rwBinds),
           env: normalizeEnvPolicy(p.env),

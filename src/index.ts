@@ -712,7 +712,14 @@ export default function piPermissionSystemExtension(pi: ExtensionAPI): void {
   });
 
   function getEffectiveSandboxConfig(cwd: string): SandboxConfig {
-    return getSandboxConfig(cwd);
+    const config = getSandboxConfig(cwd);
+    return {
+      ...config,
+      infrastructureReadPaths: [
+        ...session.getInfrastructureDirs(),
+        ...session.getInfrastructureReadPaths(),
+      ],
+    };
   }
 
   const rememberPersistentGrant = (grant: Grant, record: PersistentGrantRecord): void => {
@@ -1282,8 +1289,11 @@ export default function piPermissionSystemExtension(pi: ExtensionAPI): void {
               undefined,
               unmaskedPaths.map((entry) => entry.path),
             );
-          } catch {
-            return { block: true, reason: "Sandbox: invalid external path; command blocked." };
+          } catch (error) {
+            const detail = error instanceof Error && error.message
+              ? error.message
+              : "invalid external path";
+            return { block: true, reason: `Sandbox: ${detail}; command blocked.` };
           }
           const notYetGranted = externalPaths.filter(
             (ep) => !activeGrantPaths.has(ep.path)

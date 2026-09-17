@@ -17,6 +17,8 @@ Bundled defaults are conservative:
 - sandbox enabled with SRT and the network-enabled `online-dev` profile;
 - reads allowed, writes and edits denied;
 - Bash asks by default, except for `git status` and `git diff`;
+- after approval, bundled profiles permit Docker CLI access through its validated Unix socket by default; set `allowDocker: false` to disable it;
+- Docker socket access is host-admin equivalent: Docker can mount or read host paths despite the SRT filesystem boundary; direct Docker and Compose commands remain approval-gated.
 - outbound domains still require approval unless explicitly allowed.
 
 ## Features
