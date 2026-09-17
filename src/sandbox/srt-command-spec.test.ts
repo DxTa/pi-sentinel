@@ -169,6 +169,27 @@ describe("buildSrtCommandSpec", () => {
     }
   });
 
+  it("keeps infrastructure paths visible without broad-scanning them", async () => {
+    const repoRoot = await makeTempDir("pi-srt-spec-infrastructure-repo-");
+    const infrastructureRoot = await makeTempDir("pi-srt-spec-infrastructure-");
+    const maskedPath = path.join(infrastructureRoot, ".env");
+    await writeFile(maskedPath, "SECRET=1\n", "utf8");
+
+    const input = {
+      command: "echo ok",
+      cwd: repoRoot,
+      repoRoot,
+      sandboxConfig: makeConfig({ infrastructureReadPaths: [infrastructureRoot] }),
+      profile: makeProfile(),
+    };
+    const specs = [buildSrtCommandSpec(input), await buildSrtCommandSpecAsync(input)];
+
+    for (const spec of specs) {
+      expect(spec.runtimeReadAllowPaths).toContain(canonicalPath(infrastructureRoot));
+      expect(spec.maskedShimPlan.maskedDenyPaths).not.toContain(canonicalPath(maskedPath));
+    }
+  });
+
   it("fails closed when async filesystem preparation exceeds its budget", async () => {
     const repoRoot = await makeTempDir("pi-srt-spec-budget-");
 

@@ -64,6 +64,17 @@ export function buildSrtExecShimPlan(
   return existsSync(DARWIN_CLT_GIT) ? { git: DARWIN_CLT_GIT } : {};
 }
 
+function filterMaskedScanRoots(scanRoots: string[], infrastructureRoots: string[]): string[] {
+  const roots = infrastructureRoots.map(canonicalPath);
+  return scanRoots.filter((scanRoot) =>
+    !roots.some((root) =>
+      scanRoot === root ||
+      scanRoot.startsWith(`${root}/`) ||
+      root.startsWith(`${scanRoot}/`),
+    ),
+  );
+}
+
 function filterMaskedShimPlan(
   plan: MaskedCommandShimPlan,
   unmaskedPaths: UnmaskedPath[],
@@ -129,7 +140,10 @@ export function buildSrtCommandSpec(input: SrtCommandSpecInput): SrtCommandSpec 
   }));
   const maskedShimPlan = filterMaskedShimPlan(
     buildMaskedCommandShimPlan(input.command, input.profile, cwd, {
-      scanRoots: runtimeReadAllowPaths,
+      scanRoots: filterMaskedScanRoots(
+        runtimeReadAllowPaths,
+        input.sandboxConfig.infrastructureReadPaths ?? [],
+      ),
     }),
     unmaskedPaths,
   );
@@ -201,9 +215,14 @@ export async function buildSrtCommandSpecAsync(
     ...entry,
     path: await canonicalPathWithinScanBudget(entry.path, deadline, maxScanDurationMs),
   })));
+  const infrastructureRoots = await Promise.all(
+    (input.sandboxConfig.infrastructureReadPaths ?? []).map((root) =>
+      canonicalPathWithinScanBudget(root, deadline, maxScanDurationMs),
+    ),
+  );
   const maskedShimPlan = await filterMaskedShimPlanWithinScanBudget(
     await buildMaskedCommandShimPlanAsync(input.command, input.profile, cwd, {
-      scanRoots: runtimeReadAllowPaths,
+      scanRoots: filterMaskedScanRoots(runtimeReadAllowPaths, infrastructureRoots),
       deadline,
       maxScanDurationMs,
     }),
