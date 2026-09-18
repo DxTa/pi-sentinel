@@ -1,6 +1,6 @@
 import { createRequire } from "node:module";
 import { tmpdir } from "node:os";
-import { mkdtemp, mkdir, rm, writeFile } from "node:fs/promises";
+import { mkdtemp, mkdir, rm, symlink, writeFile } from "node:fs/promises";
 import path from "node:path";
 
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
@@ -187,6 +187,74 @@ describe("buildSrtCommandSpec", () => {
     for (const spec of specs) {
       expect(spec.runtimeReadAllowPaths).toContain(canonicalPath(infrastructureRoot));
       expect(spec.maskedShimPlan.maskedDenyPaths).not.toContain(canonicalPath(maskedPath));
+    }
+  });
+
+  it("allows standard home configuration reads without allowing writes", async () => {
+    const repoRoot = await makeTempDir("pi-srt-spec-home-visibility-");
+    const configRoot = path.join(process.env.HOME!, ".config");
+    const maskedConfigPath = path.join(configRoot, "gh", "hosts.yml");
+    const nestedMaskedConfigPath = path.join(configRoot, "gcloud", "legacy", "adc.json");
+    await mkdir(path.dirname(maskedConfigPath), { recursive: true });
+    await mkdir(path.dirname(nestedMaskedConfigPath), { recursive: true });
+    await writeFile(maskedConfigPath, "hosts: secret\n", "utf8");
+    await writeFile(nestedMaskedConfigPath, "token: secret\n", "utf8");
+
+    const input = {
+      command: `cat ${maskedConfigPath}`,
+      cwd: repoRoot,
+      repoRoot,
+      sandboxConfig: makeConfig(),
+      profile: makeProfile(),
+    };
+    const specs = [buildSrtCommandSpec(input), await buildSrtCommandSpecAsync(input)];
+    const homePath = canonicalPath(process.env.HOME!);
+    const expectedReadPaths = [
+      path.join(homePath, ".config"),
+      path.join(homePath, ".gitconfig"),
+      path.join(homePath, ".gitignore"),
+    ].map(canonicalPath);
+
+    for (const spec of specs) {
+      expect(spec.visibleReadPaths).toEqual(expect.arrayContaining(expectedReadPaths));
+      expect(spec.runtimeReadAllowPaths).toEqual(expect.arrayContaining(expectedReadPaths));
+      expect(spec.roBinds).not.toEqual(expect.arrayContaining(expectedReadPaths));
+      expect(spec.rwBinds).not.toEqual(expect.arrayContaining(expectedReadPaths));
+      expect(buildSrtRuntimeConfig(spec).filesystem.allowWrite).not.toEqual(
+        expect.arrayContaining(expectedReadPaths),
+      );
+      expect(spec.maskedShimPlan.maskedDenyPaths).toEqual(
+        expect.arrayContaining([
+          canonicalPath(maskedConfigPath),
+          canonicalPath(nestedMaskedConfigPath),
+        ]),
+      );
+    }
+  });
+
+  it("does not broaden home visibility through symlinked config paths", async () => {
+    const repoRoot = await makeTempDir("pi-srt-spec-home-symlink-");
+    const home = process.env.HOME!;
+    const privateDir = path.join(home, "private-config");
+    const privateFile = path.join(privateDir, "private.txt");
+    await mkdir(privateDir, { recursive: true });
+    await writeFile(privateFile, "private\n", "utf8");
+    await symlink(privateDir, path.join(home, ".config"));
+
+    const input = {
+      command: "echo ok",
+      cwd: repoRoot,
+      repoRoot,
+      sandboxConfig: makeConfig(),
+      profile: makeProfile(),
+    };
+    const specs = [buildSrtCommandSpec(input), await buildSrtCommandSpecAsync(input)];
+
+    for (const spec of specs) {
+      expect(spec.visibleReadPaths).not.toContain(canonicalPath(home));
+      expect(spec.visibleReadPaths).not.toContain(canonicalPath(privateDir));
+      expect(spec.runtimeReadAllowPaths).not.toContain(canonicalPath(home));
+      expect(spec.runtimeReadAllowPaths).not.toContain(canonicalPath(privateDir));
     }
   });
 

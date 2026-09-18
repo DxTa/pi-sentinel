@@ -18,9 +18,10 @@
  */
 
 import { homedir } from "node:os";
-import { resolve, join, basename } from "node:path";
+import { resolve, join, basename, dirname, sep } from "node:path";
 import { existsSync } from "node:fs";
 import type { SandboxProfile, UnmaskedPath } from "./types.js";
+import { canonicalPath } from "./sandbox-visible-paths.js";
 import type { MaskedAuthKind } from "./auth-path-detection.js";
 
 /**
@@ -38,20 +39,24 @@ export const DEFAULT_MASKED_PATTERNS = [
   "**/auth-token.json",
   "**/secrets.json",
   "**/passwords.json",
-  "~/.ssh/*",
-  "~/.aws/*",
-  "~/.gnupg/*",
-  "~/.kube/*",
-  "~/.docker/*",
+  "~/.ssh/**",
+  "~/.aws/**",
+  "~/.gnupg/**",
+  "~/.kube/**",
+  "~/.docker/**",
   "~/.git-credentials",
   "~/.config/git/credentials",
   "~/.config/gh/hosts.yml",
-  "~/.config/gcloud/*",
-  "~/.config/azure/*",
-  "~/.config/claude/*",
-  "~/.config/codex/*",
-  "~/.config/anthropic/*",
-  "~/.config/openai/*",
+  "~/.config/gcloud/**",
+  "~/.config/azure/**",
+  "~/.config/claude/**",
+  "~/.config/codex/**",
+  "~/.config/anthropic/**",
+  "~/.config/openai/**",
+  "~/.config/rclone/**",
+  "~/.config/glab-cli/**",
+  "~/.config/pypoetry/**",
+  "~/.config/pip/**",
   "~/.npmrc",
   "~/.pypirc",
   "~/.netrc",
@@ -95,22 +100,29 @@ function expandHome(path: string): string {
   return path;
 }
 
+function normalizeHomeAlias(filePath: string): string {
+  const home = homedir();
+  const canonicalHome = canonicalPath(home);
+  const resolvedFilePath = resolve(filePath);
+  const canonicalParent = canonicalPath(dirname(resolvedFilePath));
+  const canonicalFilePath = join(canonicalParent, basename(resolvedFilePath));
+  const homePrefix = canonicalHome + sep;
+  return canonicalFilePath.startsWith(homePrefix)
+    ? join(home, canonicalFilePath.slice(homePrefix.length))
+    : canonicalFilePath;
+}
+
 /**
  * Check if a resolved path matches any masked pattern.
  */
 export function isPathMasked(filePath: string, patterns: string[]): boolean {
-  const home = homedir();
+  const candidatePaths = [...new Set([filePath, normalizeHomeAlias(filePath)])];
   const regexes = patterns.map((p) => {
     const expanded = expandHome(p);
     return globToRegex(expanded);
   });
 
-  for (let i = 0; i < patterns.length; i++) {
-    if (regexes[i].test(filePath)) {
-      return true;
-    }
-  }
-  return false;
+  return regexes.some((regex) => candidatePaths.some((candidatePath) => regex.test(candidatePath)));
 }
 
 /**

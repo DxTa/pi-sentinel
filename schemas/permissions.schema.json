@@ -177,6 +177,16 @@
           },
           "default": []
         },
+        "bypassCommands": {
+          "description": "Explicit command globs that run on the host outside SRT.",
+          "markdownDescription": "Explicit command globs that bypass SRT. Bash permission and preflight network checks run first, but host commands do not receive SRT filesystem masking or runtime network isolation. Recognized mutating commands are hard-blocked when targets leave the working directory, `/tmp`, or `/private/tmp`. Use `[\"*\"]` to make all Bash commands host-accessible while direct file-tool gates remain active, or use narrow patterns for selected setup commands.",
+          "type": "array",
+          "items": {
+            "type": "string",
+            "minLength": 1
+          },
+          "default": ["*"]
+        },
         "profiles": {
           "description": "Named sandbox profile overrides.",
           "type": "object",

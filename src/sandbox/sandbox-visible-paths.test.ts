@@ -58,7 +58,7 @@ describe("expandHomePath", () => {
 });
 
 describe("createSandboxVisibilityMatcher", () => {
-  it("treats repo root, cwd, configured binds, and narrow runtime paths as visible", () => {
+  it("treats repo root, cwd, configured binds, and default paths as visible", () => {
     const repoRoot = "/workspace/repo";
     const cwd = "/workspace/repo/packages/app";
     const profile = makeProfile({ roBinds: ["~/extra-ro"], rwBinds: ["/opt/shared"] });
@@ -76,10 +76,12 @@ describe("createSandboxVisibilityMatcher", () => {
     expect(isVisible("/usr/bin/git")).toBe(true);
     expect(isVisible("/opt/homebrew/opt/python@3.14/bin/python3.14")).toBe(true);
     expect(isVisible("/var/select/sh")).toBe(true);
-    expect(isVisible(path.join(homedir(), ".config/gh/hosts.yml"))).toBe(false);
+    expect(isVisible(path.join(homedir(), ".config/editor/settings.json"))).toBe(true);
+    expect(isVisible(path.join(homedir(), ".config/gh/hosts.yml"))).toBe(true);
     expect(isVisible(path.join(homedir(), ".aws/config"))).toBe(false);
     expect(isVisible(path.join(homedir(), ".ssh/config"))).toBe(false);
-    expect(isVisible(path.join(homedir(), ".gitconfig"))).toBe(false);
+    expect(isVisible(path.join(homedir(), ".gitconfig"))).toBe(true);
+    expect(isVisible(path.join(homedir(), ".gitignore"))).toBe(true);
   });
 
   it("resolves relative bind paths against repo root, not the extension process cwd", async () => {
@@ -146,7 +148,7 @@ describe("createSandboxVisibilityMatcher", () => {
 
     expect(dockerIsVisible(path.join(homedir(), ".docker/cli-plugins/docker-compose"))).toBe(true);
     expect(otherCommandIsVisible(path.join(homedir(), ".docker/private-cache/metadata.json"))).toBe(false);
-    expect(dockerIsVisible(path.join(homedir(), ".config/cloud/credentials"))).toBe(false);
+    expect(dockerIsVisible(path.join(homedir(), ".config/cloud/credentials"))).toBe(true);
   });
 
   it("treats current sandbox temp roots and common /tmp aliases as visible", () => {

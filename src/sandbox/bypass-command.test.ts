@@ -23,6 +23,25 @@ describe("shouldBypassSandboxCommand", () => {
   ])("keeps command sandboxed by default %s", (command) => {
     expect(shouldBypassSandboxCommand(command, [])).toBe(false);
   });
+
+  it.each([
+    ["uv venv .venv", ["uv *"]],
+    ["python -m venv .venv", ["python -m venv *"]],
+    ["npm install -g typescript", ["npm install -g *"]],
+    ["cargo install ripgrep", ["cargo install *"]],
+    ["go install golang.org/x/tools/gopls@latest", ["go install *"]],
+  ])("allows explicitly configured host environment command %s", (command, patterns) => {
+    expect(shouldBypassSandboxCommand(command, patterns)).toBe(true);
+  });
+
+  it("does not let an explicit host pattern bypass a compound shell command", () => {
+    expect(shouldBypassSandboxCommand("uv venv .venv " + String.fromCharCode(38) + " echo done", ["uv *"])).toBe(false);
+    expect(shouldBypassSandboxCommand("uv venv .venv && uv run pytest", ["uv *"])).toBe(false);
+  });
+
+  it("allows every command when the explicit wildcard host pattern is configured", () => {
+    expect(shouldBypassSandboxCommand("uv venv .venv && uv run pytest", ["*"])).toBe(true);
+  });
 });
 
 

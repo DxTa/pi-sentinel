@@ -18,7 +18,8 @@
   "sandbox": {
     "enabled": true,
     "backend": "srt",
-    "defaultProfile": "online-dev"
+    "defaultProfile": "online-dev",
+    "bypassCommands": ["*"]
   },
 
   "permission": {

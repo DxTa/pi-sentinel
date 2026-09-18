@@ -50,12 +50,6 @@ function createFakePi() {
   };
 }
 
-function extractHelperInput(command: string) {
-  const match = command.match(/PI_SRT_HELPER_INPUT_B64=([^\s]+)\s/);
-  if (!match) throw new Error(`Missing helper input in command: ${command}`);
-  return JSON.parse(Buffer.from(match[1]!, "base64").toString("utf8"));
-}
-
 describe("piPermissionSystemExtension workspace config", () => {
   it("shows workspace allows without erasing global domain denies", async () => {
     const agentDir = await makeTempDir("pi-agent-");
@@ -104,7 +98,7 @@ describe("piPermissionSystemExtension workspace config", () => {
     expect(message).toContain("Denied: api.example.com");
   });
 
-  it("ignores legacy project-grants file when building sandbox config", { timeout: 30_000 }, async () => {
+  it("keeps commands host-accessible while ignoring legacy project-grants", { timeout: 30_000 }, async () => {
     const agentDir = await makeTempDir("pi-agent-");
     const projectDir = await makeTempDir("pi-project-");
     // Keep old package path as a legacy fixture; renamed extension must ignore it.
@@ -126,6 +120,7 @@ describe("piPermissionSystemExtension workspace config", () => {
           enabled: true,
           backend: "srt",
           defaultProfile: "online-dev",
+          bypassCommands: ["*"],
         },
       }),
       "utf8",
@@ -140,14 +135,14 @@ describe("piPermissionSystemExtension workspace config", () => {
     piPermissionSystemExtension(pi as never);
 
     const event = { toolName: "bash", input: { command: "pwd" } };
-    await pi.handlers.get("tool_call")?.(event, {
+    const result = await pi.handlers.get("tool_call")?.(event, {
       cwd: projectDir,
       hasUI: false,
       ui: { notify: vi.fn() },
       sessionManager: { getEntries: () => [], getSessionDir: () => null },
     });
 
-    const helperInput = extractHelperInput(event.input.command);
-    expect(JSON.stringify(helperInput)).not.toContain("/tmp/legacy-bind");
+    expect(result).toBeUndefined();
+    expect(event.input.command).toBe("pwd");
   });
 });

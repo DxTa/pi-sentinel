@@ -36,6 +36,68 @@ function expectDescriptor(
 }
 
 describe("describeBashExternalDirectoryGate", () => {
+  it("hard-blocks mutating commands outside workspace and temporary roots", async () => {
+    process.env[FALLBACK_ENV] = "1";
+
+    const result = await describeBashExternalDirectoryGate(
+      {
+        toolName: "bash",
+        agentName: "worker",
+        input: { command: "rm -rf /etc/passwd" },
+        toolCallId: "call-hard-block",
+        cwd,
+      },
+      () => makeCheckResult({ state: "allow", source: "special", origin: "project" }),
+      () => [],
+    );
+
+    expect(result).toMatchObject({
+      preResolved: { state: "deny" },
+      denialContext: {
+        kind: "bash_external_directory",
+        externalPaths: ["/etc/passwd"],
+      },
+    });
+  });
+
+  it("does not treat absolute rm executable as mutation target", async () => {
+    process.env[FALLBACK_ENV] = "1";
+
+    const result = await describeBashExternalDirectoryGate(
+      {
+        toolName: "bash",
+        agentName: "worker",
+        input: { command: "/bin/rm -rf /tmp/pi-sentinel-safe" },
+        toolCallId: "call-absolute-rm",
+        cwd,
+      },
+      () => makeCheckResult(),
+      () => [],
+    );
+
+    expect(result).not.toMatchObject({ preResolved: { state: "deny" } });
+  });
+
+  it.each(["/tmp/pi-sentinel-safe", "/private/tmp/pi-sentinel-safe"])(
+    "does not hard-block mutating commands under %s",
+    async (safePath) => {
+      process.env[FALLBACK_ENV] = "1";
+
+      const result = await describeBashExternalDirectoryGate(
+        {
+          toolName: "bash",
+          agentName: "worker",
+          input: { command: `rm -rf ${safePath}` },
+          toolCallId: "call-safe-temp",
+          cwd,
+        },
+        () => makeCheckResult(),
+        () => [],
+      );
+
+      expect(result).not.toMatchObject({ preResolved: { state: "deny" } });
+    },
+  );
   it("does not force a prompt in yolo for read-only external bash commands", async () => {
     process.env[FALLBACK_ENV] = "1";
 

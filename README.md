@@ -21,9 +21,9 @@ Bundled defaults are conservative:
 - generated `pi-clipboard-<uuid>.*` files referenced during a session are removed at session shutdown;
 - On macOS and Linux, sandboxed commands allow all Unix sockets by default so local services can work; this exposes Docker, SSH agents, databases, and other host Unix services to sandboxed code.
 - Docker socket access is host-admin equivalent: Docker can mount or read host paths despite the SRT filesystem boundary; direct Docker and Compose commands remain approval-gated.
-- Direct Docker commands receive read-only `~/.docker` visibility for CLI plugins; other Docker credential files remain masked, and broad `~/.config` is not exposed.
-- Direct Docker commands automatically receive read-only access to `~/.docker/config.json`; other commands keep Docker credentials masked.
-- Outbound domains still require approval unless explicitly allowed.
+- Sandboxed commands receive read-only visibility for `~/.config`, `~/.gitconfig`, and `~/.gitignore`; protected credential files under `~/.config` remain masked.
+- SRT-wrapped Docker commands automatically receive read-only access to `~/.docker/config.json`; host-bypassed Bash has normal host filesystem access.
+- SRT-wrapped commands require outbound-domain approval unless explicitly allowed; host-bypassed Bash uses host network after preflight checks.
 
 ## Features
 
@@ -77,6 +77,29 @@ Bundled defaults live in [`config.json`](config.json). Configuration precedence,
 Legacy global/project paths remain supported for compatibility. Use project overrides only in trusted repositories. The last matching wildcard rule wins; `permission.path` is a cross-cutting path gate.
 
 See [`schemas/permissions.schema.json`](schemas/permissions.schema.json) for the complete schema.
+
+
+### Command access and direct file permissions
+
+Bundled defaults keep SRT enabled for sandbox configuration but set `sandbox.bypassCommands` to `["*"]`. This keeps every Bash command available to the coding session, including host-installed toolchains, virtual-environment creation, `uv`, and global package managers.
+
+Bash permission and preflight network checks run before host execution. Host bypass skips SRT filesystem masking and runtime network isolation, so Bash can read/write host paths and use host network after passing Bash permission. Recognized mutating commands are still hard-blocked when targets leave the working directory, `/tmp`, or `/private/tmp`. Direct `read`, `write`, `edit`, `delete`, path, and external-directory operations remain permission-gated. Set `bypassCommands` to `[]` in a trusted override to restore SRT wrapping for matching commands; built-in Git transport exceptions remain host-bypassed.
+
+Use narrow patterns instead of `"*"` when only selected host setup commands should bypass SRT:
+
+```json
+{
+  "sandbox": {
+    "bypassCommands": [
+      "uv venv *",
+      "python -m venv *",
+      "npm install -g *",
+      "cargo install *",
+      "go install *"
+    ]
+  }
+}
+```
 
 ## Host requirements
 

@@ -87,22 +87,26 @@ function createContext(cwd: string, options: { hasUI?: boolean; choices?: string
 
 async function writeExtensionConfig(agentDir: string, overrides: Record<string, unknown> = {}) {
   await mkdir(path.join(agentDir, "extensions", "pi-sentinel"), { recursive: true });
+  const baseConfig = {
+    yoloMode: false,
+    permission: {
+      "*": "deny",
+      bash: {
+        "echo ok": "allow",
+        "pwd": "allow",
+        "*sandbox-run.mjs*": "deny",
+      },
+    },
+    network: { enabled: false, unknownDomains: "allow", allowedDomains: [], deniedDomains: [] },
+    sandbox: { enabled: true, backend: "srt", defaultProfile: "online-dev", bypassCommands: [] },
+  };
+  const sandboxOverride = overrides.sandbox;
+  const sandbox = sandboxOverride && typeof sandboxOverride === "object" && Array.isArray(sandboxOverride) === false
+    ? { ...baseConfig.sandbox, ...(sandboxOverride as Record<string, unknown>) }
+    : baseConfig.sandbox;
   await writeFile(
     path.join(agentDir, "permissions.json"),
-    JSON.stringify({
-      yoloMode: false,
-      permission: {
-        "*": "deny",
-        bash: {
-          "echo ok": "allow",
-          "pwd": "allow",
-          "*sandbox-run.mjs*": "deny",
-        },
-      },
-      network: { enabled: false, unknownDomains: "allow", allowedDomains: [], deniedDomains: [] },
-      sandbox: { enabled: true, backend: "srt", defaultProfile: "online-dev" },
-      ...overrides,
-    }),
+    JSON.stringify({ ...baseConfig, ...overrides, sandbox }),
     "utf8",
   );
 }
@@ -146,6 +150,76 @@ describe("piPermissionSystemExtension SRT default smoke", () => {
     expect(result).toBeUndefined();
     expect(event.input.command).toContain("sandbox-run.mjs");
     expect(event.input.command).toContain("PI_SRT_HELPER_INPUT_B64=");
+  });
+
+  it("keeps Bash host-accessible while direct file tools remain gated", async () => {
+    const agentDir = await makeTempDir("pi-permission-agent-");
+    const projectDir = await makeTempDir("pi-permission-project-");
+    process.env.PI_CODING_AGENT_DIR = agentDir;
+    await writeExtensionConfig(agentDir, {
+      permission: {
+        "*": "allow",
+        bash: { "*": "allow" },
+        write: "deny",
+        external_directory: { "*": "allow" },
+      },
+      sandbox: { enabled: true, backend: "srt", defaultProfile: "online-dev", bypassCommands: ["*"] },
+    });
+
+    const pi = createFakePi();
+    piPermissionSystemExtension(pi as never);
+    const commandEvent = { toolName: "bash", input: { command: "printf 'host && command'" } };
+    const commandResult = await pi.handlers.get("tool_call")?.(
+      commandEvent,
+      createContext(projectDir) as never,
+    );
+
+    expect(commandResult).toBeUndefined();
+    expect(commandEvent.input.command).toBe("printf 'host && command'");
+
+    const writeEvent = {
+      toolName: "write",
+      input: { path: path.join(projectDir, "blocked.txt"), content: "blocked" },
+    };
+    const writeResult = await pi.handlers.get("tool_call")?.(
+      writeEvent,
+      createContext(projectDir) as never,
+    );
+
+    expect(writeResult).toMatchObject({ block: true });
+  });
+
+  it("hard-blocks host Bash mutation outside safe roots", async () => {
+    const agentDir = await makeTempDir("pi-permission-agent-");
+    const projectDir = await makeTempDir("pi-permission-project-");
+    process.env.PI_CODING_AGENT_DIR = agentDir;
+    await writeExtensionConfig(agentDir, {
+      permission: {
+        "*": "allow",
+        bash: { "*": "allow" },
+        external_directory: { "*": "allow" },
+      },
+      sandbox: { enabled: true, backend: "srt", defaultProfile: "online-dev", bypassCommands: ["*"] },
+    });
+
+    const pi = createFakePi();
+    piPermissionSystemExtension(pi as never);
+    const command = "rm -rf /etc/passwd";
+    const toolEvent = { toolName: "bash", input: { command } };
+    const toolResult = await pi.handlers.get("tool_call")?.(
+      toolEvent,
+      createContext(projectDir) as never,
+    );
+    expect(toolResult).toMatchObject({ block: true });
+    expect(toolEvent.input.command).toBe(command);
+
+    const userResult = await pi.handlers.get("user_bash")?.(
+      { command, cwd: projectDir },
+      createContext(projectDir) as never,
+    );
+    expect(userResult).toMatchObject({
+      result: { exitCode: 1, output: expect.stringContaining("Blocked mutating Bash command") },
+    });
   });
 
   it("allows Docker commands by default in the online profile", async () => {

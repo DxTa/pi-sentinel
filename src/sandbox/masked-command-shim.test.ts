@@ -1,5 +1,5 @@
 import { mkdtemp, mkdir, rm, symlink, writeFile } from "node:fs/promises";
-import { tmpdir } from "node:os";
+import { homedir, tmpdir } from "node:os";
 import path from "node:path";
 
 import { afterEach, describe, expect, it } from "vitest";
@@ -10,6 +10,8 @@ import {
 } from "./masked-command-shim.js";
 import type { SandboxProfile } from "./types.js";
 import { DEFAULT_SCAN_DURATION_MS } from "./scan-budget.js";
+import { canonicalPath } from "./sandbox-visible-paths.js";
+import { isPathMasked } from "./masked-file-gate.js";
 
 const tempPaths: string[] = [];
 
@@ -35,6 +37,62 @@ function makeProfile(): SandboxProfile {
 }
 
 describe("buildMaskedCommandShimPlan", () => {
+  it("keeps always-readable git config file roots out of directory scans", async () => {
+    const cwd = await makeTempDir("pi-mask-gitconfig-");
+    const gitconfig = path.join(homedir(), ".gitconfig");
+    const syncPlan = buildMaskedCommandShimPlan("echo ok", makeProfile(), cwd, { scanRoots: [gitconfig] });
+    const asyncPlan = await buildMaskedCommandShimPlanAsync("echo ok", makeProfile(), cwd, {
+      scanRoots: [gitconfig],
+      deadline: Date.now() + 1_000,
+      maxScanDurationMs: 1_000,
+    });
+
+    expect(syncPlan.maskedDenyPaths).not.toContain(gitconfig);
+    expect(asyncPlan.maskedDenyPaths).not.toContain(gitconfig);
+  });
+
+  it("matches masked home paths through canonical aliases", async () => {
+    const previousHome = process.env.HOME;
+    const realHome = await makeTempDir("pi-mask-real-home-");
+    const logicalHome = path.join(realHome, "logical-home");
+    await symlink(realHome, logicalHome);
+    process.env.HOME = logicalHome;
+    try {
+      const canonicalHome = canonicalPath(homedir());
+      expect(isPathMasked(
+        path.join(canonicalHome, ".config", "gh", "hosts.yml"),
+        ["~/.config/gh/hosts.yml"],
+      )).toBe(true);
+      const configDir = path.join(canonicalHome, ".config", "gh");
+      const maskedAlias = path.join(configDir, "hosts.yml");
+      const maskedTarget = path.join(configDir, "host-data.yml");
+      await mkdir(configDir, { recursive: true });
+      await writeFile(maskedTarget, "token", "utf8");
+      await symlink(maskedTarget, maskedAlias);
+      expect(isPathMasked(maskedAlias, ["~/.config/gh/hosts.yml"])).toBe(true);
+    } finally {
+      if (previousHome === undefined) delete process.env.HOME;
+      else process.env.HOME = previousHome;
+    }
+  });
+
+  it("keeps masked symlink leaves denied", async () => {
+    const cwd = await makeTempDir("pi-mask-symlink-leaf-");
+    const targetPath = path.join(cwd, "secret-data");
+    const maskedPath = path.join(cwd, ".env");
+    await writeFile(targetPath, "SECRET=1\n", "utf8");
+    await symlink(targetPath, maskedPath);
+
+    const syncPlan = buildMaskedCommandShimPlan("echo ok", makeProfile(), cwd);
+    const asyncPlan = await buildMaskedCommandShimPlanAsync("echo ok", makeProfile(), cwd, {
+      deadline: Date.now() + 1_000,
+      maxScanDurationMs: 1_000,
+    });
+
+    expect(syncPlan.maskedDenyPaths).toEqual(expect.arrayContaining([maskedPath, targetPath]));
+    expect(asyncPlan.maskedDenyPaths).toEqual(expect.arrayContaining([maskedPath, targetPath]));
+  });
+
   it("enables direct reader shims for masked file reads", async () => {
     const cwd = await makeTempDir("pi-mask-shim-");
     const envPath = path.join(cwd, ".env");
@@ -351,18 +409,32 @@ describe("buildMaskedCommandShimPlan", () => {
     const cwd = await makeTempDir("pi-mask-shim-");
     const configRoot = await makeTempDir("pi-mask-config-");
     const pemPath = path.join(configRoot, "pi-mask-audit", "secret.pem");
+    const nestedCredentialPath = path.join(configRoot, "gcloud", "legacy", "adc.json");
     await mkdir(path.dirname(pemPath), { recursive: true });
+    await mkdir(path.dirname(nestedCredentialPath), { recursive: true });
     await writeFile(pemPath, "TOPSECRET\n", "utf8");
+    await writeFile(nestedCredentialPath, "TOPSECRET\n", "utf8");
 
-    expect(
-      buildMaskedCommandShimPlan("echo ok", makeProfile(), cwd, {
-        scanRoots: [configRoot],
-      }),
-    ).toEqual({
-      maskedFilePaths: [],
-      maskedDenyPaths: [pemPath],
-      shimCommands: [],
+    const profile = {
+      ...makeProfile(),
+      maskedPaths: ["**/*.pem", path.join(configRoot, "gcloud", "**")],
+    };
+    const plan = buildMaskedCommandShimPlan("echo ok", profile, cwd, {
+      scanRoots: [configRoot],
     });
+    expect(plan.maskedFilePaths).toEqual([]);
+    expect(plan.maskedDenyPaths).toEqual(expect.arrayContaining([pemPath, nestedCredentialPath]));
+    expect(plan.maskedDenyPaths).toHaveLength(2);
+    expect(plan.shimCommands).toEqual([]);
+
+    const asyncPlan = await buildMaskedCommandShimPlanAsync(
+      "echo ok",
+      profile,
+      cwd,
+      { scanRoots: [configRoot], deadline: Date.now() + 1_000, maxScanDurationMs: 1_000 },
+    );
+    expect(asyncPlan.maskedDenyPaths).toEqual(expect.arrayContaining([pemPath, nestedCredentialPath]));
+    expect(asyncPlan.maskedDenyPaths).toHaveLength(2);
   });
 
   it("scans readable external bind roots for masked secrets", async () => {

@@ -10,7 +10,10 @@ const BUILTIN_HOST_GIT_SUBCOMMANDS = new Set([
 ]);
 
 function containsShellControl(command: string): boolean {
-  return /(?:&&|\|\||[;|<>`]|\$\()/.test(command) || command.includes("\n");
+  for (const character of "&;|<>`") {
+    if (command.includes(character)) return true;
+  }
+  return command.includes("$(") || command.includes("\n");
 }
 
 function builtinHostGitBypass(command: string): boolean {
@@ -40,6 +43,10 @@ export function isDockerCommand(command: string): boolean {
 export function shouldBypassSandboxCommand(command: string, patterns?: string[]): boolean {
   const trimmed = command.trim();
   if (trimmed.length === 0) return false;
+
+  const configuredPatterns = patterns ?? [];
+  if (configuredPatterns.some((pattern) => pattern.trim() === "*")) return true;
+  if (containsShellControl(trimmed)) return false;
   if (builtinHostGitBypass(trimmed)) return true;
-  return (patterns ?? []).some((pattern) => wildcardMatch(pattern, trimmed));
+  return configuredPatterns.some((pattern) => wildcardMatch(pattern, trimmed));
 }

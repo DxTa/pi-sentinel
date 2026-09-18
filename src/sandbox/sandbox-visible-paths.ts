@@ -1,8 +1,8 @@
 import { createRequire } from "node:module";
 import { homedir, tmpdir } from "node:os";
-import { realpathSync } from "node:fs";
+import { lstatSync, realpathSync, statSync } from "node:fs";
 import { realpath } from "node:fs/promises";
-import { basename, dirname, isAbsolute, resolve } from "node:path";
+import { basename, dirname, isAbsolute, resolve, sep } from "node:path";
 
 import { EXTENSION_ROOT } from "../extension-config.js";
 import type { ResolvedSandboxProfile, SandboxConfig } from "./types.js";
@@ -47,6 +47,7 @@ const KNOWN_SYSTEM_PREFIXES: string[] = [
 
 const DOCKER_HOME_VISIBLE_PATHS: string[] = [".docker"];
 const KNOWN_HOME_VISIBLE_PATHS: string[] = [
+  ".config",
   ".local/bin",
   ".local/lib",
   ".cargo/bin",
@@ -55,7 +56,7 @@ const KNOWN_HOME_VISIBLE_PATHS: string[] = [
 const UV_HOME_VISIBLE_PATHS: string[] = [".local/share/uv", ".cache/uv"];
 const DIRECT_UV_COMMAND_PATTERN = /^\s*(?:(?:env|command|exec|sudo)\s+)*(?:\S*\/)?uvx?(?!\s*\(\s*\))(?=$|\s)/;
 
-const KNOWN_HOME_FILES: string[] = [];
+const KNOWN_HOME_FILES: string[] = [".gitconfig", ".gitignore"];
 const require = createRequire(import.meta.url);
 
 export interface SandboxVisibilityContext {
@@ -126,7 +127,30 @@ export function expandHomePath(value: string): string {
 }
 
 function pathMatchesPrefix(absPath: string, prefix: string): boolean {
-  return absPath === prefix || absPath.startsWith(prefix + "/");
+  return absPath === prefix || absPath.startsWith(prefix + sep);
+}
+
+function isSafeHomePath(home: string, relativePath: string, candidate: string): boolean {
+  if (candidate === home || !pathMatchesPrefix(candidate, home)) return false;
+  try {
+    if (lstatSync(resolve(home, relativePath)).isSymbolicLink()) return false;
+    const stats = statSync(candidate);
+    return relativePath === ".config" ? stats.isDirectory() : stats.isFile();
+  } catch {
+    return true;
+  }
+}
+
+function canonicalHomeVisiblePath(home: string, relativePath: string): string | null {
+  const candidate = canonicalPath(resolve(home, relativePath));
+  return relativePath === ".config" && !isSafeHomePath(home, relativePath, candidate)
+    ? null
+    : candidate;
+}
+
+function canonicalHomeFile(home: string, relativePath: string): string | null {
+  const candidate = canonicalPath(resolve(home, relativePath));
+  return isSafeHomePath(home, relativePath, candidate) ? candidate : null;
 }
 
 function homeVisiblePathsForCommand(
@@ -175,10 +199,12 @@ export function buildSandboxVisiblePaths(
   const home = canonicalPath(homedir());
   const bindPrefixes = bindPaths(context, repoRoot).map(canonicalPath);
 
-  const homeVisiblePaths = homeVisiblePathsForCommand(context.command, context.commandUsesUv).map((relPath) =>
-    canonicalPath(resolve(home, relPath)),
-  );
-  const homeFiles = KNOWN_HOME_FILES.map((relPath) => canonicalPath(resolve(home, relPath)));
+  const homeVisiblePaths = homeVisiblePathsForCommand(context.command, context.commandUsesUv)
+    .map((relPath) => canonicalHomeVisiblePath(home, relPath))
+    .filter((value): value is string => value !== null);
+  const homeFiles = KNOWN_HOME_FILES
+    .map((relPath) => canonicalHomeFile(home, relPath))
+    .filter((value): value is string => value !== null);
   const runtimePackageRoots = getRuntimePackageRoots().map(canonicalPath);
 
   return dedupeCanonical([
@@ -201,10 +227,12 @@ export function buildSandboxRuntimeReadAllowPaths(
   const home = canonicalPath(homedir());
   const bindPrefixes = bindPaths(context, repoRoot).map(canonicalPath);
 
-  const homeVisiblePaths = homeVisiblePathsForCommand(context.command, context.commandUsesUv).map((relPath) =>
-    canonicalPath(resolve(home, relPath)),
-  );
-  const homeFiles = KNOWN_HOME_FILES.map((relPath) => canonicalPath(resolve(home, relPath)));
+  const homeVisiblePaths = homeVisiblePathsForCommand(context.command, context.commandUsesUv)
+    .map((relPath) => canonicalHomeVisiblePath(home, relPath))
+    .filter((value): value is string => value !== null);
+  const homeFiles = KNOWN_HOME_FILES
+    .map((relPath) => canonicalHomeFile(home, relPath))
+    .filter((value): value is string => value !== null);
   const runtimePackageRoots = getRuntimePackageRoots().map(canonicalPath);
 
   return dedupeCanonical([
@@ -255,16 +283,20 @@ export async function buildSandboxVisiblePathsWithinScanBudget(
     deadline,
     durationMs,
   );
-  const homeVisiblePaths = await canonicalizeVisiblePaths(
-    homeVisiblePathsForCommand(context.command, context.commandUsesUv).map((relativePath) => resolve(homedir(), relativePath)),
+  const home = await canonicalPathWithinScanBudget(homedir(), deadline, durationMs);
+  const relativeHomeVisiblePaths = homeVisiblePathsForCommand(context.command, context.commandUsesUv);
+  const homeVisiblePaths = (await canonicalizeVisiblePaths(
+    relativeHomeVisiblePaths.map((relativePath) => resolve(homedir(), relativePath)),
     deadline,
     durationMs,
+  )).filter((candidate, index) =>
+    relativeHomeVisiblePaths[index] !== ".config" || isSafeHomePath(home, ".config", candidate),
   );
-  const homeFiles = await canonicalizeVisiblePaths(
+  const homeFiles = (await canonicalizeVisiblePaths(
     KNOWN_HOME_FILES.map((relativePath) => resolve(homedir(), relativePath)),
     deadline,
     durationMs,
-  );
+  )).filter((candidate, index) => isSafeHomePath(home, KNOWN_HOME_FILES[index] ?? "", candidate));
   const runtimePackageRoots = await canonicalizeVisiblePaths(
     getRuntimePackageRoots(),
     deadline,

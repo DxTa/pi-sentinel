@@ -5,6 +5,7 @@ import { homedir, tmpdir } from "node:os";
 import { dirname, join, relative, resolve, sep } from "node:path";
 
 import type { SandboxProfile } from "./types.js";
+import { canonicalPath } from "./sandbox-visible-paths.js";
 import {
   assertScanWithinBudget,
   awaitWithinScanBudget,
@@ -74,8 +75,26 @@ const ASYNC_UNSCANNABLE_EXACT_ROOTS = [
   tempRootAlias,
 ];
 
+const ALWAYS_READABLE_HOME_FILES = [".gitconfig", ".gitignore"] as const;
+
+function isAlwaysReadableHomeFile(root: string): boolean {
+  const resolved = resolve(root);
+  return ALWAYS_READABLE_HOME_FILES.some((relativePath) =>
+    resolved === resolve(homedir(), relativePath),
+  );
+}
+
 function dedupe(values: string[]): string[] {
-  return [...new Set(values.map((value) => resolve(value)))];
+  return [...new Set(values.map(canonicalPath))];
+}
+
+function dedupeMaskedPaths(values: string[]): string[] {
+  const paths = values.flatMap((value) => {
+    const resolved = resolve(value);
+    const canonical = canonicalPath(resolved);
+    return canonical === resolved ? [resolved] : [resolved, canonical];
+  });
+  return [...new Set(paths)];
 }
 
 function getMaskedPatterns(profile: SandboxProfile): string[] {
@@ -93,24 +112,33 @@ function rootsOverlap(left: string, right: string): boolean {
   return left === right || left.startsWith(`${right}${sep}`) || right.startsWith(`${left}${sep}`);
 }
 
+function getAbsoluteMaskedPatternPrefix(pattern: string): string | null {
+  const expanded = pattern.startsWith("~" + sep)
+    ? join(homedir(), pattern.slice(2))
+    : pattern;
+  if (expanded.startsWith(sep) === false) return null;
+  const wildcardIndex = expanded.search(new RegExp("[?*]"));
+  const lastSeparator = expanded.lastIndexOf(sep);
+  if (wildcardIndex !== -1 && wildcardIndex < lastSeparator) return null;
+  const prefix = wildcardIndex === -1
+    ? dirname(expanded)
+    : expanded.slice(0, wildcardIndex).replace(new RegExp(`${sep}$`), "");
+  return canonicalPath(prefix);
+}
+
 function getFindNamePatterns(profile: SandboxProfile, root: string): string[] {
   const names = new Set<string>();
   for (const pattern of getMaskedPatterns(profile)) {
-    const expanded = pattern.startsWith("~/")
+    const expanded = pattern.startsWith("~" + sep)
       ? join(homedir(), pattern.slice(2))
       : pattern;
-    if (expanded.startsWith("/")) {
-      const wildcardIndex = expanded.search(/[?*]/);
-      const lastSlash = expanded.lastIndexOf("/");
-      if (wildcardIndex === -1 || wildcardIndex > lastSlash) {
-        const fixedPrefix = wildcardIndex === -1
-          ? dirname(expanded)
-          : expanded.slice(0, wildcardIndex).replace(/\/$/, "");
-        if (!rootsOverlap(resolve(root), resolve(fixedPrefix))) continue;
-      }
+    if (expanded.startsWith(sep)) {
+      const fixedPrefix = getAbsoluteMaskedPatternPrefix(pattern);
+      if (fixedPrefix !== null && rootsOverlap(resolve(root), resolve(fixedPrefix)) === false) continue;
+      if (fixedPrefix !== null && fixedPrefix.startsWith(`${resolve(root)}${sep}`)) continue;
     }
-    const name = expanded.slice(expanded.lastIndexOf("/") + 1) || "*";
-    names.add(name.replace(/[\\[\]]/g, "\\$&"));
+    const name = expanded.slice(expanded.lastIndexOf(sep) + 1) || "*";
+    names.add(name.replace(new RegExp("[\\[\\]]", "g"), "\\$&"));
   }
   return [...names];
 }
@@ -179,6 +207,19 @@ function runFindSync(
   return parseFindOutput(output, root, profile, maxEntries, maxDepth, scanDeadline, maxScanDurationMs);
 }
 
+function expandMaskedScanRoots(scanRoots: string[], profile: SandboxProfile): string[] {
+  const roots = normalizeScanRoots(scanRoots);
+  const additions: string[] = [];
+  for (const pattern of getMaskedPatterns(profile)) {
+    const fixedPrefix = getAbsoluteMaskedPatternPrefix(pattern);
+    if (fixedPrefix === null) continue;
+    if (roots.some((root) => fixedPrefix.startsWith(`${resolve(root)}${sep}`))) {
+      additions.push(fixedPrefix);
+    }
+  }
+  return dedupe([...roots, ...additions]).filter(shouldScanRoot);
+}
+
 function shouldScanRoot(root: string): boolean {
   const resolved = resolve(root);
   return existsSync(resolved) && isScannableRoot(resolved);
@@ -199,6 +240,14 @@ function collectConcreteMaskedFiles(
   scanDeadline: number,
   maxScanDurationMs: number,
 ): string[] {
+  if (isAlwaysReadableHomeFile(root)) return [];
+  const rootStat = statSync(root);
+  if (rootStat.isDirectory() === false) {
+    if (rootStat.isFile()) {
+      if (isPathMasked(root, getMaskedPatterns(profile))) return [root];
+    }
+    return [];
+  }
   return runFindSync(root, profile, maxEntries, maxDepth, scanDeadline, maxScanDurationMs);
 }
 
@@ -214,10 +263,10 @@ export function buildMaskedCommandShimPlan(
   const maxScanDurationMs = options.maxScanDurationMs ?? DEFAULT_MAX_SCAN_DURATION_MS;
   const scanRoots = options.skipWorkspaceScan
     ? []
-    : normalizeScanRoots([
+    : expandMaskedScanRoots([
         cwd,
         ...(options.scanRoots ?? []),
-      ]);
+      ], profile);
   // Mask classification is security-critical. A partial scan cannot prove that
   // an allowed root contains no protected files, so fail closed instead of
   // relying on command-text detection or an unsupported pattern-only fallback.
@@ -241,7 +290,7 @@ export function buildMaskedCommandShimPlan(
     }
   }
 
-  const maskedDenyPaths = dedupe([
+  const maskedDenyPaths = dedupeMaskedPaths([
     ...scannedMaskedFiles,
     ...maskedFilePaths,
   ]).filter((path) => {
@@ -280,10 +329,10 @@ export async function buildMaskedCommandShimPlanAsync(
   const maxScanDurationMs = options.maxScanDurationMs ?? DEFAULT_MAX_SCAN_DURATION_MS;
   const scanRoots = options.skipWorkspaceScan
     ? []
-    : normalizeScanRoots([
+    : expandMaskedScanRoots([
         cwd,
         ...(options.scanRoots ?? []),
-      ]).filter(isScannableRoot);
+      ], profile).filter(isScannableRoot);
   const scannedMaskedFiles: string[] = [];
 
   for (const root of scanRoots) {
@@ -305,7 +354,7 @@ export async function buildMaskedCommandShimPlanAsync(
     }
   }
 
-  const maskedDenyPaths = dedupe([...scannedMaskedFiles, ...maskedFilePaths]);
+  const maskedDenyPaths = dedupeMaskedPaths([...scannedMaskedFiles, ...maskedFilePaths]);
   const existingMaskedDenyPaths: string[] = [];
   for (const filePath of maskedDenyPaths) {
     try {
@@ -394,5 +443,18 @@ async function collectConcreteMaskedFilesAsync(
   scanDeadline: number,
   maxScanDurationMs: number,
 ): Promise<string[]> {
+  if (isAlwaysReadableHomeFile(root)) return [];
+  const rootStat = await awaitWithinScanBudget(
+    stat(root),
+    scanDeadline,
+    maxScanDurationMs,
+    root,
+  );
+  if (rootStat.isDirectory() === false) {
+    if (rootStat.isFile()) {
+      if (isPathMasked(root, getMaskedPatterns(profile))) return [root];
+    }
+    return [];
+  }
   return runFindAsync(root, profile, maxEntries, maxDepth, scanDeadline, maxScanDurationMs);
 }

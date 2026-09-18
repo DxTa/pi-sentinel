@@ -67,9 +67,10 @@ export interface SandboxConfig {
   /** Internal read-only paths required by Pi infrastructure. */
   infrastructureReadPaths?: string[];
 
-  /** Command glob patterns (wildcardMatch) that skip the sandbox entirely.
-   * Matched against the raw command string. Use for commands that require
-   * capabilities the SRT sandbox cannot provide (e.g. AF_UNIX sockets for herdr). */
+  /** Explicit command glob patterns that run on the host outside SRT.
+   * Bash permission and preflight network checks run first. Use ["*"] to make
+   * all Bash commands host-accessible while keeping direct file-tool gates active.
+   * Recognized mutating commands still hard-block unsafe paths. */
   bypassCommands?: string[];
   /** Optional command-specific auth exception policy. */
   authExceptions?: SandboxAuthExceptionRule[];

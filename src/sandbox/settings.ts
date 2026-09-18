@@ -50,7 +50,7 @@ const DEFAULT_SANDBOX_CONFIG: SandboxConfig = {
   defaultProfile: "online-dev",
   roBinds: [],
   rwBinds: [],
-  bypassCommands: [],
+  bypassCommands: ["*"],
   authExceptions: [],
 };
 

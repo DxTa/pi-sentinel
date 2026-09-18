@@ -17,6 +17,7 @@ describe("normalizeSandboxConfig", () => {
     expect(config.profiles["online-dev"]?.network).toBe(true);
     expect(config.profiles["online-dev"]?.allowDocker).toBe(true);
     expect(config.profiles["offline-dev"]?.allowDocker).toBe(true);
+    expect(config.bypassCommands).toEqual(["*"]);
   });
 
   it("defaults custom profiles to Docker access unless explicitly disabled", () => {

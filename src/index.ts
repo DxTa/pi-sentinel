@@ -35,6 +35,8 @@ import { registerPermissionRpcHandlers } from "./permission-event-rpc";
 import { emitReadyEvent } from "./permission-events";
 import { PermissionPrompter } from "./permission-prompter";
 import { PromptWaitTracker } from "./prompt-state";
+import { getHardBlockedBashMutationPaths } from "./handlers/gates/bash-external-directory.js";
+import { extractExternalPathsFromBashCommand } from "./handlers/gates/bash-path-extractor.js";
 import { PermissionSession } from "./permission-session";
 import {
   createExtensionRuntime,
@@ -1448,6 +1450,27 @@ export default function piPermissionSystemExtension(pi: ExtensionAPI): void {
       };
     }
     // Network domain gate for user bash
+    let hardBlockedMutationPaths: string[];
+    try {
+      const externalPaths = await extractExternalPathsFromBashCommand(
+        event.command,
+        event.cwd,
+      );
+      hardBlockedMutationPaths = getHardBlockedBashMutationPaths(
+        event.command,
+        event.cwd,
+        externalPaths,
+      );
+    } catch {
+      return blockedUserBash("Bash mutation path check unavailable; command blocked.");
+    }
+    if (hardBlockedMutationPaths.length > 0) {
+      return blockedUserBash(
+        "Blocked mutating Bash command outside workspace or temporary roots: "
+        + hardBlockedMutationPaths.join(", "),
+      );
+    }
+
     const networkResult = await handleNetworkUserBash(
       event as Parameters<typeof handleNetworkUserBash>[0],
       ctx,
