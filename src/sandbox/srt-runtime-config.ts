@@ -9,6 +9,7 @@ export interface SrtRuntimeConfig {
     deniedDomains: string[];
     strictAllowlist: boolean;
     allowUnixSockets?: string[];
+    allowAllUnixSockets?: boolean;
   };
   dockerHost?: string;
   filesystem: {
@@ -25,9 +26,6 @@ function dedupe(values: string[]): string[] {
 
 export function buildSrtRuntimeConfig(spec: SrtCommandSpec): SrtRuntimeConfig {
   const dockerRequested = spec.allowDocker && isDockerCommand(spec.command);
-  if (dockerRequested && process.platform !== "darwin") {
-    throw new Error("Docker socket path enforcement unavailable on this SRT platform; command blocked.");
-  }
   const dockerSocketPaths = dockerRequested ? resolveDockerSocketPaths() : [];
   if (dockerRequested && dockerSocketPaths.length === 0) {
     throw new Error("Docker socket unavailable; command blocked.");
@@ -62,6 +60,9 @@ export function buildSrtRuntimeConfig(spec: SrtCommandSpec): SrtRuntimeConfig {
       allowedDomains: spec.networkPlan.config.allowedDomains,
       deniedDomains: spec.networkPlan.config.deniedDomains,
       strictAllowlist: spec.networkPlan.unmatchedHostAction === "deny",
+      ...(process.platform === "darwin" || process.platform === "linux"
+        ? { allowAllUnixSockets: true }
+        : {}),
       ...(dockerSocketPaths.length > 0 ? { allowUnixSockets: dockerSocketPaths } : {}),
     },
     filesystem: {

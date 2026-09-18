@@ -1,7 +1,8 @@
-import { existsSync, lstatSync, readdirSync, realpathSync, statSync } from "node:fs";
-import { lstat, readdir, realpath, stat } from "node:fs/promises";
+import { execFile, execFileSync } from "node:child_process";
+import { existsSync, lstatSync, statSync } from "node:fs";
+import { lstat, stat } from "node:fs/promises";
 import { homedir, tmpdir } from "node:os";
-import { dirname, join, resolve } from "node:path";
+import { dirname, join, relative, resolve, sep } from "node:path";
 
 import type { SandboxProfile } from "./types.js";
 import {
@@ -57,6 +58,8 @@ const NON_SECRET_SYSTEM_ROOTS = [
 const DEFAULT_MAX_SCAN_ENTRIES = 50_000;
 const DEFAULT_MAX_SCAN_DEPTH = 40;
 const DEFAULT_MAX_SCAN_DURATION_MS = DEFAULT_SCAN_DURATION_MS;
+const FIND_BINARY = "/usr/bin/find";
+const MAX_FIND_OUTPUT_BYTES = 64 * 1024 * 1024;
 
 // SRT excludes temporary roots from its runtime read allowlist. Scanning them
 // for concrete masks only adds unbounded host state to every invocation.
@@ -79,31 +82,114 @@ function getMaskedPatterns(profile: SandboxProfile): string[] {
   return profile.maskedPaths?.length ? profile.maskedPaths : DEFAULT_MASKED_PATTERNS;
 }
 
-function expandHomePatternRoot(pattern: string): string | null {
-  if (!pattern.startsWith("~/")) return null;
-  const expanded = resolve(homedir(), pattern.slice(2));
-  const wildcardIndex = expanded.search(/[*?\[]/);
-  if (wildcardIndex === -1) return expanded;
-  const prefix = expanded.slice(0, wildcardIndex);
-  const slashIndex = prefix.lastIndexOf("/");
-  return slashIndex > 0 ? prefix.slice(0, slashIndex) : dirname(prefix);
+function isWithinScanDepth(root: string, candidate: string, maxDepth: number): boolean {
+  const relativePath = relative(root, candidate);
+  if (relativePath === ".") return true;
+  if (relativePath === ".." || relativePath.startsWith(`..${sep}`)) return false;
+  return relativePath.split(sep).length <= maxDepth;
 }
 
-function getPatternScanRoots(profile: SandboxProfile): string[] {
-  return getMaskedPatterns(profile)
-    .map(expandHomePatternRoot)
-    .filter((root): root is string => root !== null);
+function rootsOverlap(left: string, right: string): boolean {
+  return left === right || left.startsWith(`${right}${sep}`) || right.startsWith(`${left}${sep}`);
+}
+
+function getFindNamePatterns(profile: SandboxProfile, root: string): string[] {
+  const names = new Set<string>();
+  for (const pattern of getMaskedPatterns(profile)) {
+    const expanded = pattern.startsWith("~/")
+      ? join(homedir(), pattern.slice(2))
+      : pattern;
+    if (expanded.startsWith("/")) {
+      const wildcardIndex = expanded.search(/[?*]/);
+      const lastSlash = expanded.lastIndexOf("/");
+      if (wildcardIndex === -1 || wildcardIndex > lastSlash) {
+        const fixedPrefix = wildcardIndex === -1
+          ? dirname(expanded)
+          : expanded.slice(0, wildcardIndex).replace(/\/$/, "");
+        if (!rootsOverlap(resolve(root), resolve(fixedPrefix))) continue;
+      }
+    }
+    const name = expanded.slice(expanded.lastIndexOf("/") + 1) || "*";
+    names.add(name.replace(/[\\[\]]/g, "\\$&"));
+  }
+  return [...names];
+}
+
+function buildFindArgs(root: string, namePatterns: string[], maxDepth: number): string[] {
+  const args = process.platform === "linux"
+    ? [root, "-maxdepth", String(maxDepth), "(", "-type", "f", "-o", "-type", "l", ")"]
+    : [root, "(", "-type", "f", "-o", "-type", "l", ")"];
+  if (namePatterns.length > 0) {
+    args.push("(");
+    namePatterns.forEach((pattern, index) => {
+      if (index > 0) args.push("-o");
+      args.push("-name", pattern);
+    });
+    args.push(")");
+  }
+  args.push("-print0");
+  return args;
+}
+
+function parseFindOutput(
+  output: Buffer,
+  root: string,
+  profile: SandboxProfile,
+  maxEntries: number,
+  maxDepth: number,
+  scanDeadline: number,
+  maxScanDurationMs: number,
+): string[] {
+  if (output.length === 0) return [];
+  if (output[output.length - 1] !== 0) {
+    throw new Error(`Find file inventory returned incomplete output at ${root}`);
+  }
+
+  const patterns = getMaskedPatterns(profile);
+  const results: string[] = [];
+  for (const candidate of output.toString("utf8").split("\0")) {
+    assertScanWithinBudget(scanDeadline, maxScanDurationMs, root);
+    if (!candidate) continue;
+    const resolvedCandidate = resolve(candidate);
+    if (!isWithinScanDepth(root, resolvedCandidate, maxDepth) || !isPathMasked(resolvedCandidate, patterns)) continue;
+    results.push(resolvedCandidate);
+    if (results.length > maxEntries) {
+      throw new Error(`Masked file scan exceeded ${maxEntries} entries at ${resolvedCandidate}`);
+    }
+  }
+  return results;
+}
+
+function runFindSync(
+  root: string,
+  profile: SandboxProfile,
+  maxEntries: number,
+  maxDepth: number,
+  scanDeadline: number,
+  maxScanDurationMs: number,
+): string[] {
+  assertScanWithinBudget(scanDeadline, maxScanDurationMs, root);
+  const output = execFileSync(FIND_BINARY, buildFindArgs(root, getFindNamePatterns(profile, root), maxDepth), {
+    encoding: "buffer",
+    maxBuffer: MAX_FIND_OUTPUT_BYTES,
+    stdio: ["ignore", "pipe", "ignore"],
+    timeout: Math.max(1, scanDeadline - Date.now()),
+  });
+  assertScanWithinBudget(scanDeadline, maxScanDurationMs, root);
+  return parseFindOutput(output, root, profile, maxEntries, maxDepth, scanDeadline, maxScanDurationMs);
 }
 
 function shouldScanRoot(root: string): boolean {
   const resolved = resolve(root);
-  if (!existsSync(resolved)) return false;
-  return !NON_SECRET_SYSTEM_ROOTS.some((systemRoot) => {
-    const normalized = resolve(systemRoot);
-    return resolved === normalized || resolved.startsWith(normalized + "/");
-  });
+  return existsSync(resolved) && isScannableRoot(resolved);
 }
 
+function normalizeScanRoots(roots: string[]): string[] {
+  const normalized = dedupe(roots).filter(shouldScanRoot);
+  return normalized.filter((root) =>
+    !normalized.some((ancestor) => ancestor !== root && root.startsWith(`${ancestor}/`)),
+  );
+}
 
 function collectConcreteMaskedFiles(
   root: string,
@@ -113,63 +199,7 @@ function collectConcreteMaskedFiles(
   scanDeadline: number,
   maxScanDurationMs: number,
 ): string[] {
-  const patterns = getMaskedPatterns(profile);
-  const results: string[] = [];
-  const stack: Array<{ path: string; depth: number }> = [{ path: resolve(root), depth: 0 }];
-  const visitedDirs = new Set<string>();
-  let entriesSeen = 0;
-
-  while (stack.length > 0) {
-    const current = stack.pop()!;
-    assertScanWithinBudget(scanDeadline, maxScanDurationMs, current.path);
-
-    entriesSeen += 1;
-    if (entriesSeen > maxEntries) {
-      throw new Error(`Masked file scan exceeded ${maxEntries} entries at ${current.path}`);
-    }
-    if (current.depth > maxDepth) continue;
-
-    let stat;
-    try {
-      stat = lstatSync(current.path);
-    } catch {
-      continue;
-    }
-
-    if (stat.isSymbolicLink()) {
-      if (isPathMasked(current.path, patterns)) results.push(current.path);
-      continue;
-    }
-
-    if (stat.isFile()) {
-      if (isPathMasked(current.path, patterns)) results.push(current.path);
-      continue;
-    }
-    if (!stat.isDirectory()) continue;
-
-    let realPath;
-    try {
-      realPath = realpathSync(current.path);
-    } catch {
-      continue;
-    }
-    if (visitedDirs.has(realPath)) continue;
-    visitedDirs.add(realPath);
-
-    let entries: import("node:fs").Dirent[];
-    try {
-      entries = readdirSync(current.path, { withFileTypes: true });
-    } catch {
-      continue;
-    }
-
-    for (const entry of entries) {
-      assertScanWithinBudget(scanDeadline, maxScanDurationMs, current.path);
-      stack.push({ path: join(current.path, entry.name), depth: current.depth + 1 });
-    }
-  }
-
-  return results;
+  return runFindSync(root, profile, maxEntries, maxDepth, scanDeadline, maxScanDurationMs);
 }
 
 export function buildMaskedCommandShimPlan(
@@ -184,11 +214,10 @@ export function buildMaskedCommandShimPlan(
   const maxScanDurationMs = options.maxScanDurationMs ?? DEFAULT_MAX_SCAN_DURATION_MS;
   const scanRoots = options.skipWorkspaceScan
     ? []
-    : dedupe([
+    : normalizeScanRoots([
         cwd,
         ...(options.scanRoots ?? []),
-        ...getPatternScanRoots(profile),
-      ]).filter(shouldScanRoot);
+      ]);
   // Mask classification is security-critical. A partial scan cannot prove that
   // an allowed root contains no protected files, so fail closed instead of
   // relying on command-text detection or an unsupported pattern-only fallback.
@@ -251,11 +280,10 @@ export async function buildMaskedCommandShimPlanAsync(
   const maxScanDurationMs = options.maxScanDurationMs ?? DEFAULT_MAX_SCAN_DURATION_MS;
   const scanRoots = options.skipWorkspaceScan
     ? []
-    : dedupe([
+    : normalizeScanRoots([
         cwd,
         ...(options.scanRoots ?? []),
-        ...getPatternScanRoots(profile),
-      ]);
+      ]).filter(isScannableRoot);
   const scannedMaskedFiles: string[] = [];
 
   for (const root of scanRoots) {
@@ -327,6 +355,37 @@ function isScannableRoot(root: string): boolean {
   });
 }
 
+async function runFindAsync(
+  root: string,
+  profile: SandboxProfile,
+  maxEntries: number,
+  maxDepth: number,
+  scanDeadline: number,
+  maxScanDurationMs: number,
+): Promise<string[]> {
+  assertScanWithinBudget(scanDeadline, maxScanDurationMs, root);
+  const output = await new Promise<Buffer>((resolveOutput, reject) => {
+    execFile(
+      FIND_BINARY,
+      buildFindArgs(root, getFindNamePatterns(profile, root), maxDepth),
+      {
+        encoding: "buffer",
+        maxBuffer: MAX_FIND_OUTPUT_BYTES,
+        timeout: Math.max(1, scanDeadline - Date.now()),
+      },
+      (error, stdout) => {
+        if (error) {
+          reject(error);
+          return;
+        }
+        resolveOutput(Buffer.isBuffer(stdout) ? stdout : Buffer.from(stdout ?? ""));
+      },
+    );
+  });
+  assertScanWithinBudget(scanDeadline, maxScanDurationMs, root);
+  return parseFindOutput(output, root, profile, maxEntries, maxDepth, scanDeadline, maxScanDurationMs);
+}
+
 async function collectConcreteMaskedFilesAsync(
   root: string,
   profile: SandboxProfile,
@@ -335,77 +394,5 @@ async function collectConcreteMaskedFilesAsync(
   scanDeadline: number,
   maxScanDurationMs: number,
 ): Promise<string[]> {
-  const patterns = getMaskedPatterns(profile);
-  const results: string[] = [];
-  const stack: Array<{ path: string; depth: number }> = [{ path: resolve(root), depth: 0 }];
-  const visitedDirs = new Set<string>();
-  let entriesSeen = 0;
-
-  while (stack.length > 0) {
-    const current = stack.pop()!;
-    assertScanWithinBudget(scanDeadline, maxScanDurationMs, current.path);
-    entriesSeen += 1;
-    if (entriesSeen > maxEntries) {
-      throw new Error(`Masked file scan exceeded ${maxEntries} entries at ${current.path}`);
-    }
-    if (current.depth > maxDepth) continue;
-
-    let fileStat;
-    try {
-      fileStat = await awaitWithinScanBudget(
-        lstat(current.path),
-        scanDeadline,
-        maxScanDurationMs,
-        current.path,
-      );
-    } catch (error) {
-      if (isScanBudgetExceeded(error)) throw error;
-      continue;
-    }
-
-    if (fileStat.isSymbolicLink()) {
-      if (isPathMasked(current.path, patterns)) results.push(current.path);
-      continue;
-    }
-    if (fileStat.isFile()) {
-      if (isPathMasked(current.path, patterns)) results.push(current.path);
-      continue;
-    }
-    if (!fileStat.isDirectory()) continue;
-
-    let realPath: string;
-    try {
-      realPath = await awaitWithinScanBudget(
-        realpath(current.path),
-        scanDeadline,
-        maxScanDurationMs,
-        current.path,
-      );
-    } catch (error) {
-      if (isScanBudgetExceeded(error)) throw error;
-      continue;
-    }
-    if (visitedDirs.has(realPath)) continue;
-    visitedDirs.add(realPath);
-
-    let entries: import("node:fs").Dirent[];
-    try {
-      entries = await awaitWithinScanBudget(
-        readdir(current.path, { withFileTypes: true }),
-        scanDeadline,
-        maxScanDurationMs,
-        current.path,
-      );
-    } catch (error) {
-      if (isScanBudgetExceeded(error)) throw error;
-      continue;
-    }
-
-    for (const entry of entries) {
-      assertScanWithinBudget(scanDeadline, maxScanDurationMs, current.path);
-      stack.push({ path: join(current.path, entry.name), depth: current.depth + 1 });
-    }
-  }
-
-  return results;
+  return runFindAsync(root, profile, maxEntries, maxDepth, scanDeadline, maxScanDurationMs);
 }

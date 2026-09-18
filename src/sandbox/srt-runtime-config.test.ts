@@ -43,6 +43,7 @@ describe("buildSrtRuntimeConfig", () => {
         allowedDomains: ["github.com"],
         deniedDomains: ["blocked.example.com"],
         strictAllowlist: true,
+        allowAllUnixSockets: true,
       },
       filesystem: {
         allowRead: ["/repo", "/repo/app", "/shared-ro", "/shared-rw", "/usr", "/bin"],
@@ -102,6 +103,7 @@ describe("buildSrtRuntimeConfig", () => {
   });
 
   it("allows validated Docker sockets through filesystem and Unix-socket rules", () => {
+    vi.spyOn(process, "platform", "get").mockReturnValue("darwin");
     vi.spyOn(dockerSocket, "resolveDockerSocketPaths").mockReturnValue(["/var/run/docker.sock"]);
 
     const config = buildSrtRuntimeConfig(makeSpec({ command: "docker info", allowDocker: true }));
@@ -111,22 +113,21 @@ describe("buildSrtRuntimeConfig", () => {
     expect(config.network?.allowUnixSockets).toEqual(["/var/run/docker.sock"]);
   });
 
-  it("allows validated Docker sockets without allowing all Unix sockets", () => {
-    const network = buildSrtRuntimeConfig(
-      makeSpec({ command: "docker info", allowDocker: true }),
-    ).network;
-
-    expect(network.allowUnixSockets).toEqual(expect.arrayContaining(["/var/run/docker.sock"]));
-    expect(network).not.toHaveProperty("allowAllUnixSockets");
-  });
-
-  it("fails closed on platforms without path-scoped Unix socket enforcement", () => {
+  it("allows all Unix sockets by default on Linux while preserving Docker approval", () => {
     vi.spyOn(process, "platform", "get").mockReturnValue("linux");
     vi.spyOn(dockerSocket, "resolveDockerSocketPaths").mockReturnValue(["/var/run/docker.sock"]);
 
-    expect(() =>
-      buildSrtRuntimeConfig(makeSpec({ command: "docker info", allowDocker: true })),
-    ).toThrowError("Docker socket path enforcement unavailable on this SRT platform; command blocked.");
+    const config = buildSrtRuntimeConfig(makeSpec({ command: "docker info", allowDocker: true }));
+
+    expect(config.network?.allowAllUnixSockets).toBe(true);
+    expect(config.network?.allowUnixSockets).toEqual(["/var/run/docker.sock"]);
+    expect(config.dockerHost).toBe("unix:///var/run/docker.sock");
+  });
+
+  it("does not emit the platform default on unsupported platforms", () => {
+    vi.spyOn(process, "platform", "get").mockReturnValue("win32");
+
+    expect(buildSrtRuntimeConfig(makeSpec()).network).not.toHaveProperty("allowAllUnixSockets");
   });
 
   it("fails closed when Docker socket resolution returns no socket", () => {

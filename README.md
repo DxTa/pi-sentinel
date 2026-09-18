@@ -19,11 +19,11 @@ Bundled defaults are conservative:
 - Bash asks by default, except for `git status` and `git diff`;
 - after approval, bundled profiles permit Docker CLI access through its validated Unix socket by default; set `allowDocker: false` to disable it;
 - generated `pi-clipboard-<uuid>.*` files referenced during a session are removed at session shutdown;
+- On macOS and Linux, sandboxed commands allow all Unix sockets by default so local services can work; this exposes Docker, SSH agents, databases, and other host Unix services to sandboxed code.
 - Docker socket access is host-admin equivalent: Docker can mount or read host paths despite the SRT filesystem boundary; direct Docker and Compose commands remain approval-gated.
 - Direct Docker commands receive read-only `~/.docker` visibility for CLI plugins; other Docker credential files remain masked, and broad `~/.config` is not exposed.
 - Direct Docker commands automatically receive read-only access to `~/.docker/config.json`; other commands keep Docker credentials masked.
-- Docker socket access is fail-closed on platforms where this SRT version cannot enforce path-scoped Unix sockets; `allowAllUnixSockets` is not used.
-- outbound domains still require approval unless explicitly allowed.
+- Outbound domains still require approval unless explicitly allowed.
 
 ## Features
 
