@@ -30,6 +30,18 @@
       "default": false
 
     },
+    "yoloAutoMode": {
+      "description": "Enable model-backed automatic approval for eligible workspace-local reads and directory listings.",
+      "markdownDescription": "Enable model-backed automatic approval for eligible workspace-local reads and directory listings. Enabled by default; deterministic permission, path, sandbox, credential, network, and destructive-action gates remain authoritative.",
+      "type": "boolean",
+      "default": true
+    },
+    "yoloAutoMaxLevel": {
+      "description": "Maximum classifier level allowed to produce automatic approval after Patronus native L1.",
+      "markdownDescription": "Maximum automatic-approval level. `l1` runs Patronus native injection_l1 only; `l2` continues to the calibrated local classifier; `l3` permits advisory escalation after L2. L3 never independently authorizes a request; escalated requests still prompt.",
+      "enum": ["l1", "l2", "l3"],
+      "default": "l3"
+    },
     "yoloAskBashPatterns": {
       "description": "Bash command wildcard patterns that still prompt even when yolo mode is enabled.",
       "markdownDescription": "Bash command wildcard patterns that still prompt even when `yoloMode` is enabled.\n\nPatterns use the same wildcard matching as `permission.bash` and are matched against the raw bash command string. Example: `git push *` or `git commit *`.",

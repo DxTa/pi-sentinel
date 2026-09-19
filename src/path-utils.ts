@@ -1,3 +1,4 @@
+import { existsSync, realpathSync } from "node:fs";
 import { homedir } from "node:os";
 import { join, normalize, resolve, sep } from "node:path";
 
@@ -96,6 +97,26 @@ export function getPathBearingToolPath(
   }
 
   return getNonEmptyString(toRecord(input).path);
+}
+
+/**
+ * Check workspace locality using canonical filesystem targets.
+ * Missing/unresolvable targets fail closed for model-backed auto-approval.
+ */
+export function isPathWithinCanonicalWorkingDirectory(
+  pathValue: string,
+  cwd: string,
+): boolean {
+  const normalizedPath = normalizePathForComparison(pathValue, cwd);
+  const normalizedCwd = normalizePathForComparison(cwd, cwd);
+  if (!normalizedPath || !normalizedCwd || !existsSync(normalizedCwd)) return false;
+  try {
+    const canonicalCwd = realpathSync.native(normalizedCwd);
+    const canonicalPath = realpathSync.native(normalizedPath);
+    return isPathWithinDirectory(canonicalPath, canonicalCwd);
+  } catch {
+    return false;
+  }
 }
 
 export function isPathOutsideWorkingDirectory(

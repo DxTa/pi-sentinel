@@ -4,6 +4,124 @@ import { PromptWaitTracker } from "./prompt-state";
 import { PermissionPrompter } from "./permission-prompter";
 
 describe("PermissionPrompter", () => {
+  it("auto-approves eligible safe workspace reads through yolo-auto", async () => {
+    const requestPermissionDecisionFromUi = vi.fn(async () => ({
+      approved: true,
+      state: "approved" as const,
+    }));
+    const startupOrder: string[] = [];
+    const evaluate = vi.fn(async () => {
+      startupOrder.push("evaluate");
+      return {
+      status: "complete" as const,
+      escalated: false,
+      l1: { verdict: "safe" as const, accepted: true, complete: true, degraded: false },
+      l2: {
+        escalated: false,
+        results: [
+          { category: "injection", className: "safe", accepted: true, complete: true, degraded: false },
+          { category: "tool_class", className: "file", accepted: true, complete: true, degraded: false },
+          { category: "tool_action", className: "read", accepted: true, complete: true, degraded: false },
+          ...["source_sensitive", "source_untrusted", "sink_external"].map((pipeline) => ({
+            category: "tool_tags",
+            pipeline,
+            className: "absent",
+            accepted: true,
+            complete: true,
+            degraded: false,
+          })),
+        ],
+      },
+      l3: undefined,
+      };
+    });
+    const reviewLog: Array<{ event: string; details: Record<string, unknown> }> = [];
+    const prompter = new PermissionPrompter({
+      promptWaitTracker: new PromptWaitTracker({ emit() {} }),
+      getConfig: () => ({
+        debugLog: false,
+        permissionReviewLog: true,
+        yoloMode: false,
+        yoloAutoMode: true,
+        yoloAutoMaxLevel: "l2",
+        yoloAskBashPatterns: [],
+      }),
+      yoloAutoClient: { evaluate },
+      waitForYoloAutoStartup: async () => { startupOrder.push("startup"); },
+      writeReviewLog(event, details) {
+        reviewLog.push({ event, details });
+      },
+      subagentSessionsDir: "/tmp/subagents",
+      forwardingDir: "/tmp/forwarding",
+      requestPermissionDecisionFromUi,
+    });
+
+    const result = await prompter.prompt({ hasUI: true, ui: {} } as never, {
+      requestId: "req-yolo-auto",
+      source: "tool_call",
+      agentName: null,
+      message: "Need permission",
+      toolName: "read",
+      path: "README.md",
+      yoloAutoEligible: true,
+      yoloAutoWorkspaceLocal: true,
+      yoloAutoOperation: "read",
+      yoloAutoWorkspaceRelativePath: "README.md",
+    });
+
+    expect(result).toEqual({ approved: true, state: "approved", autoApproved: true });
+    expect(startupOrder).toEqual(["startup", "evaluate"]);
+    expect(evaluate).toHaveBeenCalledWith({
+      toolName: "read",
+      operation: "read",
+      workspaceRelativePath: "README.md",
+      metadata: { input_has_path: true, tool_call_id_present: false },
+    }, "l2");
+    expect(requestPermissionDecisionFromUi).not.toHaveBeenCalled();
+    expect(reviewLog.map((entry) => entry.event)).toEqual([
+      "permission_request.yolo_auto_approved",
+    ]);
+  });
+
+  it("falls back to prompt when yolo-auto startup fails", async () => {
+    const requestPermissionDecisionFromUi = vi.fn(async () => ({
+      approved: false,
+      state: "denied" as const,
+    }));
+    const evaluate = vi.fn();
+    const prompter = new PermissionPrompter({
+      promptWaitTracker: new PromptWaitTracker({ emit() {} }),
+      getConfig: () => ({
+        debugLog: false,
+        permissionReviewLog: true,
+        yoloMode: false,
+        yoloAutoMode: true,
+        yoloAutoMaxLevel: "l2",
+        yoloAskBashPatterns: [],
+      }),
+      yoloAutoClient: { evaluate },
+      waitForYoloAutoStartup: async () => { throw new Error("worker unavailable"); },
+      writeReviewLog() {},
+      subagentSessionsDir: "/tmp/subagents",
+      forwardingDir: "/tmp/forwarding",
+      requestPermissionDecisionFromUi,
+    });
+
+    await expect(prompter.prompt({ hasUI: true, ui: { setStatus() {} } } as never, {
+      requestId: "req-startup-failure",
+      source: "tool_call",
+      agentName: null,
+      message: "Need permission",
+      toolName: "read",
+      yoloAutoEligible: true,
+      yoloAutoWorkspaceLocal: true,
+      yoloAutoOperation: "read",
+      yoloAutoWorkspaceRelativePath: "README.md",
+    })).resolves.toEqual({ approved: false, state: "denied" });
+    expect(evaluate).not.toHaveBeenCalled();
+    expect(requestPermissionDecisionFromUi).toHaveBeenCalledOnce();
+  });
+
   it("tracks prompt status for interactive permission approval", async () => {
     const statuses: Array<string | undefined> = [];
     const busEvents: Array<{ channel: string; payload: unknown }> = [];

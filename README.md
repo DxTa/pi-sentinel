@@ -32,6 +32,35 @@ Bundled defaults are conservative:
 - **Sandboxed Bash** through SRT, with fail-closed behavior when the runtime is unavailable.
 - **Credential protection** for sensitive environment variables and files; masked files show names while content is replaced or denied.
 - **Dynamic approvals and audit logs** for path/network grants, permission decisions, and optional debug diagnostics.
+- **Default-on `yolo-auto`** for model-backed approval of eligible workspace-local reads and listings; deterministic permission, path, credential, network, sandbox, and destructive-action gates still run first.
+
+### `yolo-auto` worker contract
+
+`yolo-auto` is enabled by default. Patronus native L1 runs first, then L2 is the automatic-approval candidate; L3 is available as advisory escalation and never authorizes escalated requests, so escalated requests still prompt. Missing, stale, incompatible, timed-out, or degraded worker results fail closed to the normal permission prompt.
+
+The MIT package does not bundle Patronus Ark or model assets. The external worker must provide Patronus native L1, L2 classifiers, and advisory L3. A separately installed and licensed worker must listen on a user-owned Unix socket and implement the versioned length-delimited JSON handshake/evaluation protocol in `src/yolo-auto-client.ts`. Set `PI_SENTINEL_YOLO_AUTO_SOCKET` to its socket path; otherwise pi-sentinel uses `~/.pi/agent/runtime/pi-sentinel/yolo-auto.sock`. Missing model assets are downloaded and warmed at worker startup, before the socket accepts permission requests; no model downloads occur during permission decisions. `/sentinel show` reports worker state and fallback reason.
+
+When `yoloAutoMode` is enabled, pi-sentinel starts the repository adapter automatically with `python3` unless the configured socket path already exists. Set `PI_SENTINEL_PYTHON` and `PI_SENTINEL_PATRONUS_SITE_PACKAGES` when Patronus Ark is installed outside the active Python environment. Eligible yolo-auto decisions wait for startup readiness; failed startup falls back to the normal prompt.
+
+Worker phases:
+
+```text
+l1: Patronus native injection_l1; safe/unsafe/unknown result
+l2: tool class/action/tag classifiers; explicit escalation flag
+l3: multi-head advisory recommendation after L2 escalation
+```
+
+A safe L1 result is required before L2. L1 or L2 failure, uncertainty, degradation, malformed output, or timeout falls back to the normal permission prompt. L3 recommendations never grant authorization.
+
+The repository includes an external-worker adapter. Install Patronus Ark separately, then run; missing assets download and cache atomically during startup:
+
+```sh
+python3 bin/patronus-yolo-auto-worker.py \
+  --site-packages /path/to/patronus/site-packages \
+  --model-dir /path/to/patronus/models
+```
+
+Use `PI_SENTINEL_YOLO_AUTO_SOCKET` when the worker socket is not the default. The adapter sets `download_files=true` by default; `--no-download-files` is available for controlled offline runs, but missing assets then stop worker startup instead of downloading during permission decisions.
 
 ## How it works
 

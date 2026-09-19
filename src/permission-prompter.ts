@@ -6,6 +6,8 @@ import {
   type PermissionForwardingDeps,
 } from "./forwarded-permissions/polling";
 import { PromptWaitTracker } from "./prompt-state";
+import { decideYoloAuto } from "./yolo-auto-policy";
+import type { YoloAutoClient } from "./yolo-auto-client";
 import type {
   PermissionPromptDecision,
   RequestPermissionOptions,
@@ -33,6 +35,14 @@ export interface PromptPermissionDetails {
   forcePromptInYolo?: boolean;
   /** Override label for the "for this session" dialog option. */
   sessionLabel?: string;
+  /** Set only after normal deterministic tool gates pass. */
+  yoloAutoEligible?: boolean;
+  /** Whether eligible request path is workspace-local. */
+  yoloAutoWorkspaceLocal?: boolean;
+  /** Canonical classifier operation, limited to read/list. */
+  yoloAutoOperation?: "read" | "list";
+  /** Relative path only; never an absolute path or raw input. */
+  yoloAutoWorkspaceRelativePath?: string;
 }
 
 /** Mockable contract for permission prompting. */
@@ -62,6 +72,10 @@ export interface PermissionPrompterDeps {
   forwardingDir: string;
   /** Optional fallback resolver for parent session id when subagent env markers are absent. */
   resolveFallbackTargetSessionId?: (ctx: ExtensionContext) => string | null;
+  /** Optional shared worker client; absent/unavailable always falls back to prompt. */
+  yoloAutoClient?: Pick<YoloAutoClient, "evaluate">;
+  /** Wait until extension-managed yolo-auto assets are ready or startup failed. */
+  waitForYoloAutoStartup?: () => Promise<void>;
   /** Show the interactive permission dialog in the UI. */
   requestPermissionDecisionFromUi(
     ui: ExtensionContext["ui"],
@@ -109,6 +123,15 @@ export class PermissionPrompter implements PermissionPrompterApi {
       return { approved: true, state: "approved", autoApproved: true };
     }
 
+    const yoloAutoDecision = await this.evaluateYoloAuto(config, details);
+    if (yoloAutoDecision.action === "allow") {
+      this.writeReviewEntry("permission_request.yolo_auto_approved", {
+        ...details,
+        yoloAutoReason: yoloAutoDecision.reason,
+      });
+      return { approved: true, state: "approved", autoApproved: true };
+    }
+
     this.writeReviewEntry("permission_request.waiting", details);
 
     const promptToken = this.deps.promptWaitTracker.begin(
@@ -151,11 +174,55 @@ export class PermissionPrompter implements PermissionPrompterApi {
 
   // ── Private helpers ──────────────────────────────────────────────────────
 
+  private async evaluateYoloAuto(
+    config: PermissionSystemExtensionConfig,
+    details: PromptPermissionDetails,
+  ): Promise<{ action: "allow" | "prompt"; reason: string }> {
+    if (!this.deps.yoloAutoClient || !details.yoloAutoEligible) {
+      return { action: "prompt", reason: "not_configured_or_ineligible" };
+    }
+    const operation = details.yoloAutoOperation;
+    if (!config.yoloAutoMode || !operation || !details.yoloAutoWorkspaceLocal) {
+      return { action: "prompt", reason: "disabled_or_ineligible" };
+    }
+
+    try {
+      await this.deps.waitForYoloAutoStartup?.();
+    } catch {
+      return { action: "prompt", reason: "startup_failed" };
+    }
+    const result = await this.deps.yoloAutoClient.evaluate({
+      toolName: details.toolName ?? "unknown",
+      operation,
+      ...(details.yoloAutoWorkspaceRelativePath
+        ? { workspaceRelativePath: details.yoloAutoWorkspaceRelativePath }
+        : {}),
+      metadata: {
+        input_has_path: Boolean(details.yoloAutoWorkspaceRelativePath),
+        tool_call_id_present: Boolean(details.toolCallId),
+      },
+    }, config.yoloAutoMaxLevel);
+    return decideYoloAuto({
+      enabled: config.yoloAutoMode,
+      maxLevel: config.yoloAutoMaxLevel,
+      permissionState: "ask",
+      source: details.source,
+      eligible: details.yoloAutoEligible === true,
+      forcedPrompt: details.forcePromptInYolo === true,
+      workspaceLocal: details.yoloAutoWorkspaceLocal === true,
+      operation,
+      l1: result.status === "complete" ? result.l1 : undefined,
+      results: result.status === "complete" ? result.l2?.results ?? [] : [],
+      escalated: result.escalated,
+    });
+  }
+
   private writeReviewEntry(
     event: string,
     details: PromptPermissionDetails & {
       resolution?: string;
       denialReason?: string;
+      yoloAutoReason?: string;
     },
   ): void {
     this.deps.writeReviewLog(event, {
@@ -170,6 +237,10 @@ export class PermissionPrompter implements PermissionPrompterApi {
       command: details.command ?? null,
       target: details.target ?? null,
       toolInputPreview: details.toolInputPreview ?? null,
+      yoloAutoEligible: details.yoloAutoEligible ?? false,
+      yoloAutoOperation: details.yoloAutoOperation ?? null,
+      yoloAutoWorkspaceRelativePath: details.yoloAutoWorkspaceRelativePath ?? null,
+      yoloAutoReason: details.yoloAutoReason ?? null,
       resolution: details.resolution ?? null,
       denialReason: details.denialReason ?? null,
     });

@@ -168,13 +168,15 @@ export function refreshExtensionConfig(
     debugLog: runtimeConfig.debugLog,
     permissionReviewLog: runtimeConfig.permissionReviewLog,
     yoloMode: runtimeConfig.yoloMode,
+    yoloAutoMode: runtimeConfig.yoloAutoMode,
+    yoloAutoMaxLevel: runtimeConfig.yoloAutoMaxLevel,
     yoloAskBashPatterns: runtimeConfig.yoloAskBashPatterns,
   });
 }
 
 /**
  * Save updated runtime knobs (debugLog, permissionReviewLog, yoloMode,
- * yoloAskBashPatterns) to the global config file, then update runtime.config
+ * yoloAutoMode, yoloAutoMaxLevel, yoloAskBashPatterns) to the global config file, then update runtime.config
  * and sync UI status.
  */
 export function saveExtensionConfig(
@@ -202,6 +204,8 @@ export function saveExtensionConfig(
     debugLog: normalized.debugLog,
     permissionReviewLog: normalized.permissionReviewLog,
     yoloMode: normalized.yoloMode,
+    yoloAutoMode: normalized.yoloAutoMode,
+    yoloAutoMaxLevel: normalized.yoloAutoMaxLevel,
     yoloAskBashPatterns: normalized.yoloAskBashPatterns,
   };
 
@@ -221,6 +225,8 @@ export function saveExtensionConfig(
     debugLog: normalized.debugLog,
     permissionReviewLog: normalized.permissionReviewLog,
     yoloMode: normalized.yoloMode,
+    yoloAutoMode: normalized.yoloAutoMode,
+    yoloAutoMaxLevel: normalized.yoloAutoMaxLevel,
     yoloAskBashPatterns: normalized.yoloAskBashPatterns,
   });
 }
@@ -249,6 +255,8 @@ export function resetExtensionConfig(
   delete next.debugLog;
   delete next.permissionReviewLog;
   delete next.yoloMode;
+  delete next.yoloAutoMode;
+  delete next.yoloAutoMaxLevel;
   delete next.yoloAskBashPatterns;
 
   if (!writeConfigFile(globalPath, next)) {

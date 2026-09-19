@@ -115,6 +115,9 @@ export async function promptSandboxGrant(
   } else if (change.type === "auth-bypass") {
     title = "⚠ Sandbox: Unsandboxed Authentication Required";
     message = change.description;
+  } else if (change.type === "host-bypass") {
+    title = "⚠ Sandbox: Host Toolchain Required";
+    message = change.description;
   } else {
     title = "⚠ Sandbox: Policy Change Requested";
     message = change.description;
@@ -122,7 +125,7 @@ export async function promptSandboxGrant(
 
   const hasWorkspaceScope = Boolean(ctx.cwd) && allowPersistentScopes;
   const options =
-    change.type === "auth-bypass" || !allowPersistentScopes
+    change.type === "auth-bypass" || change.type === "host-bypass" || !allowPersistentScopes
       ? [CHOICE_ONCE, CHOICE_SESSION, CHOICE_DENY]
       : [
           CHOICE_ONCE,
@@ -133,7 +136,9 @@ export async function promptSandboxGrant(
         ];
 
   const waitMessage =
-    change.type === "network"
+    change.type === "host-bypass"
+      ? "Waiting for host toolchain approval"
+      : change.type === "network"
       ? "Waiting for sandbox network approval"
       : change.type === "env"
         ? "Waiting for sandbox auth approval"

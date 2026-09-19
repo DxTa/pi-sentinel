@@ -40,7 +40,7 @@ export interface Grant {
 export type GrantDuration = "once" | "session" | "always" | number; // number = ms TTL
 
 export interface PolicyChangeRequest {
-  type: GrantType | "auth-bypass";
+  type: GrantType | "auth-bypass" | "host-bypass";
   /** Human-readable description of what's needed. */
   description: string;
   /** Domain patterns, paths, or auth-exception values. */

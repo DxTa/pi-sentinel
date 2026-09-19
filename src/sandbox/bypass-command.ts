@@ -1,3 +1,5 @@
+import { basename, isAbsolute } from "node:path";
+
 import { wildcardMatch } from "../wildcard-matcher.js";
 
 const BUILTIN_HOST_GIT_SUBCOMMANDS = new Set([
@@ -24,6 +26,30 @@ function builtinHostGitBypass(command: string): boolean {
   const tokens = trimmed.split(/\s+/);
   const subcommand = tokens[1];
   return subcommand != null && BUILTIN_HOST_GIT_SUBCOMMANDS.has(subcommand);
+}
+
+function isDirectExecutable(value: string, name: string): boolean {
+  return value === name || (isAbsolute(value) && basename(value) === name);
+}
+
+/**
+ * Recognize only direct package/bootstrap commands that may need host tools.
+ * Shell composition and indirect wrappers stay sandboxed/rejected.
+ */
+export function isHostCapabilityBootstrapCommand(command: string): boolean {
+  const trimmed = command.trim();
+  if (!trimmed || containsShellControl(trimmed)) return false;
+  const tokens = trimmed.split(/\s+/);
+  const executable = tokens[0] ?? "";
+  if (isDirectExecutable(executable, "pkgx")) return true;
+  if (
+    !isDirectExecutable(executable, "python")
+    && !/^python\d+(?:\.\d+)*$/.test(executable)
+    && !(isAbsolute(executable) && /^python\d*(?:\.\d+)*$/.test(basename(executable)))
+  ) {
+    return false;
+  }
+  return tokens[1] === "-m" && tokens[2] === "venv";
 }
 
 function isDockerExecutable(executable: string): boolean {

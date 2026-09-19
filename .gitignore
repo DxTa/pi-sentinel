@@ -5,3 +5,15 @@ logs/
 project-grants.json
 **/project-grants.json
 .DS_Store
+
+# Local Patronus assets and runtime artifacts
+.pi-sentinel-patronus-bench/
+bin/__pycache__/
+*.py[cod]
+node-compile-cache/
+forwarded-permission-*/
+sentinel-audit-*/
+sentinel-read-*/
+sentinel-relative-*/
+sentinel-result-*/
+pi-mask-logical-home

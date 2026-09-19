@@ -1,0 +1,16 @@
+# Local Patronus benchmark cache and generated Python bytecode
+.pi-sentinel-patronus-bench/
+**/__pycache__
+bin/__pycache__/
+*.pyc
+*.pyo
+*.pyd
+
+# Local test/runtime artifacts
+forwarded-permission-*/
+sentinel-audit-*/
+sentinel-read-*/
+sentinel-relative-*/
+sentinel-result-*/
+node-compile-cache/
+pi-mask-logical-home

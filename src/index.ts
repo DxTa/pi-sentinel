@@ -9,6 +9,7 @@
  */
 
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
+import { spawn, type ChildProcess } from "node:child_process";
 
 // ── Extension imports ────────────────────────────────────────────────────
 import { registerPermissionSystemCommand } from "./config-modal";
@@ -34,6 +35,11 @@ import { requestPermissionDecisionFromUi } from "./permission-dialog";
 import { registerPermissionRpcHandlers } from "./permission-event-rpc";
 import { emitReadyEvent } from "./permission-events";
 import { PermissionPrompter } from "./permission-prompter";
+import {
+  createUnixSocketWorkerTransport,
+  YoloAutoClient,
+} from "./yolo-auto-client";
+import { isUnixSocketActive } from "./yolo-auto-startup";
 import { PromptWaitTracker } from "./prompt-state";
 import { getHardBlockedBashMutationPaths } from "./handlers/gates/bash-external-directory.js";
 import { extractExternalPathsFromBashCommand } from "./handlers/gates/bash-path-extractor.js";
@@ -67,7 +73,10 @@ import { registerDomainGateCommand } from "./network/domain-gate.js";
 import { clearSessionNetworkApprovals, getSessionNetworkApprovals, handleNetworkToolCall, handleNetworkUserBash } from "./network/network-gate-handler.js";
 import { normalizeSandboxConfig, resolveSandboxProfile, type SandboxConfig, validateSandboxGrantPath } from "./sandbox/settings.js";
 import type { ResolvedSandboxProfile, UnmaskedPath } from "./sandbox/types.js";
-import { shouldBypassSandboxCommand } from "./sandbox/bypass-command.js";
+import {
+  isHostCapabilityBootstrapCommand,
+  shouldBypassSandboxCommand,
+} from "./sandbox/bypass-command.js";
 import { createSrtBackend } from "./sandbox/backends/srt-backend.js";
 import { defaultSrtHelperPath, defaultSrtStatus } from "./sandbox/srt-status.js";
 import { SandboxPolicyManager, type Grant, type GrantDuration } from "./sandbox/policy-manager.js";
@@ -118,6 +127,60 @@ function getAgentDir(): string {
 
 function getExtensionDir(): string {
   return join(getAgentDir(), "extensions", "pi-sentinel");
+}
+
+interface YoloAutoWorkerHandle {
+  process?: ChildProcess;
+  ready: Promise<void>;
+}
+
+async function startYoloAutoWorker(
+  socketPath: string,
+  agentDir: string,
+  writeDebugLog: (event: string, details?: Record<string, unknown>) => void,
+): Promise<YoloAutoWorkerHandle> {
+  if (await isUnixSocketActive(socketPath)) {
+    writeDebugLog("yolo_auto.worker_reused", { reason: "active_socket" });
+    return { ready: Promise.resolve() };
+  }
+  const workerPath = join(EXTENSION_ROOT, "bin", "patronus-yolo-auto-worker.py");
+  const modelDir = process.env.PI_SENTINEL_PATRONUS_MODEL_DIR
+    || join(agentDir, "runtime", "pi-sentinel", "patronus", "models");
+  const child = spawn(
+    process.env.PI_SENTINEL_PYTHON || "python3",
+    [workerPath, "--socket", socketPath, "--model-dir", modelDir],
+    {
+      cwd: agentDir,
+      env: {
+        ...process.env,
+        PI_SENTINEL_PATRONUS_MODEL_DIR: modelDir,
+        PI_SENTINEL_PATRONUS_DOWNLOAD_FILES: process.env.PI_SENTINEL_PATRONUS_DOWNLOAD_FILES || "1",
+      },
+      stdio: ["ignore", "ignore", "pipe"],
+    },
+  );
+  const ready = new Promise<void>((resolve) => {
+    const timer = setTimeout(resolve, 120_000);
+    timer.unref();
+    child.once("error", () => {
+      clearTimeout(timer);
+      writeDebugLog("yolo_auto.worker_unavailable", { reason: "spawn_error" });
+      resolve();
+    });
+    child.once("exit", () => {
+      clearTimeout(timer);
+      writeDebugLog("yolo_auto.worker_unavailable", { reason: "process_exit" });
+      resolve();
+    });
+    child.stderr?.setEncoding("utf8");
+    child.stderr?.on("data", (chunk: string) => {
+      if (chunk.includes("Patronus worker ready")) {
+        clearTimeout(timer);
+        resolve();
+      }
+    });
+  });
+  return { process: child, ready };
 }
 
 interface UnifiedConfig {
@@ -461,8 +524,81 @@ async function resolveMaskedAuthAccess(
 export default function piPermissionSystemExtension(pi: ExtensionAPI): void {
   // ── Upstream setup (identical to original index.ts) ───────────────────
   const runtime = createExtensionRuntime();
+  const hostCapabilityBypassApprovals = new Set<string>();
+  const resolveHostCapabilityDecision = async (
+    command: string,
+    ctx: ExtensionContext,
+  ): Promise<"allowed" | "denied" | "not-needed"> => {
+    if (!isHostCapabilityBootstrapCommand(command)) return "not-needed";
+    if (defaultSrtStatus(null).available) return "not-needed";
+    const approvalKey = `${resolveRepoRoot(ctx.cwd)}::host-toolchain`;
+    if (hostCapabilityBypassApprovals.has(approvalKey)) return "allowed";
+    const promptResult = await promptSandboxGrant(ctx, {
+      change: {
+        type: "host-bypass",
+        values: ["host-toolchain"],
+        description:
+          `The direct command "${command}" requires host toolchain capability, `
+          + "but the SRT sandbox is unavailable. Approving runs it outside sandbox protections for this session or once.",
+      },
+      command,
+      promptWaitTracker,
+      allowPersistentScopes: false,
+    });
+    if (promptResult.action === "deny") return "denied";
+    if (promptResult.duration === "session") {
+      hostCapabilityBypassApprovals.add(approvalKey);
+    }
+    return "allowed";
+  };
+  const yoloAutoSocketPath =
+    process.env.PI_SENTINEL_YOLO_AUTO_SOCKET?.trim()
+    || join(runtime.agentDir, "runtime", "pi-sentinel", "yolo-auto.sock");
+  const yoloAutoClient = new YoloAutoClient(
+    createUnixSocketWorkerTransport(yoloAutoSocketPath),
+  );
   const promptWaitTracker = new PromptWaitTracker(pi.events);
   const clipboardTempCleanup = createPiClipboardTempCleanup();
+
+  refreshExtensionConfig(runtime);
+  let yoloAutoWorker: YoloAutoWorkerHandle | undefined;
+  let yoloAutoWorkerStart: Promise<YoloAutoWorkerHandle> | undefined = runtime.config.yoloAutoMode
+    ? startYoloAutoWorker(
+      yoloAutoSocketPath,
+      runtime.agentDir,
+      runtime.writeDebugLog.bind(runtime),
+    )
+    : undefined;
+  const adoptYoloAutoWorker = (worker: YoloAutoWorkerHandle): void => {
+    yoloAutoWorker = worker;
+    const child = worker.process;
+    if (!child || child.exitCode !== null) {
+      if (child?.exitCode !== null) yoloAutoWorker = undefined;
+      return;
+    }
+    child.once("exit", () => {
+      if (yoloAutoWorker?.process === child) yoloAutoWorker = undefined;
+    });
+  };
+  const ensureYoloAutoWorkerReady = async (): Promise<void> => {
+    if (!runtime.config.yoloAutoMode) return;
+    if (!yoloAutoWorkerStart && !yoloAutoWorker) {
+      yoloAutoWorkerStart = startYoloAutoWorker(
+        yoloAutoSocketPath,
+        runtime.agentDir,
+        runtime.writeDebugLog.bind(runtime),
+      );
+    }
+    const starting = yoloAutoWorkerStart;
+    if (starting) {
+      try {
+        adoptYoloAutoWorker(await starting);
+      } finally {
+        if (yoloAutoWorkerStart === starting) yoloAutoWorkerStart = undefined;
+      }
+    }
+    await yoloAutoWorker?.ready;
+  };
 
   const prompter = new PermissionPrompter({
     promptWaitTracker,
@@ -472,6 +608,8 @@ export default function piPermissionSystemExtension(pi: ExtensionAPI): void {
     forwardingDir: runtime.forwardingDir,
     resolveFallbackTargetSessionId: (ctx) =>
       resolveInteractiveSessionFallback(runtime, ctx.cwd),
+    yoloAutoClient,
+    waitForYoloAutoStartup: ensureYoloAutoWorkerReady,
     requestPermissionDecisionFromUi,
   });
 
@@ -495,8 +633,6 @@ export default function piPermissionSystemExtension(pi: ExtensionAPI): void {
       resolveInteractiveSessionFallback(runtime, ctx.cwd),
 
   };
-
-  refreshExtensionConfig(runtime);
 
   const session = new PermissionSession(
     runtime,
@@ -545,6 +681,12 @@ export default function piPermissionSystemExtension(pi: ExtensionAPI): void {
       runtime.permissionManager.getComposedConfigRules(
         runtime.lastKnownActiveAgentName ?? undefined,
       ),
+    getYoloAutoStatus: () => {
+      const status = yoloAutoClient.getStatus();
+      return status.state === "fallback"
+        ? `yoloAutoWorker=fallback:${status.reason}`
+        : `yoloAutoWorker=${status.state}`;
+    },
   });
 
   const rpcHandles = registerPermissionRpcHandlers(pi.events, {
@@ -678,6 +820,7 @@ export default function piPermissionSystemExtension(pi: ExtensionAPI): void {
     sandboxAuthorizationUnavailable = false;
     promptWaitTracker.clear(runtime.runtimeContext ?? undefined);
     sessionBypassApprovals.clear();
+    hostCapabilityBypassApprovals.clear();
     clearSessionNetworkApprovals();
     clearMaskedAuthSessionGrants();
     sandboxRuntime.clearGrants();
@@ -688,9 +831,12 @@ export default function piPermissionSystemExtension(pi: ExtensionAPI): void {
     lifecycle.handleResourcesDiscover(event),
   );
   pi.on("session_shutdown", () => {
+    if (yoloAutoWorker?.process && !yoloAutoWorker.process.killed) yoloAutoWorker.process.kill("SIGTERM");
+    yoloAutoClient.close();
     clipboardTempCleanup.cleanup();
     promptWaitTracker.clear(runtime.runtimeContext ?? undefined);
     sessionBypassApprovals.clear();
+    hostCapabilityBypassApprovals.clear();
     clearSessionNetworkApprovals();
     clearMaskedAuthSessionGrants();
     sandboxRuntime.dispose();
@@ -1385,6 +1531,12 @@ export default function piPermissionSystemExtension(pi: ExtensionAPI): void {
         // 2d. Secret env handling remains separate from masked auth-file handling.
         const secretEnv: Record<string, string> = {};
 
+        const hostCapabilityDecision = await resolveHostCapabilityDecision(command, ctx);
+        if (hostCapabilityDecision === "denied") {
+          return { block: true, reason: "Sandbox: host toolchain approval denied." };
+        }
+        if (hostCapabilityDecision === "allowed") return undefined;
+
         // Use the policy-resolved profile (includes dynamic grants for network/path)
         const repoRoot = resolveRepoRoot(ctx.cwd);
         const result = await getSandboxBackend(ctx.cwd).wrapCommand({
@@ -1727,6 +1879,12 @@ export default function piPermissionSystemExtension(pi: ExtensionAPI): void {
           { network: networkApprovedForInvocation, pathGrants: invocationPathGrants },
         ).profile;
       }
+
+      const hostCapabilityDecision = await resolveHostCapabilityDecision(event.command, ctx);
+      if (hostCapabilityDecision === "denied") {
+        return blockedUserBash("Sandbox: host toolchain approval denied.");
+      }
+      if (hostCapabilityDecision === "allowed") return undefined;
 
       // Env vars and config dirs are always available by default in sandbox.
       const secretEnv: Record<string, string> = {};

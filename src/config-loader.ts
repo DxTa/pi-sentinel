@@ -21,6 +21,8 @@ export interface UnifiedPermissionConfig {
   debugLog?: boolean;
   permissionReviewLog?: boolean;
   yoloMode?: boolean;
+  yoloAutoMode?: boolean;
+  yoloAutoMaxLevel?: "l1" | "l2" | "l3";
   yoloAskBashPatterns?: string[];
 
   // Flat permission policy
@@ -188,6 +190,17 @@ export function normalizeUnifiedConfig(raw: unknown): {
   const yoloMode = normalizeOptionalBoolean(record.yoloMode);
   if (yoloMode !== undefined) config.yoloMode = yoloMode;
 
+  const yoloAutoMode = normalizeOptionalBoolean(record.yoloAutoMode);
+  if (yoloAutoMode !== undefined) config.yoloAutoMode = yoloAutoMode;
+
+  if (
+    record.yoloAutoMaxLevel === "l1"
+    || record.yoloAutoMaxLevel === "l2"
+    || record.yoloAutoMaxLevel === "l3"
+  ) {
+    config.yoloAutoMaxLevel = record.yoloAutoMaxLevel;
+  }
+
   const yoloAskBashPatterns = normalizeOptionalStringArray(
     record.yoloAskBashPatterns,
   );
@@ -227,6 +240,12 @@ export function mergeUnifiedConfigs(
   }
   if (override.yoloMode !== undefined || base.yoloMode !== undefined) {
     merged.yoloMode = override.yoloMode ?? base.yoloMode;
+  }
+  if (override.yoloAutoMode !== undefined || base.yoloAutoMode !== undefined) {
+    merged.yoloAutoMode = override.yoloAutoMode ?? base.yoloAutoMode;
+  }
+  if (override.yoloAutoMaxLevel !== undefined || base.yoloAutoMaxLevel !== undefined) {
+    merged.yoloAutoMaxLevel = override.yoloAutoMaxLevel ?? base.yoloAutoMaxLevel;
   }
   if (
     override.yoloAskBashPatterns !== undefined

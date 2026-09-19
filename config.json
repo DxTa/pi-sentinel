@@ -4,6 +4,8 @@
   "debugLog": false,
   "permissionReviewLog": true,
   "yoloMode": false,
+  "yoloAutoMode": true,
+  "yoloAutoMaxLevel": "l3",
   "yoloAskBashPatterns": [],
 
   "piInfrastructureReadPaths": [],

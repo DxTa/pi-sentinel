@@ -1,6 +1,10 @@
 import { describe, expect, it } from "vitest";
 
-import { isDockerCommand, shouldBypassSandboxCommand } from "./bypass-command.js";
+import {
+  isDockerCommand,
+  isHostCapabilityBootstrapCommand,
+  shouldBypassSandboxCommand,
+} from "./bypass-command.js";
 
 describe("shouldBypassSandboxCommand", () => {
   it.each([
@@ -64,5 +68,29 @@ describe("isDockerCommand", () => {
     "docker ps | cat",
   ])("rejects compound or indirect command %s", (command) => {
     expect(isDockerCommand(command)).toBe(false);
+  });
+});
+
+
+describe("isHostCapabilityBootstrapCommand", () => {
+  it.each([
+    "pkgx install ruff",
+    "/opt/pkgx/pkgx install ruff",
+    "python -m venv .venv",
+    "python3 -m venv .venv",
+    "python3.14 -m venv .venv",
+    "/usr/bin/python3 -m venv .venv",
+  ])("recognizes direct host-capability command %s", (command) => {
+    expect(isHostCapabilityBootstrapCommand(command)).toBe(true);
+  });
+
+  it.each([
+    "echo pkgx install ruff",
+    "sh -c 'python -m venv .venv'",
+    "python -m pip install venv",
+    "pkgx install ruff && echo done",
+    "python -m venv .venv | cat",
+  ])("rejects indirect or unrelated command %s", (command) => {
+    expect(isHostCapabilityBootstrapCommand(command)).toBe(false);
   });
 });

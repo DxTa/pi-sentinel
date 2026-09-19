@@ -71,6 +71,14 @@ export interface SandboxVisibilityContext {
   resolvedBinds?: string[];
 }
 
+export function normalizeMacPrivatePath(value: string): string {
+  if (process.platform !== "darwin") return value;
+  if (value === "/private/var" || value.startsWith("/private/var/")) {
+    return value.slice("/private".length);
+  }
+  return value;
+}
+
 export function canonicalPath(value: string): string {
   const resolved = resolve(value);
   let probe = resolved;

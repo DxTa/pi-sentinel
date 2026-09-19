@@ -44,3 +44,31 @@ describe("promptSandboxGrant", () => {
     ).resolves.toEqual({ action: "allow", duration: "always", scope: "global" });
   });
 });
+
+
+describe("host toolchain prompt", () => {
+  it("offers only once/session/deny choices", async () => {
+    const select = vi.fn(async () => "Allow for session");
+    const ctx = {
+      hasUI: true,
+      cwd: "/repo",
+      ui: { select },
+    } as never;
+
+    await expect(
+      promptSandboxGrant(ctx, {
+        command: "python3 -m venv .venv",
+        change: {
+          type: "host-bypass",
+          description: "SRT unavailable",
+          values: ["host-toolchain"],
+        },
+        allowPersistentScopes: false,
+      }),
+    ).resolves.toEqual({ action: "allow", duration: "session" });
+    expect(select).toHaveBeenCalledWith(
+      expect.stringContaining("Host Toolchain Required"),
+      ["Allow once", "Allow for session", "Deny"],
+    );
+  });
+});

@@ -11,7 +11,8 @@
   },
   "files": [
     "src",
-    "bin",
+    "bin/patronus-yolo-auto-worker.py",
+    "bin/sandbox-run.mjs",
     "config.json",
     "profiles",
     "schemas",

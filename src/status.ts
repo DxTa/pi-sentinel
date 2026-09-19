@@ -11,6 +11,8 @@ import { isYoloModeEnabled } from "./yolo-mode";
 
 export const PERMISSION_SYSTEM_STATUS_KEY = EXTENSION_ID;
 export const PERMISSION_SYSTEM_YOLO_STATUS_VALUE = "yolo";
+export const PERMISSION_SYSTEM_YOLO_AUTO_STATUS_VALUE = "yolo-auto";
+export const PERMISSION_SYSTEM_YOLO_BOTH_STATUS_VALUE = "yolo+yolo-auto";
 
 type PermissionStatusContext =
   | Pick<ExtensionContext, "hasUI" | "ui">
@@ -19,8 +21,14 @@ type PermissionStatusContext =
 export function getPermissionSystemStatus(
   config: PermissionSystemExtensionConfig,
 ): string | undefined {
-  return isYoloModeEnabled(config)
-    ? PERMISSION_SYSTEM_YOLO_STATUS_VALUE
+  if (isYoloModeEnabled(config) && config.yoloAutoMode) {
+    return PERMISSION_SYSTEM_YOLO_BOTH_STATUS_VALUE;
+  }
+  if (isYoloModeEnabled(config)) {
+    return PERMISSION_SYSTEM_YOLO_STATUS_VALUE;
+  }
+  return config.yoloAutoMode
+    ? PERMISSION_SYSTEM_YOLO_AUTO_STATUS_VALUE
     : undefined;
 }
 

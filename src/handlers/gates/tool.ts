@@ -1,4 +1,12 @@
-import { getPathBearingToolPath, PATH_BEARING_TOOLS } from "#src/path-utils";
+import { relative, resolve } from "node:path";
+
+import {
+  getPathBearingToolPath,
+  isPathOutsideWorkingDirectory,
+  isPathWithinCanonicalWorkingDirectory,
+  PATH_BEARING_TOOLS,
+  READ_ONLY_PATH_BEARING_TOOLS,
+} from "#src/path-utils";
 import { suggestSessionPattern } from "#src/pattern-suggest";
 import { formatAskPrompt } from "#src/permission-prompts";
 import { getPermissionLogContext } from "#src/tool-input-preview";
@@ -49,6 +57,24 @@ export function describeToolGate(
     tcc.agentName ?? undefined,
     tcc.input,
   );
+  const toolPath = getPathBearingToolPath(tcc.toolName, tcc.input);
+  const yoloAutoOperation =
+    tcc.toolName === "read"
+      ? "read"
+      : READ_ONLY_PATH_BEARING_TOOLS.has(tcc.toolName)
+        ? "list"
+        : undefined;
+  const yoloAutoWorkspaceLocal =
+    yoloAutoOperation !== undefined
+    && (toolPath
+      ? tcc.cwd !== undefined
+        && !isPathOutsideWorkingDirectory(toolPath, tcc.cwd)
+        && isPathWithinCanonicalWorkingDirectory(toolPath, tcc.cwd)
+      : tcc.toolName !== "read");
+  const yoloAutoWorkspaceRelativePath =
+    yoloAutoWorkspaceLocal && toolPath && tcc.cwd
+      ? relative(tcc.cwd, resolve(tcc.cwd, toolPath)).replaceAll("\\", "/")
+      : undefined;
 
   return {
     surface: tcc.toolName,
@@ -71,6 +97,16 @@ export function describeToolGate(
       toolName: tcc.toolName,
       sessionLabel: suggestion.label,
       ...permissionLogContext,
+      ...(yoloAutoOperation
+        ? {
+            yoloAutoEligible: check.state === "ask" && yoloAutoWorkspaceLocal,
+            yoloAutoWorkspaceLocal,
+            ...(yoloAutoWorkspaceRelativePath
+              ? { yoloAutoWorkspaceRelativePath }
+              : {}),
+            yoloAutoOperation,
+          }
+        : {}),
     },
     logContext: {
       source: "tool_call",

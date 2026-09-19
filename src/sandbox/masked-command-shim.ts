@@ -5,7 +5,7 @@ import { homedir, tmpdir } from "node:os";
 import { dirname, join, relative, resolve, sep } from "node:path";
 
 import type { SandboxProfile } from "./types.js";
-import { canonicalPath } from "./sandbox-visible-paths.js";
+import { canonicalPath, normalizeMacPrivatePath } from "./sandbox-visible-paths.js";
 import {
   assertScanWithinBudget,
   awaitWithinScanBudget,
@@ -85,14 +85,23 @@ function isAlwaysReadableHomeFile(root: string): boolean {
 }
 
 function dedupe(values: string[]): string[] {
-  return [...new Set(values.map(canonicalPath))];
+  const seen = new Set<string>();
+  return values.flatMap((value) => {
+    const resolved = resolve(value);
+    const key = normalizeMacPrivatePath(canonicalPath(resolved));
+    if (seen.has(key)) return [];
+    seen.add(key);
+    return [resolved];
+  });
 }
 
 function dedupeMaskedPaths(values: string[]): string[] {
   const paths = values.flatMap((value) => {
     const resolved = resolve(value);
     const canonical = canonicalPath(resolved);
-    return canonical === resolved ? [resolved] : [resolved, canonical];
+    return normalizeMacPrivatePath(canonical) === normalizeMacPrivatePath(resolved)
+      ? [resolved]
+      : [resolved, normalizeMacPrivatePath(canonical)];
   });
   return [...new Set(paths)];
 }
@@ -102,7 +111,7 @@ function getMaskedPatterns(profile: SandboxProfile): string[] {
 }
 
 function isWithinScanDepth(root: string, candidate: string, maxDepth: number): boolean {
-  const relativePath = relative(root, candidate);
+  const relativePath = relative(normalizeMacPrivatePath(root), normalizeMacPrivatePath(candidate));
   if (relativePath === ".") return true;
   if (relativePath === ".." || relativePath.startsWith(`..${sep}`)) return false;
   return relativePath.split(sep).length <= maxDepth;
@@ -134,11 +143,12 @@ function getFindNamePatterns(profile: SandboxProfile, root: string): string[] {
       : pattern;
     if (expanded.startsWith(sep)) {
       const fixedPrefix = getAbsoluteMaskedPatternPrefix(pattern);
-      if (fixedPrefix !== null && rootsOverlap(resolve(root), resolve(fixedPrefix)) === false) continue;
-      if (fixedPrefix !== null && fixedPrefix.startsWith(`${resolve(root)}${sep}`)) continue;
+      const normalizedRoot = normalizeMacPrivatePath(resolve(root));
+      const normalizedPrefix = fixedPrefix === null ? null : normalizeMacPrivatePath(resolve(fixedPrefix));
+      if (normalizedPrefix !== null && rootsOverlap(normalizedRoot, normalizedPrefix) === false) continue;
     }
     const name = expanded.slice(expanded.lastIndexOf(sep) + 1) || "*";
-    names.add(name.replace(new RegExp("[\\[\\]]", "g"), "\\$&"));
+    names.add((name === "**" ? "*" : name).replace(new RegExp("[\\[\\]]", "g"), "\\$&"));
   }
   return [...names];
 }
@@ -179,7 +189,8 @@ function parseFindOutput(
     assertScanWithinBudget(scanDeadline, maxScanDurationMs, root);
     if (!candidate) continue;
     const resolvedCandidate = resolve(candidate);
-    if (!isWithinScanDepth(root, resolvedCandidate, maxDepth) || !isPathMasked(resolvedCandidate, patterns)) continue;
+    const comparisonCandidate = normalizeMacPrivatePath(resolvedCandidate);
+    if (!isWithinScanDepth(root, comparisonCandidate, maxDepth) || !isPathMasked(comparisonCandidate, patterns)) continue;
     results.push(resolvedCandidate);
     if (results.length > maxEntries) {
       throw new Error(`Masked file scan exceeded ${maxEntries} entries at ${resolvedCandidate}`);
@@ -221,15 +232,19 @@ function expandMaskedScanRoots(scanRoots: string[], profile: SandboxProfile): st
 }
 
 function shouldScanRoot(root: string): boolean {
-  const resolved = resolve(root);
+  const resolved = normalizeMacPrivatePath(resolve(root));
   return existsSync(resolved) && isScannableRoot(resolved);
 }
 
 function normalizeScanRoots(roots: string[]): string[] {
   const normalized = dedupe(roots).filter(shouldScanRoot);
-  return normalized.filter((root) =>
-    !normalized.some((ancestor) => ancestor !== root && root.startsWith(`${ancestor}/`)),
-  );
+  return normalized.filter((root) => {
+    const normalizedRoot = normalizeMacPrivatePath(root);
+    return !normalized.some((ancestor) => {
+      const normalizedAncestor = normalizeMacPrivatePath(ancestor);
+      return normalizedAncestor !== normalizedRoot && normalizedRoot.startsWith(`${normalizedAncestor}/`);
+    });
+  });
 }
 
 function collectConcreteMaskedFiles(

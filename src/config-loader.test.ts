@@ -18,6 +18,37 @@ import {
 import { normalizeSandboxConfig } from "./sandbox/settings";
 
 describe("yoloAskBashPatterns config", () => {
+  it("normalizes yolo-auto settings with safe defaults", () => {
+    expect(normalizeUnifiedConfig({}).config).toEqual({});
+    expect(normalizeUnifiedConfig({
+      yoloAutoMode: true,
+      yoloAutoMaxLevel: "l2",
+    }).config).toMatchObject({
+      yoloAutoMode: true,
+      yoloAutoMaxLevel: "l2",
+    });
+  });
+
+  it("accepts L3 as yolo-auto ceiling", () => {
+    const normalized = normalizeUnifiedConfig({
+      yoloAutoMode: "true",
+      yoloAutoMaxLevel: "l3",
+    }).config;
+
+    expect(normalized).not.toHaveProperty("yoloAutoMode");
+    expect(normalized).toMatchObject({ yoloAutoMaxLevel: "l3" });
+  });
+
+  it("lets project yolo-auto settings replace global settings", () => {
+    expect(mergeUnifiedConfigs(
+      { yoloAutoMode: true, yoloAutoMaxLevel: "l2" },
+      { yoloAutoMode: false },
+    )).toMatchObject({
+      yoloAutoMode: false,
+      yoloAutoMaxLevel: "l2",
+    });
+  });
+
   it("parses string arrays from unified config", () => {
     const { config } = normalizeUnifiedConfig({
       yoloAskBashPatterns: ["git push *", "git commit *"],
@@ -55,6 +86,8 @@ describe("yoloAskBashPatterns config", () => {
 
   it("defaults extension runtime config to empty list", () => {
     expect(DEFAULT_EXTENSION_CONFIG).toMatchObject({
+      yoloAutoMode: true,
+      yoloAutoMaxLevel: "l3",
       yoloAskBashPatterns: [],
     });
     expect(normalizePermissionSystemConfig({})).toMatchObject({

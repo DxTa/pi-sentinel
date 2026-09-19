@@ -21,7 +21,7 @@ import { homedir } from "node:os";
 import { resolve, join, basename, dirname, sep } from "node:path";
 import { existsSync } from "node:fs";
 import type { SandboxProfile, UnmaskedPath } from "./types.js";
-import { canonicalPath } from "./sandbox-visible-paths.js";
+import { canonicalPath, normalizeMacPrivatePath } from "./sandbox-visible-paths.js";
 import type { MaskedAuthKind } from "./auth-path-detection.js";
 
 /**
@@ -116,9 +116,13 @@ function normalizeHomeAlias(filePath: string): string {
  * Check if a resolved path matches any masked pattern.
  */
 export function isPathMasked(filePath: string, patterns: string[]): boolean {
-  const candidatePaths = [...new Set([filePath, normalizeHomeAlias(filePath)])];
+  const candidatePaths = [...new Set([
+    filePath,
+    normalizeMacPrivatePath(filePath),
+    normalizeHomeAlias(filePath),
+  ])];
   const regexes = patterns.map((p) => {
-    const expanded = expandHome(p);
+    const expanded = normalizeMacPrivatePath(expandHome(p));
     return globToRegex(expanded);
   });
 

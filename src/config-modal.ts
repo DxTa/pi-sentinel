@@ -21,6 +21,8 @@ interface PermissionSystemConfigController {
   getConfigPath(cwd?: string | null): string;
   /** Optional: returns the composed config-layer ruleset for origin display. */
   getComposedRules?(): Ruleset;
+  /** Optional runtime state for model-backed yolo-auto worker diagnostics. */
+  getYoloAutoStatus?(): string;
 }
 
 const ON_OFF = ["on", "off"];
@@ -54,6 +56,8 @@ function cloneDefaultConfig(): PermissionSystemExtensionConfig {
     debugLog: DEFAULT_EXTENSION_CONFIG.debugLog,
     permissionReviewLog: DEFAULT_EXTENSION_CONFIG.permissionReviewLog,
     yoloMode: DEFAULT_EXTENSION_CONFIG.yoloMode,
+    yoloAutoMode: DEFAULT_EXTENSION_CONFIG.yoloAutoMode,
+    yoloAutoMaxLevel: DEFAULT_EXTENSION_CONFIG.yoloAutoMaxLevel,
     yoloAskBashPatterns: [...DEFAULT_EXTENSION_CONFIG.yoloAskBashPatterns],
   };
 }
@@ -79,14 +83,17 @@ function formatRulesSummary(rules: Ruleset): string {
 function summarizeConfig(
   config: PermissionSystemExtensionConfig,
   rules?: Ruleset,
+  yoloAutoStatus?: string,
 ): string {
   const knobs = [
     `yoloMode=${toOnOff(config.yoloMode)}`,
+    `yoloAutoMode=${toOnOff(config.yoloAutoMode)} (max=${config.yoloAutoMaxLevel})`,
     `permissionReviewLog=${toOnOff(config.permissionReviewLog)}`,
     `debugLog=${toOnOff(config.debugLog)}`,
   ].join(", ");
   const rulesSuffix = rules ? formatRulesSummary(rules) : "";
-  return `${knobs}${rulesSuffix}`;
+  const workerSuffix = yoloAutoStatus ? `, ${yoloAutoStatus}` : "";
+  return `${knobs}${workerSuffix}${rulesSuffix}`;
 }
 
 function buildSettingItems(
@@ -101,6 +108,21 @@ function buildSettingItems(
       currentValue: toOnOff(config.yoloMode),
       values: ON_OFF,
 
+    },
+    {
+      id: "yoloAutoMode",
+      label: "YOLO auto",
+      description:
+        "Enable model-backed auto-approval for eligible workspace-local reads and directory listings",
+      currentValue: toOnOff(config.yoloAutoMode),
+      values: ON_OFF,
+    },
+    {
+      id: "yoloAutoMaxLevel",
+      label: "YOLO auto level",
+      description: "Maximum automatic-approval level; L3 remains advisory escalation only",
+      currentValue: config.yoloAutoMaxLevel,
+      values: ["l1", "l2", "l3"],
     },
     {
       id: "permissionReviewLog",
@@ -129,6 +151,12 @@ function applySetting(
   switch (id) {
     case "yoloMode":
       return { ...config, yoloMode: value === "on" };
+    case "yoloAutoMode":
+      return { ...config, yoloAutoMode: value === "on" };
+    case "yoloAutoMaxLevel":
+      return value === "l1" || value === "l2" || value === "l3"
+        ? { ...config, yoloAutoMaxLevel: value }
+        : config;
     case "permissionReviewLog":
       return { ...config, permissionReviewLog: value === "on" };
     case "debugLog":
@@ -143,6 +171,8 @@ function syncSettingValues(
   config: PermissionSystemExtensionConfig,
 ): void {
   settingsList.updateValue("yoloMode", toOnOff(config.yoloMode));
+  settingsList.updateValue("yoloAutoMode", toOnOff(config.yoloAutoMode));
+  settingsList.updateValue("yoloAutoMaxLevel", config.yoloAutoMaxLevel);
   settingsList.updateValue(
     "permissionReviewLog",
     toOnOff(config.permissionReviewLog),
@@ -211,7 +241,7 @@ function handleArgs(
   if (normalized === "show") {
     const rules = controller.getComposedRules?.();
     ctx.ui.notify(
-      `pi-sentinel: ${summarizeConfig(controller.getConfig(), rules)}`,
+      `pi-sentinel: ${summarizeConfig(controller.getConfig(), rules, controller.getYoloAutoStatus?.())}`,
       "info",
     );
     return true;
