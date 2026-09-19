@@ -1,5 +1,17 @@
 # Security policy
 
+## Threat model
+
+**Trusted components:** the approving user; global configuration; reviewed project policy; Pi; pi-sentinel and its dependencies; the host account and OS; SRT for commands promised to be wrapped; and the configured Patronus worker and model cache.
+
+**Untrusted inputs:** model-generated tool calls, repository contents, paths and symlinks, MCP and skill responses, command output, network data, and worker responses. Project `.pi/permissions.json` and agent frontmatter are security policy, not ordinary repository data; review them before trusting the repository.
+
+**In scope:** fail-open permission, path, network, sandbox, credential, or destructive-action checks; precedence errors; path traversal or symlink escape; secret or audit-log disclosure; unexpected host bypass; SRT escape; `yolo-auto` authorization outside eligible workspace-local reads/lists; L3 authorization; worker socket impersonation or protocol confusion; and cache tampering that changes authorization.
+
+**Out of scope:** host administrator or kernel compromise; compromise of the current user account, Pi runtime, explicitly trusted dependency, SRT runtime, Docker daemon, or configured worker; consequences of commands explicitly approved to run on the host; unreviewed project policy; intentionally approved Docker or local Unix-service access; and availability-only failures such as model download or resource exhaustion.
+
+**Residual limits:** classifier decisions use request metadata, not file contents. Pattern-based masking cannot identify every secret. Static network preflight may miss dynamic destinations. Approved host commands have normal host capabilities; Docker and powerful Unix sockets can be equivalent to host access.
+
 ## Report vulnerability
 
 Do not open a public issue for an exploitable vulnerability.
@@ -15,8 +27,8 @@ Do not include credentials, tokens, private paths, or customer data in reports.
 
 ## Scope
 
-Permission decisions, network domain gating, sandbox isolation, credential filtering, masked paths, grants, and audit logging are security-sensitive. Reports involving fail-open behavior receive priority.
+Permission decisions, network domain gating, sandbox isolation, credential filtering, masked paths, grants, audit logging, and model-backed approval are security-sensitive. Reports involving fail-open behavior receive priority.
 
-On macOS and Linux, pi-sentinel enables unrestricted Unix-socket access inside sandboxed commands by default. This is intentionally broader than path-scoped socket access: sandboxed code can reach Docker, SSH agents, databases, and other local Unix services. Docker access remains separately gated by the normal command permission check, but approval of a non-Docker command does not make local Unix services safe to expose.
+On macOS and Linux, SRT-wrapped commands can reach local Unix sockets by default. This can expose Docker, SSH agents, databases, and other local services. Docker access remains separately gated by normal command permission, but approving a command does not make local Unix services safe to expose.
 
 Supported security fixes are released from reviewed Git tags. Verify checksums or commit signatures when your deployment process supports them.
