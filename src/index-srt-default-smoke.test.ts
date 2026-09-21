@@ -88,7 +88,7 @@ function createContext(cwd: string, options: { hasUI?: boolean; choices?: string
 async function writeExtensionConfig(agentDir: string, overrides: Record<string, unknown> = {}) {
   await mkdir(path.join(agentDir, "extensions", "pi-sentinel"), { recursive: true });
   const baseConfig = {
-    yoloMode: false,
+    mode: "manual",
     permission: {
       "*": "deny",
       bash: {

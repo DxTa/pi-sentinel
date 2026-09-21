@@ -186,7 +186,7 @@ async function startYoloAutoWorker(
 interface UnifiedConfig {
   debugLog?: boolean;
   permissionReviewLog?: boolean;
-  yoloMode?: boolean;
+  mode?: "manual" | "yolo" | "yolo-auto";
   permission?: Record<string, unknown>;
   network?: DomainGateConfig;
   sandbox?: Record<string, unknown>;
@@ -562,7 +562,7 @@ export default function piPermissionSystemExtension(pi: ExtensionAPI): void {
 
   refreshExtensionConfig(runtime);
   let yoloAutoWorker: YoloAutoWorkerHandle | undefined;
-  let yoloAutoWorkerStart: Promise<YoloAutoWorkerHandle> | undefined = runtime.config.yoloAutoMode
+  let yoloAutoWorkerStart: Promise<YoloAutoWorkerHandle> | undefined = runtime.config.mode === "yolo-auto"
     ? startYoloAutoWorker(
       yoloAutoSocketPath,
       runtime.agentDir,
@@ -581,7 +581,7 @@ export default function piPermissionSystemExtension(pi: ExtensionAPI): void {
     });
   };
   const ensureYoloAutoWorkerReady = async (): Promise<void> => {
-    if (!runtime.config.yoloAutoMode) return;
+    if (runtime.config.mode !== "yolo-auto") return;
     if (!yoloAutoWorkerStart && !yoloAutoWorker) {
       yoloAutoWorkerStart = startYoloAutoWorker(
         yoloAutoSocketPath,

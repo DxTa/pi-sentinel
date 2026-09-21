@@ -23,18 +23,11 @@
       "type": "boolean",
       "default": true
     },
-    "yoloMode": {
-      "description": "Auto-approve eligible ask-state permission checks, including subagent approval forwarding.",
-      "markdownDescription": "Auto-approve eligible `ask`-state permission checks, including subagent approval forwarding.\n\n⚠️ **Use with caution** — yolo still prompts for protected bash patterns and first-time external writes.",
-      "type": "boolean",
-      "default": false
-
-    },
-    "yoloAutoMode": {
-      "description": "Enable model-backed automatic approval for eligible workspace-local reads and directory listings.",
-      "markdownDescription": "Enable model-backed automatic approval for eligible workspace-local reads and directory listings. Enabled by default; deterministic permission, path, sandbox, credential, network, and destructive-action gates remain authoritative.",
-      "type": "boolean",
-      "default": true
+    "mode": {
+      "description": "Permission approval mode.",
+      "markdownDescription": "Choose `manual` for prompts, `yolo` for classic eligible auto-approval, or `yolo-auto` for model-backed approval of eligible workspace-local reads and listings with classic yolo bypass elsewhere. Deterministic gates remain authoritative.",
+      "enum": ["manual", "yolo", "yolo-auto"],
+      "default": "yolo-auto"
     },
     "yoloAutoMaxLevel": {
       "description": "Maximum classifier level allowed to produce automatic approval after Patronus native L1.",
@@ -43,8 +36,8 @@
       "default": "l3"
     },
     "yoloAskBashPatterns": {
-      "description": "Bash command wildcard patterns that still prompt even when yolo mode is enabled.",
-      "markdownDescription": "Bash command wildcard patterns that still prompt even when `yoloMode` is enabled.\n\nPatterns use the same wildcard matching as `permission.bash` and are matched against the raw bash command string. Example: `git push *` or `git commit *`.",
+      "description": "Bash command wildcard patterns that still prompt in yolo and yolo-auto modes.",
+      "markdownDescription": "Bash command wildcard patterns that still prompt in `yolo` and `yolo-auto` modes.\n\nPatterns use the same wildcard matching as `permission.bash` and are matched against the raw bash command string. Example: `git push *` or `git commit *`.",
       "type": "array",
       "items": {
         "type": "string",

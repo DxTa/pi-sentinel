@@ -167,16 +167,15 @@ export function refreshExtensionConfig(
     warning: warning ?? null,
     debugLog: runtimeConfig.debugLog,
     permissionReviewLog: runtimeConfig.permissionReviewLog,
-    yoloMode: runtimeConfig.yoloMode,
-    yoloAutoMode: runtimeConfig.yoloAutoMode,
+    mode: runtimeConfig.mode,
     yoloAutoMaxLevel: runtimeConfig.yoloAutoMaxLevel,
     yoloAskBashPatterns: runtimeConfig.yoloAskBashPatterns,
   });
 }
 
 /**
- * Save updated runtime knobs (debugLog, permissionReviewLog, yoloMode,
- * yoloAutoMode, yoloAutoMaxLevel, yoloAskBashPatterns) to the global config file, then update runtime.config
+ * Save updated runtime knobs (debugLog, permissionReviewLog, mode,
+ * yoloAutoMaxLevel, yoloAskBashPatterns) to the global config file, then update runtime.config
  * and sync UI status.
  */
 export function saveExtensionConfig(
@@ -199,15 +198,17 @@ export function saveExtensionConfig(
     return;
   }
 
-  const merged = {
+  const merged: Record<string, unknown> = {
     ...existing,
     debugLog: normalized.debugLog,
     permissionReviewLog: normalized.permissionReviewLog,
-    yoloMode: normalized.yoloMode,
-    yoloAutoMode: normalized.yoloAutoMode,
+    mode: normalized.mode,
     yoloAutoMaxLevel: normalized.yoloAutoMaxLevel,
     yoloAskBashPatterns: normalized.yoloAskBashPatterns,
   };
+
+  delete merged.yoloMode;
+  delete merged.yoloAutoMode;
 
   if (!writeConfigFile(globalPath, merged)) {
     ctx.ui.notify(
@@ -224,8 +225,7 @@ export function saveExtensionConfig(
   runtime.writeDebugLog("config.saved", {
     debugLog: normalized.debugLog,
     permissionReviewLog: normalized.permissionReviewLog,
-    yoloMode: normalized.yoloMode,
-    yoloAutoMode: normalized.yoloAutoMode,
+    mode: normalized.mode,
     yoloAutoMaxLevel: normalized.yoloAutoMaxLevel,
     yoloAskBashPatterns: normalized.yoloAskBashPatterns,
   });
@@ -254,6 +254,7 @@ export function resetExtensionConfig(
   const next = { ...existing };
   delete next.debugLog;
   delete next.permissionReviewLog;
+  delete next.mode;
   delete next.yoloMode;
   delete next.yoloAutoMode;
   delete next.yoloAutoMaxLevel;

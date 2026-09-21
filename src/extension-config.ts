@@ -6,15 +6,16 @@ import { toRecord } from "./common";
 
 export const EXTENSION_ID = "pi-sentinel";
 
+export type PermissionMode = "manual" | "yolo" | "yolo-auto";
+
 export interface PermissionSystemExtensionConfig {
   debugLog: boolean;
   permissionReviewLog: boolean;
-  yoloMode: boolean;
-  /** Default-on model-backed approval for low-risk workspace-local reads/listings. */
-  yoloAutoMode: boolean;
+  /** Permission approval mode. yolo-auto uses model flow for eligible reads/lists and classic bypass elsewhere. */
+  mode: PermissionMode;
   /** Maximum automatic-approval classifier level. */
   yoloAutoMaxLevel: "l1" | "l2" | "l3";
-  /** Bash command patterns that still prompt even when yolo mode is enabled. */
+  /** Bash command patterns that still prompt in yolo and yolo-auto modes. */
   yoloAskBashPatterns: string[];
   /** Additional directories to auto-allow for reads as Pi infrastructure. */
   piInfrastructureReadPaths?: string[];
@@ -23,8 +24,7 @@ export interface PermissionSystemExtensionConfig {
 export const DEFAULT_EXTENSION_CONFIG: PermissionSystemExtensionConfig = {
   debugLog: false,
   permissionReviewLog: true,
-  yoloMode: false,
-  yoloAutoMode: true,
+  mode: "yolo-auto",
   yoloAutoMaxLevel: "l3",
   yoloAskBashPatterns: [],
 };
@@ -70,8 +70,14 @@ export function normalizePermissionSystemConfig(
   const result: PermissionSystemExtensionConfig = {
     debugLog: record.debugLog === true,
     permissionReviewLog: record.permissionReviewLog !== false,
-    yoloMode: record.yoloMode === true,
-    yoloAutoMode: record.yoloAutoMode === true,
+    mode:
+      record.mode === "manual" || record.mode === "yolo" || record.mode === "yolo-auto"
+        ? record.mode
+        : record.yoloAutoMode === true
+          ? "yolo-auto"
+          : record.yoloMode === true
+            ? "yolo"
+            : "manual",
     yoloAutoMaxLevel:
       record.yoloAutoMaxLevel === "l1"
         ? "l1"

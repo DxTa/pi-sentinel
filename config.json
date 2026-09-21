@@ -3,8 +3,7 @@
 
   "debugLog": false,
   "permissionReviewLog": true,
-  "yoloMode": false,
-  "yoloAutoMode": true,
+  "mode": "yolo-auto",
   "yoloAutoMaxLevel": "l3",
   "yoloAskBashPatterns": [],
 

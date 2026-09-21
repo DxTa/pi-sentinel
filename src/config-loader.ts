@@ -10,6 +10,7 @@ import {
   getProjectConfigPath,
 } from "./config-paths";
 import { mergeFlatPermissions } from "./permission-merge";
+import type { PermissionMode } from "./extension-config";
 import type { FlatPermissionConfig } from "./types";
 
 /**
@@ -20,8 +21,7 @@ export interface UnifiedPermissionConfig {
   // Runtime knobs
   debugLog?: boolean;
   permissionReviewLog?: boolean;
-  yoloMode?: boolean;
-  yoloAutoMode?: boolean;
+  mode?: PermissionMode;
   yoloAutoMaxLevel?: "l1" | "l2" | "l3";
   yoloAskBashPatterns?: string[];
 
@@ -29,9 +29,15 @@ export interface UnifiedPermissionConfig {
   permission?: FlatPermissionConfig;
 }
 
+interface LegacyModeFlags {
+  yoloMode?: boolean;
+  yoloAutoMode?: boolean;
+}
+
 export interface UnifiedConfigLoadResult {
   config: UnifiedPermissionConfig;
   issues: string[];
+  legacyMode?: LegacyModeFlags;
 }
 
 export function stripJsonComments(input: string): string {
@@ -169,10 +175,7 @@ function normalizeFlatPermissionValue(
 /**
  * Normalize raw parsed JSON into the unified config shape.
  */
-export function normalizeUnifiedConfig(raw: unknown): {
-  config: UnifiedPermissionConfig;
-  issues: string[];
-} {
+export function normalizeUnifiedConfig(raw: unknown): UnifiedConfigLoadResult {
   const record = toRecord(raw);
   const issues: string[] = [];
   const config: UnifiedPermissionConfig = {};
@@ -187,11 +190,23 @@ export function normalizeUnifiedConfig(raw: unknown): {
   if (permissionReviewLog !== undefined)
     config.permissionReviewLog = permissionReviewLog;
 
+  const explicitMode =
+    record.mode === "manual" || record.mode === "yolo" || record.mode === "yolo-auto";
+  const legacyMode: LegacyModeFlags = {};
   const yoloMode = normalizeOptionalBoolean(record.yoloMode);
-  if (yoloMode !== undefined) config.yoloMode = yoloMode;
-
   const yoloAutoMode = normalizeOptionalBoolean(record.yoloAutoMode);
-  if (yoloAutoMode !== undefined) config.yoloAutoMode = yoloAutoMode;
+  if (!explicitMode && yoloMode !== undefined) legacyMode.yoloMode = yoloMode;
+  if (!explicitMode && yoloAutoMode !== undefined) legacyMode.yoloAutoMode = yoloAutoMode;
+
+  if (explicitMode) {
+    config.mode = record.mode as PermissionMode;
+  } else if (yoloAutoMode === true) {
+    config.mode = "yolo-auto";
+  } else if (yoloMode === true) {
+    config.mode = "yolo";
+  } else if (yoloAutoMode !== undefined || yoloMode !== undefined) {
+    config.mode = "manual";
+  }
 
   if (
     record.yoloAutoMaxLevel === "l1"
@@ -212,13 +227,45 @@ export function normalizeUnifiedConfig(raw: unknown): {
   const permission = normalizeFlatPermissionValue(record.permission);
   if (permission !== undefined) config.permission = permission;
 
-  return { config, issues };
+  return {
+    config,
+    issues,
+    ...(Object.keys(legacyMode).length > 0 ? { legacyMode } : {}),
+  };
+}
+
+function legacyFlagsForMode(mode: PermissionMode | undefined): LegacyModeFlags {
+  if (mode === "yolo-auto") return { yoloMode: true, yoloAutoMode: true };
+  if (mode === "yolo") return { yoloMode: true, yoloAutoMode: false };
+  if (mode === "manual") return { yoloMode: false, yoloAutoMode: false };
+  return {};
+}
+
+function mergeLoadedConfig(
+  base: UnifiedPermissionConfig,
+  override: UnifiedConfigLoadResult,
+): UnifiedPermissionConfig {
+  const merged = mergeUnifiedConfigs(base, override.config);
+  if (!override.legacyMode) return merged;
+
+  const effective = {
+    ...legacyFlagsForMode(base.mode),
+    ...override.legacyMode,
+  };
+  if (effective.yoloAutoMode === true) {
+    merged.mode = "yolo-auto";
+  } else if (effective.yoloMode === true) {
+    merged.mode = "yolo";
+  } else {
+    merged.mode = "manual";
+  }
+  return merged;
 }
 
 /**
  * Merge two unified configs.
  * - `permission` is deep-shallow merged (surface-level object maps are shallow-merged).
- * - Runtime knob fields (debugLog, permissionReviewLog, yoloMode,
+ * - Runtime knob fields (debugLog, permissionReviewLog, mode,
  *   yoloAskBashPatterns) are replaced when present in the override.
  */
 export function mergeUnifiedConfigs(
@@ -238,11 +285,8 @@ export function mergeUnifiedConfigs(
     merged.permissionReviewLog =
       override.permissionReviewLog ?? base.permissionReviewLog;
   }
-  if (override.yoloMode !== undefined || base.yoloMode !== undefined) {
-    merged.yoloMode = override.yoloMode ?? base.yoloMode;
-  }
-  if (override.yoloAutoMode !== undefined || base.yoloAutoMode !== undefined) {
-    merged.yoloAutoMode = override.yoloAutoMode ?? base.yoloAutoMode;
+  if (override.mode !== undefined || base.mode !== undefined) {
+    merged.mode = override.mode ?? base.mode;
   }
   if (override.yoloAutoMaxLevel !== undefined || base.yoloAutoMaxLevel !== undefined) {
     merged.yoloAutoMaxLevel = override.yoloAutoMaxLevel ?? base.yoloAutoMaxLevel;
@@ -313,7 +357,7 @@ export function loadAndMergeConfigs(
   if (existsSync(bundledPath)) {
     const bundled = loadUnifiedConfig(bundledPath);
     allIssues.push(...bundled.issues);
-    merged = mergeUnifiedConfigs(merged, bundled.config);
+    merged = mergeLoadedConfig(merged, bundled);
   } else {
     allIssues.push(`Bundled permission config missing at '${bundledPath}'.`);
   }
@@ -325,13 +369,13 @@ export function loadAndMergeConfigs(
         `Legacy-format keys are not translated; leave this file unchanged and migrate supported unified keys manually to '${newGlobalPath}'.`,
     );
     allIssues.push(...legacy.issues);
-    merged = mergeUnifiedConfigs(merged, legacy.config);
+    merged = mergeLoadedConfig(merged, legacy);
   }
 
   const globalResult = loadUnifiedConfig(newGlobalPath);
   allIssues.push(...globalResult.issues);
   const globalConfig = globalResult.config;
-  merged = mergeUnifiedConfigs(merged, globalConfig);
+  merged = mergeLoadedConfig(merged, globalResult);
 
   if (existsSync(legacyProjectPolicyPath)) {
     const legacy = loadUnifiedConfig(legacyProjectPolicyPath);
@@ -340,7 +384,7 @@ export function loadAndMergeConfigs(
         `Legacy-format keys are not translated; leave this file unchanged and migrate supported unified keys manually to '${newProjectPath}'.`,
     );
     allIssues.push(...legacy.issues);
-    merged = mergeUnifiedConfigs(merged, legacy.config);
+    merged = mergeLoadedConfig(merged, legacy);
   }
 
   if (existsSync(legacyProjectExtensionPath)) {
@@ -350,17 +394,17 @@ export function loadAndMergeConfigs(
         `Move supported unified settings to '${newProjectPath}' without modifying bundled defaults.`,
     );
     allIssues.push(...legacy.issues);
-    merged = mergeUnifiedConfigs(merged, legacy.config);
+    merged = mergeLoadedConfig(merged, legacy);
   }
 
   const legacyProjectResult = loadUnifiedConfig(legacyProjectConfigPath);
   allIssues.push(...legacyProjectResult.issues);
-  merged = mergeUnifiedConfigs(merged, legacyProjectResult.config);
+  merged = mergeLoadedConfig(merged, legacyProjectResult);
 
   const projectResult = loadUnifiedConfig(newProjectPath);
   allIssues.push(...projectResult.issues);
-  const projectConfig = mergeUnifiedConfigs(legacyProjectResult.config, projectResult.config);
-  merged = mergeUnifiedConfigs(merged, projectResult.config);
+  const projectConfig = mergeLoadedConfig(legacyProjectResult.config, projectResult);
+  merged = mergeLoadedConfig(merged, projectResult);
 
   return {
     global: globalConfig,

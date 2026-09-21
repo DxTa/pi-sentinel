@@ -22,7 +22,7 @@ describe("saveExtensionConfig", () => {
         network: { allowedDomains: ["example.com"] },
         sandbox: { enabled: true },
         permission: { write: "deny" },
-        yoloMode: false,
+        mode: "manual",
       }),
       "utf8",
     );
@@ -40,7 +40,7 @@ describe("saveExtensionConfig", () => {
       {
         debugLog: true,
         permissionReviewLog: true,
-        yoloMode: true,
+        mode: "yolo",
         yoloAskBashPatterns: ["git push *"],
       },
       ctx as never,
@@ -54,7 +54,7 @@ describe("saveExtensionConfig", () => {
       sandbox: { enabled: true },
       permission: { write: "deny" },
       debugLog: true,
-      yoloMode: true,
+      mode: "yolo",
     });
   });
 
@@ -85,7 +85,7 @@ describe("saveExtensionConfig", () => {
 
     resetExtensionConfig(runtime as never, ctx as never);
 
-    expect(runtime.config).toMatchObject({ yoloMode: true });
+    expect(runtime.config).toMatchObject({ mode: "yolo-auto" });
   });
 
   it("removes runtime overrides so bundled defaults become effective", async () => {
@@ -97,7 +97,7 @@ describe("saveExtensionConfig", () => {
       JSON.stringify({
         debugLog: true,
         permissionReviewLog: false,
-        yoloMode: true,
+        mode: "yolo",
         yoloAskBashPatterns: ["git push *"],
         network: { allowedDomains: ["example.com"] },
       }),
@@ -121,7 +121,7 @@ describe("saveExtensionConfig", () => {
     expect(runtime.config).toMatchObject({
       debugLog: false,
       permissionReviewLog: true,
-      yoloMode: false,
+      mode: "yolo-auto",
       yoloAskBashPatterns: [],
     });
   });

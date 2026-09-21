@@ -12,7 +12,8 @@ import {
   writeFileSync,
 } from "node:fs";
 import { randomUUID } from "node:crypto";
-import { basename, dirname, relative, resolve, sep } from "node:path";
+import { homedir } from "node:os";
+import { basename, dirname, join, relative, resolve, sep } from "node:path";
 
 import { isPathWithinDirectory } from "./path-utils";
 
@@ -124,7 +125,13 @@ export function writeConfigFile(
       0o600,
     );
     try {
-      writeFileSync(tempFd, `${JSON.stringify(config, null, 2)}\n`, "utf-8");
+      const hasLegacyMode =
+        typeof config.yoloMode === "boolean" || typeof config.yoloAutoMode === "boolean";
+      const canonicalConfig = canonicalizePersistedMode(
+        config,
+        hasLegacyMode ? resolveEffectiveModeForWrite(path, workspaceRoot) : undefined,
+      );
+      writeFileSync(tempFd, `${JSON.stringify(canonicalConfig, null, 2)}\n`, "utf-8");
     } finally {
       closeSync(tempFd);
     }
@@ -142,6 +149,53 @@ export function writeConfigFile(
     }
     return false;
   }
+}
+
+function legacyFlagsForMode(mode: unknown): { yoloMode?: boolean; yoloAutoMode?: boolean } {
+  if (mode === "yolo-auto") return { yoloMode: true, yoloAutoMode: true };
+  if (mode === "yolo") return { yoloMode: true, yoloAutoMode: false };
+  if (mode === "manual") return { yoloMode: false, yoloAutoMode: false };
+  return {};
+}
+
+function resolveEffectiveModeForWrite(
+  configPath: string,
+  workspaceRoot?: string,
+): unknown {
+  const agentDir = workspaceRoot
+    ? process.env.PI_CODING_AGENT_DIR || join(homedir(), ".pi", "agent")
+    : dirname(configPath);
+  try {
+    return loadMergedScopedConfig(agentDir, workspaceRoot ?? null).merged.mode;
+  } catch {
+    return undefined;
+  }
+}
+
+function canonicalizePersistedMode(
+  config: JsonObject,
+  inheritedMode: unknown,
+): JsonObject {
+  const next = { ...config };
+  const mode = next.mode;
+  const hasLegacyMode =
+    typeof next.yoloMode === "boolean" || typeof next.yoloAutoMode === "boolean";
+  if (mode !== "manual" && mode !== "yolo" && mode !== "yolo-auto" && hasLegacyMode) {
+    const inherited = legacyFlagsForMode(inheritedMode);
+    const effective = {
+      ...inherited,
+      ...(typeof next.yoloMode === "boolean" ? { yoloMode: next.yoloMode } : {}),
+      ...(typeof next.yoloAutoMode === "boolean" ? { yoloAutoMode: next.yoloAutoMode } : {}),
+    };
+    if (effective.yoloAutoMode === true) next.mode = "yolo-auto";
+    else if (effective.yoloMode === true) next.mode = "yolo";
+    else if (effective.yoloAutoMode !== undefined || effective.yoloMode !== undefined) {
+      next.mode = "manual";
+    }
+  }
+  delete next.yoloMode;
+  delete next.yoloAutoMode;
+  return next;
 }
 
 function readConfigForWrite(path: string): JsonObject | null {

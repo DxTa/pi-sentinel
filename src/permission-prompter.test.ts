@@ -4,7 +4,7 @@ import { PromptWaitTracker } from "./prompt-state";
 import { PermissionPrompter } from "./permission-prompter";
 
 describe("PermissionPrompter", () => {
-  it("auto-approves eligible safe workspace reads through yolo-auto", async () => {
+  it("uses model fallback for eligible workspace reads in yolo-auto", async () => {
     const requestPermissionDecisionFromUi = vi.fn(async () => ({
       approved: true,
       state: "approved" as const,
@@ -41,8 +41,7 @@ describe("PermissionPrompter", () => {
       getConfig: () => ({
         debugLog: false,
         permissionReviewLog: true,
-        yoloMode: false,
-        yoloAutoMode: true,
+        mode: "yolo-auto",
         yoloAutoMaxLevel: "l2",
         yoloAskBashPatterns: [],
       }),
@@ -56,7 +55,7 @@ describe("PermissionPrompter", () => {
       requestPermissionDecisionFromUi,
     });
 
-    const result = await prompter.prompt({ hasUI: true, ui: {} } as never, {
+    const result = await prompter.prompt({ hasUI: true, ui: { setStatus() {} } } as never, {
       requestId: "req-yolo-auto",
       source: "tool_call",
       agentName: null,
@@ -83,6 +82,38 @@ describe("PermissionPrompter", () => {
     ]);
   });
 
+  it("uses classic yolo bypass before yolo-auto model fallback", async () => {
+    const evaluate = vi.fn();
+    const waitForYoloAutoStartup = vi.fn();
+    const prompter = new PermissionPrompter({
+      promptWaitTracker: new PromptWaitTracker({ emit() {} }),
+      getConfig: () => ({
+        debugLog: false,
+        permissionReviewLog: true,
+        mode: "yolo-auto",
+        yoloAutoMaxLevel: "l2",
+        yoloAskBashPatterns: [],
+      }),
+      yoloAutoClient: { evaluate },
+      waitForYoloAutoStartup,
+      writeReviewLog() {},
+      subagentSessionsDir: "/tmp/subagents",
+      forwardingDir: "/tmp/forwarding",
+      requestPermissionDecisionFromUi: vi.fn(),
+    });
+
+    await expect(prompter.prompt({ hasUI: true, ui: {} } as never, {
+      requestId: "req-yolo-auto-classic",
+      source: "tool_call",
+      agentName: null,
+      message: "Need permission",
+      toolName: "bash",
+      command: "npm test",
+    })).resolves.toEqual({ approved: true, state: "approved", autoApproved: true });
+    expect(waitForYoloAutoStartup).not.toHaveBeenCalled();
+    expect(evaluate).not.toHaveBeenCalled();
+  });
+
   it("falls back to prompt when yolo-auto startup fails", async () => {
     const requestPermissionDecisionFromUi = vi.fn(async () => ({
       approved: false,
@@ -94,8 +125,7 @@ describe("PermissionPrompter", () => {
       getConfig: () => ({
         debugLog: false,
         permissionReviewLog: true,
-        yoloMode: false,
-        yoloAutoMode: true,
+        mode: "yolo-auto",
         yoloAutoMaxLevel: "l2",
         yoloAskBashPatterns: [],
       }),
@@ -149,7 +179,7 @@ describe("PermissionPrompter", () => {
       getConfig: () => ({
         debugLog: false,
         permissionReviewLog: true,
-        yoloMode: false,
+        mode: "manual",
         yoloAskBashPatterns: [],
       }),
       writeReviewLog(event, details) {
@@ -206,7 +236,7 @@ describe("PermissionPrompter", () => {
       getConfig: () => ({
         debugLog: false,
         permissionReviewLog: true,
-        yoloMode: true,
+        mode: "yolo",
         yoloAskBashPatterns: [],
       }),
       writeReviewLog(event, details) {
@@ -249,7 +279,7 @@ describe("PermissionPrompter", () => {
       getConfig: () => ({
         debugLog: false,
         permissionReviewLog: true,
-        yoloMode: true,
+        mode: "yolo",
         yoloAskBashPatterns: ["git push *"],
       } as any),
       writeReviewLog(event, details) {
@@ -294,7 +324,7 @@ describe("PermissionPrompter", () => {
       getConfig: () => ({
         debugLog: false,
         permissionReviewLog: true,
-        yoloMode: true,
+        mode: "yolo",
         yoloAskBashPatterns: [],
       }),
       writeReviewLog(event, details) {
@@ -343,7 +373,7 @@ describe("PermissionPrompter", () => {
       getConfig: () => ({
         debugLog: false,
         permissionReviewLog: true,
-        yoloMode: true,
+        mode: "yolo",
         yoloAskBashPatterns: [],
       }),
       writeReviewLog(event, details) {
@@ -387,7 +417,7 @@ describe("PermissionPrompter", () => {
       getConfig: () => ({
         debugLog: false,
         permissionReviewLog: true,
-        yoloMode: true,
+        mode: "yolo",
         yoloAskBashPatterns: ["git push *"],
       } as any),
       writeReviewLog() {},

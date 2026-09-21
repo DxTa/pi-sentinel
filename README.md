@@ -56,7 +56,7 @@ The external worker provides Patronus native L1, L2, and advisory L3. The MIT pa
 
 The adapter requests downloads only during startup, checks pinned revision markers and manifest SHA-256 values for the required L2 packages, warms required models, holds a startup lock, and listens on a user-owned Unix socket. It does not independently hash every model/tokenizer artifact or authenticate socket peers. Permission decisions never download assets. A shared active socket can serve multiple Pi sessions; worker failure falls back to prompting.
 
-When `yoloAutoMode` is enabled, pi-sentinel starts the adapter with `python3` unless the configured socket is already active. Override these when needed:
+When `mode` is `yolo-auto`, pi-sentinel starts the adapter with `python3` unless the configured socket is already active. Override these when needed:
 
 ```sh
 export PI_SENTINEL_PYTHON=/path/to/python
@@ -81,7 +81,7 @@ Use `--no-download-files` for offline startup. Missing assets then stop the work
 | `/sandbox-grant network --domain <domain> [--ttl <duration>]` | Grant a sandbox network domain. |
 | `/sandbox-revoke <grant-id>` | Revoke a sandbox grant. |
 
-`yoloMode` is separate from `yoloAutoMode`: it can auto-approve eligible `ask` checks, including some external reads and local writes. It still prompts for protected Bash patterns and first-time external writes. Keep it off unless unattended execution is intentional.
+`mode` selects one behavior: `manual` prompts, `yolo` enables classic eligible auto-approval, and `yolo-auto` uses model-backed approval for eligible workspace-local reads and listings while retaining classic yolo bypass elsewhere. Protected Bash patterns and first-time external writes still prompt.
 
 ## Logs
 

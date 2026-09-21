@@ -7,6 +7,7 @@ import { type SettingItem, SettingsList } from "@earendil-works/pi-tui";
 
 import {
   DEFAULT_EXTENSION_CONFIG,
+  type PermissionMode,
   type PermissionSystemExtensionConfig,
 } from "./extension-config";
 import type { Ruleset } from "./rule";
@@ -26,6 +27,7 @@ interface PermissionSystemConfigController {
 }
 
 const ON_OFF = ["on", "off"];
+const MODES: PermissionMode[] = ["manual", "yolo", "yolo-auto"];
 const COMMAND_ARGUMENTS = [
   {
     value: "show",
@@ -55,8 +57,7 @@ function cloneDefaultConfig(): PermissionSystemExtensionConfig {
   return {
     debugLog: DEFAULT_EXTENSION_CONFIG.debugLog,
     permissionReviewLog: DEFAULT_EXTENSION_CONFIG.permissionReviewLog,
-    yoloMode: DEFAULT_EXTENSION_CONFIG.yoloMode,
-    yoloAutoMode: DEFAULT_EXTENSION_CONFIG.yoloAutoMode,
+    mode: DEFAULT_EXTENSION_CONFIG.mode,
     yoloAutoMaxLevel: DEFAULT_EXTENSION_CONFIG.yoloAutoMaxLevel,
     yoloAskBashPatterns: [...DEFAULT_EXTENSION_CONFIG.yoloAskBashPatterns],
   };
@@ -86,8 +87,7 @@ function summarizeConfig(
   yoloAutoStatus?: string,
 ): string {
   const knobs = [
-    `yoloMode=${toOnOff(config.yoloMode)}`,
-    `yoloAutoMode=${toOnOff(config.yoloAutoMode)} (max=${config.yoloAutoMaxLevel})`,
+    `mode=${config.mode} (max=${config.yoloAutoMaxLevel})`,
     `permissionReviewLog=${toOnOff(config.permissionReviewLog)}`,
     `debugLog=${toOnOff(config.debugLog)}`,
   ].join(", ");
@@ -96,31 +96,22 @@ function summarizeConfig(
   return `${knobs}${workerSuffix}${rulesSuffix}`;
 }
 
-function buildSettingItems(
+export function buildSettingItems(
   config: PermissionSystemExtensionConfig,
 ): SettingItem[] {
   return [
     {
-      id: "yoloMode",
-      label: "YOLO mode",
+      id: "mode",
+      label: "Mode",
       description:
-        "Auto-approve eligible ask-state permission checks while still prompting for protected bash commands and first-time external writes",
-      currentValue: toOnOff(config.yoloMode),
-      values: ON_OFF,
-
-    },
-    {
-      id: "yoloAutoMode",
-      label: "YOLO auto",
-      description:
-        "Enable model-backed auto-approval for eligible workspace-local reads and directory listings",
-      currentValue: toOnOff(config.yoloAutoMode),
-      values: ON_OFF,
+        "Manual prompts; yolo auto-approves safe checks; yolo-auto uses model-backed workspace read/list approval with classic yolo elsewhere",
+      currentValue: config.mode,
+      values: MODES,
     },
     {
       id: "yoloAutoMaxLevel",
       label: "YOLO auto level",
-      description: "Maximum automatic-approval level; L3 remains advisory escalation only",
+      description: "Maximum model level; L3 remains advisory escalation only",
       currentValue: config.yoloAutoMaxLevel,
       values: ["l1", "l2", "l3"],
     },
@@ -143,16 +134,16 @@ function buildSettingItems(
   ];
 }
 
-function applySetting(
+export function applySetting(
   config: PermissionSystemExtensionConfig,
   id: string,
   value: string,
 ): PermissionSystemExtensionConfig {
   switch (id) {
-    case "yoloMode":
-      return { ...config, yoloMode: value === "on" };
-    case "yoloAutoMode":
-      return { ...config, yoloAutoMode: value === "on" };
+    case "mode":
+      return MODES.includes(value as PermissionMode)
+        ? { ...config, mode: value as PermissionMode }
+        : config;
     case "yoloAutoMaxLevel":
       return value === "l1" || value === "l2" || value === "l3"
         ? { ...config, yoloAutoMaxLevel: value }
@@ -170,8 +161,7 @@ function syncSettingValues(
   settingsList: SettingsList,
   config: PermissionSystemExtensionConfig,
 ): void {
-  settingsList.updateValue("yoloMode", toOnOff(config.yoloMode));
-  settingsList.updateValue("yoloAutoMode", toOnOff(config.yoloAutoMode));
+  settingsList.updateValue("mode", config.mode);
   settingsList.updateValue("yoloAutoMaxLevel", config.yoloAutoMaxLevel);
   settingsList.updateValue(
     "permissionReviewLog",

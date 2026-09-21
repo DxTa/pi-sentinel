@@ -17,36 +17,60 @@ import {
 } from "./extension-config";
 import { normalizeSandboxConfig } from "./sandbox/settings";
 
-describe("yoloAskBashPatterns config", () => {
-  it("normalizes yolo-auto settings with safe defaults", () => {
-    expect(normalizeUnifiedConfig({}).config).toEqual({});
+describe("permission mode config", () => {
+  it("normalizes one explicit mode", () => {
+    expect(normalizeUnifiedConfig({ mode: "manual" }).config).toEqual({ mode: "manual" });
     expect(normalizeUnifiedConfig({
-      yoloAutoMode: true,
+      mode: "yolo-auto",
       yoloAutoMaxLevel: "l2",
     }).config).toMatchObject({
-      yoloAutoMode: true,
+      mode: "yolo-auto",
+      yoloAutoMaxLevel: "l2",
+    });
+    expect(normalizeUnifiedConfig({ mode: "invalid" }).config).toEqual({});
+    expect(normalizeUnifiedConfig({ mode: "manual", yoloAutoMode: true }).config).toEqual({ mode: "manual" });
+  });
+
+  it("migrates legacy boolean modes without exposing them", () => {
+    expect(normalizeUnifiedConfig({ yoloAutoMode: true }).config).toEqual({ mode: "yolo-auto" });
+    expect(normalizeUnifiedConfig({ yoloMode: true }).config).toEqual({ mode: "yolo" });
+    expect(normalizeUnifiedConfig({ yoloMode: true, yoloAutoMode: true }).config).toEqual({ mode: "yolo-auto" });
+    expect(normalizeUnifiedConfig({ yoloAutoMode: false }).config).toEqual({ mode: "manual" });
+  });
+
+  it("keeps inherited auto behavior when legacy yoloMode is partial", async () => {
+    const root = await mkdtemp(path.join(tmpdir(), "pi-legacy-mode-"));
+    tempPaths.push(root);
+    const agentDir = path.join(root, "agent");
+    const projectDir = path.join(root, "project");
+    const extensionRoot = path.join(root, "extension");
+    await Promise.all([agentDir, projectDir, extensionRoot].map((dir) => mkdir(dir, { recursive: true })));
+    await writeFile(path.join(extensionRoot, "config.json"), JSON.stringify({ mode: "yolo-auto" }), "utf8");
+    await mkdir(path.dirname(getGlobalConfigPath(agentDir)), { recursive: true });
+    await writeFile(getGlobalConfigPath(agentDir), JSON.stringify({ yoloMode: true }), "utf8");
+
+    expect(loadAndMergeConfigs(agentDir, projectDir, extensionRoot).merged).toMatchObject({
+      mode: "yolo-auto",
+    });
+  });
+
+  it("lets project mode replace global mode", () => {
+    expect(mergeUnifiedConfigs(
+      { mode: "yolo-auto", yoloAutoMaxLevel: "l2" },
+      { mode: "manual" },
+    )).toMatchObject({
+      mode: "manual",
       yoloAutoMaxLevel: "l2",
     });
   });
 
   it("accepts L3 as yolo-auto ceiling", () => {
     const normalized = normalizeUnifiedConfig({
-      yoloAutoMode: "true",
+      mode: "yolo-auto",
       yoloAutoMaxLevel: "l3",
     }).config;
 
-    expect(normalized).not.toHaveProperty("yoloAutoMode");
-    expect(normalized).toMatchObject({ yoloAutoMaxLevel: "l3" });
-  });
-
-  it("lets project yolo-auto settings replace global settings", () => {
-    expect(mergeUnifiedConfigs(
-      { yoloAutoMode: true, yoloAutoMaxLevel: "l2" },
-      { yoloAutoMode: false },
-    )).toMatchObject({
-      yoloAutoMode: false,
-      yoloAutoMaxLevel: "l2",
-    });
+    expect(normalized).toMatchObject({ mode: "yolo-auto", yoloAutoMaxLevel: "l3" });
   });
 
   it("parses string arrays from unified config", () => {
@@ -86,7 +110,7 @@ describe("yoloAskBashPatterns config", () => {
 
   it("defaults extension runtime config to empty list", () => {
     expect(DEFAULT_EXTENSION_CONFIG).toMatchObject({
-      yoloAutoMode: true,
+      mode: "yolo-auto",
       yoloAutoMaxLevel: "l3",
       yoloAskBashPatterns: [],
     });
@@ -128,7 +152,7 @@ describe("layered permission config paths", () => {
     await writeFile(
       path.join(extensionRoot, "config.json"),
       JSON.stringify({
-        yoloMode: false,
+        mode: "manual",
         permission: {
           bash: { "git *": "ask" },
         },
@@ -140,7 +164,7 @@ describe("layered permission config paths", () => {
     await writeFile(
       globalPath,
       JSON.stringify({
-        yoloMode: true,
+        mode: "yolo",
         permission: {
           bash: { "git push *": "allow" },
         },
@@ -152,7 +176,7 @@ describe("layered permission config paths", () => {
     await writeFile(
       projectPath,
       JSON.stringify({
-        yoloMode: false,
+        mode: "manual",
         permission: {
           bash: { "git push *": "deny" },
         },
@@ -166,7 +190,7 @@ describe("layered permission config paths", () => {
     expect(getProjectConfigPath("/repo")).toBe("/repo/.pi/permissions.json");
     expect(result.issues).toEqual([]);
     expect(result.merged).toMatchObject({
-      yoloMode: false,
+      mode: "manual",
       permission: {
         bash: {
           "git *": "ask",

@@ -150,6 +150,19 @@ describe("persistPermissionRuleToConfig", () => {
       },
     });
   });
+
+  it("migrates legacy mode keys when writing any scoped config", async () => {
+    const dir = await makeTempDir("pi-scoped-config-");
+    const configPath = path.join(dir, "config.json");
+    await writeFile(configPath, JSON.stringify({ yoloMode: true }), "utf8");
+
+    persistPermissionRuleToConfig(configPath, "bash", "git push *");
+
+    const saved = JSON.parse(await readFile(configPath, "utf8"));
+    expect(saved).toMatchObject({ mode: "yolo-auto" });
+    expect(saved).not.toHaveProperty("yoloMode");
+    expect(saved).not.toHaveProperty("yoloAutoMode");
+  });
 });
 
 describe("persistSandboxNetworkGrantToConfig", () => {

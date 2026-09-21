@@ -10,7 +10,7 @@ import {
 const yoloConfig = {
   debugLog: false,
   permissionReviewLog: true,
-  yoloMode: true,
+  mode: "yolo",
   yoloAskBashPatterns: [],
 };
 
@@ -62,6 +62,13 @@ describe("matchesYoloAskBashPattern", () => {
 
     expect(matchesYoloAskBashPattern(context, yoloConfig)).toBe(false);
     expect(shouldAutoApprovePermissionState("ask", yoloConfig, context)).toBe(true);
+  });
+
+  it("keeps classic yolo bypass enabled in yolo-auto mode", () => {
+    expect(shouldAutoApprovePermissionState("ask", {
+      ...yoloConfig,
+      mode: "yolo-auto",
+    }, { toolName: "read" })).toBe(true);
   });
 
   it("does not apply bash-only protection to non-bash requests", () => {
@@ -159,7 +166,7 @@ describe("canResolveAskPermissionRequest", () => {
         config: {
           debugLog: false,
           permissionReviewLog: true,
-          yoloMode: true,
+          mode: "yolo",
           yoloAskBashPatterns: ["git push *"],
         },
         hasUI: false,
@@ -188,7 +195,7 @@ describe("canResolveAskPermissionRequest", () => {
         config: {
           debugLog: false,
           permissionReviewLog: true,
-          yoloMode: true,
+          mode: "yolo",
           yoloAskBashPatterns: ["git push *"],
         },
         hasUI: false,

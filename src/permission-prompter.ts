@@ -118,7 +118,14 @@ export class PermissionPrompter implements PermissionPrompterApi {
         ),
     };
 
-    if (shouldAutoApprovePermissionState("ask", config, yoloContext)) {
+    // Model-eligible reads/lists are deliberately not consumed by broad YOLO;
+    // classic YOLO still handles every request outside that bounded path first.
+    const yoloAutoCandidate =
+      config.mode === "yolo-auto"
+      && details.yoloAutoEligible === true
+      && details.yoloAutoWorkspaceLocal === true
+      && Boolean(details.yoloAutoOperation);
+    if (shouldAutoApprovePermissionState("ask", config, yoloContext) && !yoloAutoCandidate) {
       this.writeReviewEntry("permission_request.auto_approved", details);
       return { approved: true, state: "approved", autoApproved: true };
     }
@@ -182,7 +189,7 @@ export class PermissionPrompter implements PermissionPrompterApi {
       return { action: "prompt", reason: "not_configured_or_ineligible" };
     }
     const operation = details.yoloAutoOperation;
-    if (!config.yoloAutoMode || !operation || !details.yoloAutoWorkspaceLocal) {
+    if (config.mode !== "yolo-auto" || !operation || !details.yoloAutoWorkspaceLocal) {
       return { action: "prompt", reason: "disabled_or_ineligible" };
     }
 
@@ -203,7 +210,7 @@ export class PermissionPrompter implements PermissionPrompterApi {
       },
     }, config.yoloAutoMaxLevel);
     return decideYoloAuto({
-      enabled: config.yoloAutoMode,
+      enabled: config.mode === "yolo-auto",
       maxLevel: config.yoloAutoMaxLevel,
       permissionState: "ask",
       source: details.source,
