@@ -20,6 +20,7 @@ import type { ToolCallContext } from "./types";
 export function describeExternalDirectoryGate(
   tcc: ToolCallContext,
   infraDirs: string[],
+  isTrustedClipboardReadPath?: (pathValue: string) => boolean,
 ): GateResult {
   if (!tcc.cwd) return null;
 
@@ -36,6 +37,23 @@ export function describeExternalDirectoryGate(
   );
 
   // ── Pi infrastructure read bypass ──────────────────────────────────────
+  if (tcc.toolName === "read" && isTrustedClipboardReadPath?.(normalizedExtPath)) {
+    return {
+      action: "allow",
+      log: {
+        event: "permission_request.clipboard_auto_allowed",
+        details: {
+          source: "tool_call",
+          toolCallId: tcc.toolCallId,
+          toolName: tcc.toolName,
+          agentName: tcc.agentName,
+          scope: "tracked_pi_clipboard",
+          resolution: "clipboard_auto_allowed",
+        },
+      },
+    };
+  }
+
   if (
     isPiInfrastructureRead(tcc.toolName, normalizedExtPath, infraDirs, tcc.cwd)
   ) {

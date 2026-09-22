@@ -38,6 +38,20 @@ export interface YoloAutoL3Response {
   provenance?: string;
 }
 
+export type YoloAutoFailureReason =
+  | "l1_request_failed"
+  | "l2_request_failed"
+  | "l3_request_failed"
+  | "protocol_mismatch"
+  | "worker_failed";
+
+export interface YoloAutoPhaseSummary {
+  phase: "l1" | "l2" | "l3";
+  status: "complete" | "failed";
+  latencyMs: number;
+  failureReason?: YoloAutoFailureReason;
+}
+
 export interface YoloAutoWorkerResponse {
   requestId: string;
   phase: "l1" | "l2" | "l3";
@@ -69,6 +83,9 @@ export interface YoloAutoWorkerTransport {
 export type YoloAutoClientResult =
   | {
       status: "complete";
+      evaluationId: string;
+      phases: readonly YoloAutoPhaseSummary[];
+      totalLatencyMs: number;
       l1: YoloAutoL1Response;
       l2: YoloAutoL2Response | undefined;
       l3: YoloAutoL3Response | undefined;
@@ -76,7 +93,10 @@ export type YoloAutoClientResult =
     }
   | {
       status: "unavailable";
-      reason: string;
+      evaluationId: string;
+      phases: readonly YoloAutoPhaseSummary[];
+      totalLatencyMs: number;
+      reason: YoloAutoFailureReason;
       escalated: boolean;
     };
 
@@ -157,8 +177,56 @@ export class YoloAutoClient {
     payload: YoloAutoPayload,
     maxLevel: "l1" | "l2" | "l3" = "l3",
   ): Promise<YoloAutoClientResult> {
-    const requestId = randomUUID();
-    const l1Response = await this.request({
+    const evaluationId = randomUUID();
+    const requestId = evaluationId;
+    const startedAt = Date.now();
+    const phases: YoloAutoPhaseSummary[] = [];
+    const requestPhase = async (request: YoloAutoWorkerRequest) => {
+      const phaseStartedAt = Date.now();
+      const response = await this.request(request);
+      phases.push({
+        phase: request.phase,
+        status: response.status === "complete" ? "complete" : "failed",
+        latencyMs: Math.max(0, Date.now() - phaseStartedAt),
+        ...(response.status === "unavailable" ? { failureReason: response.reason } : {}),
+      });
+      return response;
+    };
+    const unavailable = (
+      reason: YoloAutoFailureReason,
+      escalated: boolean,
+    ): YoloAutoClientResult => ({
+      status: "unavailable",
+      evaluationId,
+      phases,
+      totalLatencyMs: Math.max(0, Date.now() - startedAt),
+      reason,
+      escalated,
+    });
+    const complete = (
+      l1: YoloAutoL1Response,
+      l2: YoloAutoL2Response | undefined,
+      l3: YoloAutoL3Response | undefined,
+      escalated: boolean,
+    ): YoloAutoClientResult => ({
+      status: "complete",
+      evaluationId,
+      phases,
+      totalLatencyMs: Math.max(0, Date.now() - startedAt),
+      l1,
+      l2,
+      l3,
+      escalated,
+    });
+    const markLastPhaseFailed = (): void => {
+      const phase = phases[phases.length - 1];
+      if (phase) {
+        phase.status = "failed";
+        phase.failureReason = "protocol_mismatch";
+      }
+    };
+
+    const l1Response = await requestPhase({
       protocolVersion: YOLO_AUTO_PROTOCOL_VERSION,
       requestId,
       phase: "l1",
@@ -167,20 +235,21 @@ export class YoloAutoClient {
     });
     if (l1Response.status === "unavailable") {
       this.runtimeStatus = { state: "fallback", reason: l1Response.reason };
-      return l1Response;
+      return unavailable(l1Response.reason, false);
     }
 
     const l1 = l1Response.response.l1;
     if (!isL1Response(l1)) {
+      markLastPhaseFailed();
       this.runtimeStatus = { state: "fallback", reason: "protocol_mismatch" };
-      return { status: "unavailable", reason: "protocol_mismatch", escalated: false };
+      return unavailable("protocol_mismatch", false);
     }
     if (!isSafeL1(l1) || maxLevel === "l1") {
       this.runtimeStatus = { state: "warm" };
-      return { status: "complete", l1, l2: undefined, l3: undefined, escalated: false };
+      return complete(l1, undefined, undefined, false);
     }
 
-    const l2Response = await this.request({
+    const l2Response = await requestPhase({
       protocolVersion: YOLO_AUTO_PROTOCOL_VERSION,
       requestId,
       phase: "l2",
@@ -189,20 +258,21 @@ export class YoloAutoClient {
     });
     if (l2Response.status === "unavailable") {
       this.runtimeStatus = { state: "fallback", reason: l2Response.reason };
-      return l2Response;
+      return unavailable(l2Response.reason, false);
     }
 
     const l2 = l2Response.response.l2;
     if (!isL2Response(l2)) {
+      markLastPhaseFailed();
       this.runtimeStatus = { state: "fallback", reason: "protocol_mismatch" };
-      return { status: "unavailable", reason: "protocol_mismatch", escalated: false };
+      return unavailable("protocol_mismatch", false);
     }
     if (!l2.escalated || maxLevel === "l2") {
       this.runtimeStatus = { state: "warm" };
-      return { status: "complete", l1, l2, l3: undefined, escalated: l2.escalated };
+      return complete(l1, l2, undefined, l2.escalated);
     }
 
-    const l3Response = await this.request({
+    const l3Response = await requestPhase({
       protocolVersion: YOLO_AUTO_PROTOCOL_VERSION,
       requestId,
       phase: "l3",
@@ -211,21 +281,16 @@ export class YoloAutoClient {
     });
     if (l3Response.status === "unavailable") {
       this.runtimeStatus = { state: "fallback", reason: l3Response.reason };
-      return { ...l3Response, escalated: true };
+      return unavailable(l3Response.reason, true);
     }
     if (!isL3Response(l3Response.response.l3)) {
+      markLastPhaseFailed();
       this.runtimeStatus = { state: "fallback", reason: "protocol_mismatch" };
-      return { status: "unavailable", reason: "protocol_mismatch", escalated: true };
+      return unavailable("protocol_mismatch", true);
     }
 
     this.runtimeStatus = { state: "warm" };
-    return {
-      status: "complete",
-      l1,
-      l2,
-      l3: l3Response.response.l3,
-      escalated: true,
-    };
+    return complete(l1, l2, l3Response.response.l3, true);
   }
 
   close(): void {
@@ -238,7 +303,7 @@ export class YoloAutoClient {
 
   private async request(request: YoloAutoWorkerRequest): Promise<
     | { status: "complete"; response: YoloAutoWorkerResponse }
-    | { status: "unavailable"; reason: string; escalated: boolean }
+    | { status: "unavailable"; reason: YoloAutoFailureReason; escalated: boolean }
   > {
     let timer: ReturnType<typeof setTimeout> | undefined;
     try {
@@ -249,8 +314,13 @@ export class YoloAutoClient {
       if (
         response.requestId !== request.requestId
         || response.phase !== request.phase
-        || response.completion !== "complete"
       ) {
+        return { status: "unavailable", reason: "protocol_mismatch", escalated: false };
+      }
+      if (response.completion === "failed") {
+        return { status: "unavailable", reason: "worker_failed", escalated: request.phase === "l3" };
+      }
+      if (response.completion !== "complete") {
         return { status: "unavailable", reason: "protocol_mismatch", escalated: false };
       }
       return { status: "complete", response };

@@ -6,11 +6,11 @@
 
 **Untrusted inputs:** model-generated tool calls, repository contents, paths and symlinks, MCP and skill responses, command output, network data, and worker responses. Project `.pi/permissions.json` and agent frontmatter are security policy, not ordinary repository data; review them before trusting the repository.
 
-**In scope:** fail-open permission, path, network, sandbox, credential, or destructive-action checks; precedence errors; path traversal or symlink escape; secret or audit-log disclosure; unexpected host bypass; SRT escape; `yolo-auto` authorization outside eligible workspace-local reads/lists; L3 authorization; worker socket impersonation or protocol confusion; and cache tampering that changes authorization.
+**In scope:** fail-open permission, path, network, sandbox, credential, or destructive-action checks; precedence errors; path traversal or symlink escape; secret or audit-log disclosure; unexpected host bypass; SRT escape; `yolo-auto` authorization outside eligible workspace-local reads/lists or the bounded secret-read route; clipboard provenance or temp-root escape; L3 authorization; worker socket impersonation or protocol confusion; and cache tampering that changes authorization.
 
 **Out of scope:** host administrator or kernel compromise; compromise of the current user account, Pi runtime, explicitly trusted dependency, SRT runtime, Docker daemon, or configured worker; consequences of commands explicitly approved to run on the host; unreviewed project policy; intentionally approved Docker or local Unix-service access; and availability-only failures such as model download or resource exhaustion.
 
-**Residual limits:** classifier decisions use request metadata, not file contents. Pattern-based masking cannot identify every secret. Static network preflight may miss dynamic destinations. Approved host commands have normal host capabilities; Docker and powerful Unix sockets can be equivalent to host access.
+**Residual limits:** classifier decisions use request metadata, not file contents. Secret-scanner approval never disables result redaction. Pattern-based masking cannot identify every secret. Static network preflight may miss dynamic destinations. Clipboard trust covers only tracked interactive direct reads; it does not make temp roots generally visible or authorize Bash. Approved host commands have normal host capabilities; Docker and powerful Unix sockets can be equivalent to host access.
 
 ## Report vulnerability
 

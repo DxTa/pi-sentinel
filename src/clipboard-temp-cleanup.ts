@@ -1,5 +1,8 @@
-import { lstatSync, unlinkSync } from "node:fs";
+import { lstatSync, realpathSync, unlinkSync } from "node:fs";
+import { tmpdir } from "node:os";
 import { basename } from "node:path";
+
+import { isPathWithinDirectory } from "#src/path-utils";
 
 const PI_CLIPBOARD_FILENAME = /^pi-clipboard-[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\.[a-z0-9]+$/i;
 const PI_CLIPBOARD_PATH_PATTERN = /\/[^\s"'`<>]*\/pi-clipboard-[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\.[a-z0-9]+/gi;
@@ -10,20 +13,51 @@ export function extractPiClipboardPaths(text: string): string[] {
 
 export interface PiClipboardTempCleanup {
   trackText(text: string): void;
+  trackInteractiveText(text: string): void;
   trackValue(value: unknown): void;
+  isTrackedInteractivePath(path: string): boolean;
   reset(): void;
   cleanup(): void;
 }
 
 export function createPiClipboardTempCleanup(): PiClipboardTempCleanup {
   const paths = new Set<string>();
+  const interactivePaths = new Set<string>();
+
+  const recordPaths = (text: string, trustedPaths?: Set<string>): void => {
+    for (const path of extractPiClipboardPaths(text)) {
+      paths.add(path);
+      trustedPaths?.add(path);
+    }
+  };
 
   const trackText = (text: string): void => {
-    for (const path of extractPiClipboardPaths(text)) paths.add(path);
+    recordPaths(text);
+  };
+
+  const trackInteractiveText = (text: string): void => {
+    recordPaths(text, interactivePaths);
+  };
+
+  const isTrackedInteractivePath = (path: string): boolean => {
+    if (!interactivePaths.has(path) || !PI_CLIPBOARD_FILENAME.test(basename(path))) {
+      return false;
+    }
+
+    try {
+      const stat = lstatSync(path);
+      if (!stat.isFile() || stat.isSymbolicLink()) return false;
+      const canonicalPath = realpathSync.native(path);
+      const canonicalTempRoot = realpathSync.native(tmpdir());
+      return isPathWithinDirectory(canonicalPath, canonicalTempRoot);
+    } catch {
+      return false;
+    }
   };
 
   return {
     trackText,
+    trackInteractiveText,
     trackValue(value) {
       if (typeof value === "string") {
         trackText(value);
@@ -38,7 +72,9 @@ export function createPiClipboardTempCleanup(): PiClipboardTempCleanup {
     },
     reset() {
       paths.clear();
+      interactivePaths.clear();
     },
+    isTrackedInteractivePath,
     cleanup() {
       for (const path of paths) {
         try {
@@ -51,6 +87,7 @@ export function createPiClipboardTempCleanup(): PiClipboardTempCleanup {
         }
       }
       paths.clear();
+      interactivePaths.clear();
     },
   };
 }

@@ -35,6 +35,7 @@ import { requestPermissionDecisionFromUi } from "./permission-dialog";
 import { registerPermissionRpcHandlers } from "./permission-event-rpc";
 import { emitReadyEvent } from "./permission-events";
 import { PermissionPrompter } from "./permission-prompter";
+import { YoloAutoEvaluator } from "./yolo-auto-evaluator";
 import {
   createUnixSocketWorkerTransport,
   YoloAutoClient,
@@ -600,6 +601,12 @@ export default function piPermissionSystemExtension(pi: ExtensionAPI): void {
     await yoloAutoWorker?.ready;
   };
 
+  const yoloAutoEvaluator = new YoloAutoEvaluator({
+    client: yoloAutoClient,
+    waitForStartup: ensureYoloAutoWorkerReady,
+    writeReviewLog: runtime.writeReviewLog.bind(runtime),
+  });
+
   const prompter = new PermissionPrompter({
     promptWaitTracker,
     getConfig: () => runtime.config,
@@ -609,6 +616,7 @@ export default function piPermissionSystemExtension(pi: ExtensionAPI): void {
     resolveFallbackTargetSessionId: (ctx) =>
       resolveInteractiveSessionFallback(runtime, ctx.cwd),
     yoloAutoClient,
+    yoloAutoEvaluator,
     waitForYoloAutoStartup: ensureYoloAutoWorkerReady,
     requestPermissionDecisionFromUi,
   });
@@ -716,6 +724,8 @@ export default function piPermissionSystemExtension(pi: ExtensionAPI): void {
   registerSentinelCreds(pi, {
     promptWaitTracker,
     getConfig: (cwd) => loadConfig(cwd) as Record<string, unknown>,
+    getPermissionConfig: (cwd) => loadConfig(cwd),
+    yoloAutoEvaluator,
   });
 
   emitReadyEvent(pi.events);
@@ -731,7 +741,9 @@ export default function piPermissionSystemExtension(pi: ExtensionAPI): void {
     unpublishPermissionsService();
   });
   const agentPrep = new AgentPrepHandler(session, toolRegistry);
-  const gates = new PermissionGateHandler(session, pi.events, toolRegistry);
+  const gates = new PermissionGateHandler(session, pi.events, toolRegistry, {
+    isTrustedClipboardReadPath: clipboardTempCleanup.isTrackedInteractivePath,
+  });
 
   type PersistentGrantRecord =
     | { kind: "network"; configPath: string; value: string; scope: PersistentApprovalScope }
@@ -845,6 +857,9 @@ export default function piPermissionSystemExtension(pi: ExtensionAPI): void {
   pi.on("before_agent_start", (event, ctx) => agentPrep.handle(event, ctx));
   pi.on("input", (event, ctx) => {
     clipboardTempCleanup.trackText(event.text);
+    if (event.source === "interactive") {
+      clipboardTempCleanup.trackInteractiveText(event.text);
+    }
     return gates.handleInput(event, ctx);
   });
   // NOTE: tool_call and user_bash are handled below with our additions

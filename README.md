@@ -18,6 +18,7 @@ Git is the supported distribution path. No build step is required. The npm name 
 - Bash asks by default, except `git status` and `git diff`.
 - Recognized literal network destinations not on the allowlist require approval. Domain preflight uses static command extraction; dynamic or obfuscated destinations may not be identified. Host-bypassed commands have normal host network access after Bash approval.
 - `yolo-auto` is enabled for eligible workspace-local reads and listings. Deterministic permission, path, credential, network, sandbox, and destructive-action gates still run first.
+- Pi clipboard images may be read directly in `manual`, `yolo`, and `yolo-auto` only when they come from an interactive input event and match the current OS temp-root `pi-clipboard-<UUID>.<extension>` shape. Writes, Bash, compound commands, and untracked temp files remain protected.
 - SRT is enabled with the network-capable `online-dev` profile.
 - **Approved Bash runs on the host by default** because bundled `sandbox.bypassCommands` is `['*']`. Set it to `[]` to require SRT wrapping and fail closed when SRT is unavailable.
 - SRT-wrapped commands can reach local Unix sockets by default. This includes Docker, SSH-agent, and database sockets.
@@ -31,7 +32,7 @@ Git is the supported distribution path. No build step is required. The npm name 
 
 **Enforcement boundary:** deterministic gates run before execution and before `yolo-auto`. Credential files and secret environment variables are masked or denied. Non-bypassed Bash is wrapped by SRT; bypassed Bash has normal host filesystem and network access after permission and network preflight. A bypass is not a sandbox.
 
-**Model safety:** `yolo-auto` considers only eligible ask-state workspace-local `read`, `find`, `grep`, and `ls` requests. The worker receives bounded metadata, not file contents, prompts, commands, or tool output; it cannot detect prompt injection inside a file before reading it. At maximum level `l1`, an accepted, complete, non-degraded safe L1 result can authorize. Levels `l2` and `l3` require exact accepted L2 results. Missing, stale, malformed, degraded, uncertain, or timed-out results prompt. L3 is advisory only and never authorizes an escalated request.
+**Model safety:** `yolo-auto` considers only eligible ask-state workspace-local `read`, `find`, `grep`, and `ls` requests. A secret-scanner-detected direct workspace-local regular-file `read` may use the same evaluator only with active result scanning and a stable tool-call ID; deterministic scanning remains authoritative and output stays redacted. The worker receives bounded metadata, not file contents, secret labels, paths, prompts, commands, or tool output; it cannot detect prompt injection inside a file before reading it. At maximum level `l1`, an accepted, complete, non-degraded safe L1 result can authorize. Levels `l2` and `l3` require exact accepted L2 results. Missing, stale, malformed, degraded, uncertain, or timed-out results prompt. L3 is advisory only and never authorizes an escalated request.
 
 **Worker trust:** the configured worker and model cache are trusted components. The socket uses owner-only filesystem permissions, but the protocol does not authenticate the peer or prove response honesty.
 
@@ -85,7 +86,7 @@ Use `--no-download-files` for offline startup. Missing assets then stop the work
 
 ## Logs
 
-`permissionReviewLog` defaults to `true` and writes JSONL under `~/.pi/agent/extensions/pi-sentinel/logs/`. Records may include commands, paths, prompt messages, targets, and bounded tool-input previews. Treat logs as sensitive; they are not guaranteed to be fully redacted or automatically rotated. Disable review logging when it is not required and restrict the agent directory to the owning user.
+`permissionReviewLog` defaults to `true` and writes JSONL under `~/.pi/agent/extensions/pi-sentinel/logs/`. Records may include commands, paths, prompt messages, targets, and bounded tool-input previews. `yolo_auto.evaluation` records use opaque evaluation IDs plus phase/latency and bounded decision metadata; they omit secret contents and request paths. Treat logs as sensitive; they are not guaranteed to be fully redacted or automatically rotated. Disable review logging when it is not required and restrict the agent directory to the owning user.
 
 ## Configuration
 

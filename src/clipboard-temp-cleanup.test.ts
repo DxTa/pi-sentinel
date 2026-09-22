@@ -47,4 +47,19 @@ describe("createPiClipboardTempCleanup", () => {
     await expect(rm(tracked)).rejects.toMatchObject({ code: "ENOENT" });
     await expect(rm(untracked)).resolves.toBeUndefined();
   });
+
+  it("trusts only clipboard paths from interactive input", async () => {
+    const directory = await makeTempDir();
+    const interactivePath = path.join(directory, "pi-clipboard-b46509f4-a820-4442-9013-73da6d2739d2.png");
+    const toolInputPath = path.join(directory, "pi-clipboard-aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee.png");
+    await writeFile(interactivePath, "interactive");
+    await writeFile(toolInputPath, "tool input");
+
+    const cleanup = createPiClipboardTempCleanup();
+    cleanup.trackText(`Tool input ${toolInputPath}`);
+    cleanup.trackInteractiveText(`User input ${interactivePath}`);
+
+    expect(cleanup.isTrackedInteractivePath(interactivePath)).toBe(true);
+    expect(cleanup.isTrackedInteractivePath(toolInputPath)).toBe(false);
+  });
 });

@@ -8,6 +8,7 @@ import {
 import { PromptWaitTracker } from "./prompt-state";
 import { decideYoloAuto } from "./yolo-auto-policy";
 import type { YoloAutoClient } from "./yolo-auto-client";
+import type { YoloAutoEvaluator } from "./yolo-auto-evaluator";
 import type {
   PermissionPromptDecision,
   RequestPermissionOptions,
@@ -74,6 +75,7 @@ export interface PermissionPrompterDeps {
   resolveFallbackTargetSessionId?: (ctx: ExtensionContext) => string | null;
   /** Optional shared worker client; absent/unavailable always falls back to prompt. */
   yoloAutoClient?: Pick<YoloAutoClient, "evaluate">;
+  yoloAutoEvaluator?: Pick<YoloAutoEvaluator, "evaluate">;
   /** Wait until extension-managed yolo-auto assets are ready or startup failed. */
   waitForYoloAutoStartup?: () => Promise<void>;
   /** Show the interactive permission dialog in the UI. */
@@ -185,12 +187,31 @@ export class PermissionPrompter implements PermissionPrompterApi {
     config: PermissionSystemExtensionConfig,
     details: PromptPermissionDetails,
   ): Promise<{ action: "allow" | "prompt"; reason: string }> {
-    if (!this.deps.yoloAutoClient || !details.yoloAutoEligible) {
-      return { action: "prompt", reason: "not_configured_or_ineligible" };
-    }
     const operation = details.yoloAutoOperation;
     if (config.mode !== "yolo-auto" || !operation || !details.yoloAutoWorkspaceLocal) {
       return { action: "prompt", reason: "disabled_or_ineligible" };
+    }
+    if (this.deps.yoloAutoEvaluator) {
+      return this.deps.yoloAutoEvaluator.evaluate({
+        flow: "permission",
+        candidate: true,
+        enabled: true,
+        maxLevel: config.yoloAutoMaxLevel,
+        permissionState: "ask",
+        source: details.source,
+        eligible: details.yoloAutoEligible === true,
+        forcedPrompt: details.forcePromptInYolo === true,
+        workspaceLocal: details.yoloAutoWorkspaceLocal === true,
+        operation,
+        toolName: details.toolName ?? "unknown",
+        ...(details.yoloAutoWorkspaceRelativePath
+          ? { workspaceRelativePath: details.yoloAutoWorkspaceRelativePath }
+          : {}),
+        toolCallIdPresent: Boolean(details.toolCallId),
+      });
+    }
+    if (!this.deps.yoloAutoClient || !details.yoloAutoEligible) {
+      return { action: "prompt", reason: "not_configured_or_ineligible" };
     }
 
     try {

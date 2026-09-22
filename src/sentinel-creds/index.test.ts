@@ -2,7 +2,7 @@ import { mkdtempSync, readFileSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 
 import { PromptWaitTracker } from "../prompt-state";
 import { registerSentinelCreds } from "./index";
@@ -23,6 +23,7 @@ type Harness = {
 function createHarness(
   overrides: Record<string, unknown> = {},
   configLoader?: (cwd?: string) => Record<string, unknown>,
+  dependencyOverrides: Record<string, unknown> = {},
 ): Harness {
   const handlers = new Map<string, Handler[]>();
   const emitted: Array<{ channel: string; payload: unknown }> = [];
@@ -52,6 +53,7 @@ function createHarness(
         ...overrides,
       },
     })),
+    ...dependencyOverrides,
   });
 
   return { handlers, emitted, selected, auditLogPath };
@@ -104,6 +106,74 @@ async function runToolResult(harness: Harness, event: unknown, ctx: unknown = {}
 }
 
 describe("sentinel-creds structured prompt integration", () => {
+  it("allows eligible secret reads through shared yolo-auto without raw-read allowance", async () => {
+    const root = mkdtempSync(join(tmpdir(), "sentinel-yolo-secret-"));
+    const secretPath = join(root, "secret.env");
+    writeFileSync(secretPath, `AWS_ACCESS_KEY_ID=${["AKIA", "1234567890ABCDEF"].join("")}\n`, "utf8");
+    const evaluate = vi.fn(async () => ({
+      action: "allow" as const,
+      reason: "safe_workspace_read",
+      candidate: true,
+      attempted: true,
+      evaluationId: "secret-eval-1",
+    }));
+    const harness = createHarness(
+      { envShield: false, scanBashReads: false, resultScanning: true },
+      () => ({ sentinelCreds: { enabled: true, envShield: false, scanBashReads: false, resultScanning: true } }),
+      {
+        getPermissionConfig: () => ({ mode: "yolo-auto", yoloAutoMaxLevel: "l1" }),
+        yoloAutoEvaluator: { evaluate },
+      },
+    );
+
+    const result = await runToolCall(
+      harness,
+      { toolCallId: "secret-model-allow", toolName: "read", input: { path: secretPath } },
+      { hasUI: true, cwd: root, ui: { select: vi.fn(), setStatus() {} } },
+    );
+
+    expect(result).toBeUndefined();
+    expect(evaluate).toHaveBeenCalledWith(expect.objectContaining({
+      flow: "secret_read",
+      candidate: true,
+      operation: "read",
+      workspaceLocal: true,
+      toolCallIdPresent: true,
+    }));
+    expect(evaluate.mock.calls[0][0]).not.toHaveProperty("workspaceRelativePath");
+    expect(JSON.stringify(evaluate.mock.calls[0])).not.toContain(root);
+  });
+
+  it("blocks headless eligible secret reads when model does not allow", async () => {
+    const root = mkdtempSync(join(tmpdir(), "sentinel-yolo-secret-"));
+    const secretPath = join(root, "secret.env");
+    writeFileSync(secretPath, `AWS_ACCESS_KEY_ID=${["AKIA", "1234567890ABCDEF"].join("")}\n`, "utf8");
+    const evaluate = vi.fn(async () => ({
+      action: "prompt" as const,
+      reason: "l1_request_failed",
+      candidate: true,
+      attempted: true,
+      evaluationId: "secret-eval-2",
+    }));
+    const harness = createHarness(
+      { envShield: false, scanBashReads: false, resultScanning: true },
+      () => ({ sentinelCreds: { enabled: true, envShield: false, scanBashReads: false, resultScanning: true } }),
+      {
+        getPermissionConfig: () => ({ mode: "yolo-auto", yoloAutoMaxLevel: "l1" }),
+        yoloAutoEvaluator: { evaluate },
+      },
+    );
+
+    const result = await runToolCall(
+      harness,
+      { toolCallId: "secret-model-failure", toolName: "read", input: { path: secretPath } },
+      { hasUI: false, cwd: root, ui: { select: vi.fn(), setStatus() {} } },
+    );
+
+    expect(result).toMatchObject({ block: true });
+    expect(evaluate).toHaveBeenCalledOnce();
+  });
+
   it("uses structured prompt metadata for credential paste", async () => {
     const harness = createHarness({
       envShield: false,
@@ -269,6 +339,66 @@ describe("sentinel-creds structured prompt integration", () => {
     expect(harness.emitted.filter(({ channel }) => channel === "herdr:blocked").at(-1)).toEqual({
       channel: "herdr:blocked",
       payload: { active: false, label: "Waiting for env exposure approval" },
+    });
+  });
+
+  it("keeps result redaction registered after enabling scanning at session start", async () => {
+    const root = mkdtempSync(join(tmpdir(), "sentinel-config-transition-"));
+    const secretPath = join(root, "secret.env");
+    const secret = ["AKIA", "1234567890ABCDEF"].join("");
+    writeFileSync(secretPath, `AWS_ACCESS_KEY_ID=${secret}\n`, "utf8");
+    let loadCount = 0;
+    const evaluate = vi.fn(async () => ({
+      action: "allow" as const,
+      reason: "safe_workspace_read",
+      candidate: true,
+      attempted: true,
+      evaluationId: "transition-eval-1",
+    }));
+    const harness = createHarness(
+      {},
+      () => {
+        loadCount += 1;
+        return {
+          sentinelCreds: {
+            enabled: true,
+            envShield: false,
+            scanBashReads: false,
+            resultScanning: loadCount > 1,
+          },
+        };
+      },
+      {
+        getPermissionConfig: () => ({ mode: "yolo-auto", yoloAutoMaxLevel: "l1" }),
+        yoloAutoEvaluator: { evaluate },
+      },
+    );
+
+    await harness.handlers.get("session_start")?.[0](
+      { reason: "workspace" },
+      { cwd: root, hasUI: false },
+    );
+    expect(harness.handlers.get("tool_result")).toHaveLength(1);
+
+    await runToolCall(
+      harness,
+      { toolCallId: "transition-read", toolName: "read", input: { path: secretPath } },
+      { hasUI: false, cwd: root, ui: { select: vi.fn(), setStatus() {} } },
+    );
+    const result = await runToolResult(
+      harness,
+      {
+        toolCallId: "transition-read",
+        toolName: "read",
+        input: { path: secretPath },
+        content: [{ type: "text", text: `AWS_ACCESS_KEY_ID=${secret}` }],
+        isError: false,
+      },
+      { cwd: root },
+    );
+
+    expect(result).toEqual({
+      content: [{ type: "text", text: "AWS_ACCESS_KEY_ID=[REDACTED: AWS Access Key]" }],
     });
   });
 

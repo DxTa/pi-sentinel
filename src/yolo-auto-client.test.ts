@@ -40,7 +40,7 @@ describe("YoloAutoClient", () => {
 
     const result = await client.evaluate(payload, "l2");
 
-    expect(result).toEqual({
+    expect(result).toMatchObject({
       status: "complete",
       l1: { verdict: "safe", accepted: true, complete: true, degraded: false },
       l2: { results: [], escalated: false },
@@ -50,6 +50,14 @@ describe("YoloAutoClient", () => {
     expect(requests).toHaveLength(2);
     expect(requests[0]).toMatchObject({ phase: "l1", deadlineMs: 250, payload });
     expect(requests[1]).toMatchObject({ phase: "l2", deadlineMs: 250, payload });
+    expect(result).toMatchObject({
+      evaluationId: expect.any(String),
+      phases: [
+        { phase: "l1", status: "complete", latencyMs: expect.any(Number) },
+        { phase: "l2", status: "complete", latencyMs: expect.any(Number) },
+      ],
+      totalLatencyMs: expect.any(Number),
+    });
   });
 
   it("stops at L1 when configured with an L1 ceiling", async () => {
@@ -62,7 +70,7 @@ describe("YoloAutoClient", () => {
     };
     const client = new YoloAutoClient(transport);
 
-    await expect(client.evaluate(payload, "l1")).resolves.toEqual({
+    await expect(client.evaluate(payload, "l1")).resolves.toMatchObject({
       status: "complete",
       l1: { verdict: "safe", accepted: true, complete: true, degraded: false },
       l2: undefined,
@@ -109,7 +117,7 @@ describe("YoloAutoClient", () => {
 
     const result = await client.evaluate(payload, "l3");
 
-    expect(result).toEqual({
+    expect(result).toMatchObject({
       status: "complete",
       l1: { verdict: "safe", accepted: true, complete: true, degraded: false },
       l2: { results: [], escalated: true },
@@ -127,7 +135,7 @@ describe("YoloAutoClient", () => {
     };
     const client = new YoloAutoClient(transport, { l1RequestTimeoutMs: 5 });
 
-    await expect(client.evaluate(payload, "l2")).resolves.toEqual({
+    await expect(client.evaluate(payload, "l2")).resolves.toMatchObject({
       status: "unavailable",
       reason: "l1_request_failed",
       escalated: false,
@@ -143,7 +151,7 @@ describe("YoloAutoClient", () => {
     };
     const client = new YoloAutoClient(transport);
 
-    await expect(client.evaluate(payload, "l2")).resolves.toEqual({
+    await expect(client.evaluate(payload, "l2")).resolves.toMatchObject({
       status: "unavailable",
       reason: "l2_request_failed",
       escalated: false,
@@ -161,7 +169,7 @@ describe("YoloAutoClient", () => {
     };
     const client = new YoloAutoClient(transport);
 
-    await expect(client.evaluate(payload, "l2")).resolves.toEqual({
+    await expect(client.evaluate(payload, "l2")).resolves.toMatchObject({
       status: "complete",
       l1: { verdict: "safe", accepted: true, complete: true, degraded: false },
       l2: { results: [], escalated: true },
@@ -202,7 +210,7 @@ describe("YoloAutoClient", () => {
     };
     const client = new YoloAutoClient(transport);
 
-    await expect(client.evaluate(payload, "l3")).resolves.toEqual({
+    await expect(client.evaluate(payload, "l3")).resolves.toMatchObject({
       status: "unavailable",
       reason: "l3_request_failed",
       escalated: true,
@@ -217,7 +225,7 @@ describe("YoloAutoClient", () => {
     };
     const client = new YoloAutoClient(transport);
 
-    await expect(client.evaluate(payload, "l2")).resolves.toEqual({
+    await expect(client.evaluate(payload, "l2")).resolves.toMatchObject({
       status: "unavailable",
       reason: "protocol_mismatch",
       escalated: false,
@@ -232,7 +240,7 @@ describe("YoloAutoClient", () => {
     };
     const client = new YoloAutoClient(transport);
 
-    await expect(client.evaluate(payload, "l2")).resolves.toEqual({
+    await expect(client.evaluate(payload, "l2")).resolves.toMatchObject({
       status: "unavailable",
       reason: "protocol_mismatch",
       escalated: false,
@@ -249,10 +257,29 @@ describe("YoloAutoClient", () => {
     };
     const client = new YoloAutoClient(transport);
 
-    await expect(client.evaluate(payload, "l3")).resolves.toEqual({
+    await expect(client.evaluate(payload, "l3")).resolves.toMatchObject({
       status: "unavailable",
       reason: "protocol_mismatch",
       escalated: true,
+    });
+  });
+
+  it("classifies worker-declared phase failures with partial telemetry", async () => {
+    const transport: YoloAutoWorkerTransport = {
+      request: vi.fn(async (request) => response(request, {
+        completion: "failed",
+        error: "worker failure details must stay out of telemetry",
+      })),
+    };
+    const client = new YoloAutoClient(transport);
+
+    const result = await client.evaluate(payload, "l2");
+
+    expect(result).toMatchObject({
+      status: "unavailable",
+      reason: "worker_failed",
+      phases: [{ phase: "l1", status: "failed", failureReason: "worker_failed" }],
+      escalated: false,
     });
   });
 

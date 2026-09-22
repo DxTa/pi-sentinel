@@ -10,13 +10,14 @@
  *   4. result-scanner — scans tool results for secret patterns and redacts them.
  */
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
-import { statSync } from "node:fs";
+import { appendFileSync, lstatSync, mkdirSync, statSync } from "node:fs";
 import { homedir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { createHash } from "node:crypto";
-import { mkdirSync, appendFileSync } from "node:fs";
 
 import type { PromptWaitTracker } from "../prompt-state";
+import type { YoloAutoEvaluator } from "../yolo-auto-evaluator";
+import { isPathWithinCanonicalWorkingDirectory } from "../path-utils";
 import {
   getScopedConfigPath,
   persistSentinelReadAllowedPathToConfig,
@@ -73,6 +74,11 @@ interface CredsDangerousEvent {
 export interface SentinelCredsDeps {
   promptWaitTracker: PromptWaitTracker;
   getConfig: (cwd?: string) => Record<string, unknown>;
+  getPermissionConfig?: (cwd?: string) => {
+    mode?: "manual" | "yolo" | "yolo-auto";
+    yoloAutoMaxLevel?: "l1" | "l2" | "l3";
+  };
+  yoloAutoEvaluator?: Pick<YoloAutoEvaluator, "evaluate">;
 }
 
 // ── Audit helpers ────────────────────────────────────────────────────────
@@ -135,6 +141,18 @@ function blockToolCall(
 }
 
 // ── File scanning ────────────────────────────────────────────────────────
+
+function isCanonicalWorkspaceRegularFile(absolutePath: string, cwd: string | undefined): boolean {
+  if (!cwd) return false;
+  try {
+    const fileStat = lstatSync(absolutePath);
+    return fileStat.isFile()
+      && !fileStat.isSymbolicLink()
+      && isPathWithinCanonicalWorkingDirectory(absolutePath, cwd);
+  } catch {
+    return false;
+  }
+}
 
 async function scanFile(absolutePath: string, session: CredsSession): Promise<ScanMatch[]> {
   try {
@@ -351,6 +369,48 @@ export function registerSentinelCreds(pi: ExtensionAPI, deps: SentinelCredsDeps)
       labels: matches.map((m) => m.label),
     });
 
+    let yoloAutoSecretReadAttempted = false;
+    let yoloAutoSecretReadReason = "model_review_required";
+    const permissionConfig = deps.getPermissionConfig?.(ctx.cwd);
+    const yoloAutoEvaluator = deps.yoloAutoEvaluator;
+    const hasStableToolCallId = typeof event.toolCallId === "string" && event.toolCallId.length > 0;
+    const yoloAutoSecretReadCandidate =
+      yoloAutoEvaluator !== undefined
+      && permissionConfig?.mode === "yolo-auto"
+      && config.resultScanning
+      && event.toolName === "read"
+      && hasStableToolCallId
+      && isCanonicalWorkspaceRegularFile(absolutePath, ctx.cwd);
+    if (yoloAutoSecretReadCandidate) {
+      const evaluation = await yoloAutoEvaluator.evaluate({
+        flow: "secret_read",
+        candidate: true,
+        enabled: true,
+        maxLevel: permissionConfig.yoloAutoMaxLevel ?? "l3",
+        permissionState: "ask",
+        source: "tool_call",
+        eligible: true,
+        forcedPrompt: false,
+        workspaceLocal: true,
+        operation: "read",
+        toolName: "read",
+        toolCallIdPresent: true,
+      });
+      if (evaluation.action === "allow") {
+        auditDecision(
+          config,
+          "outputScanner",
+          "read",
+          { toolName: "read", operation: "read" },
+          "allow_model_redacted",
+          "Model allowed one eligible read; output redaction remains enabled.",
+        );
+        return;
+      }
+      yoloAutoSecretReadAttempted = evaluation.attempted;
+      yoloAutoSecretReadReason = evaluation.reason;
+    }
+
     if (ctx.hasUI) {
       const choice = await selectWithPromptWait(
         ctx,
@@ -407,6 +467,17 @@ export function registerSentinelCreds(pi: ExtensionAPI, deps: SentinelCredsDeps)
         auditDecision(config, "outputScanner", "read", event.input as Record<string, unknown>, "allow_global_redacted", "User persisted file allowance in global config; output redaction remains enabled.");
         return;
       }
+    }
+
+    // Model-routed secret reads fail closed in headless mode after an attempt.
+    if (!ctx.hasUI && yoloAutoSecretReadAttempted) {
+      return blockToolCall(pi, config, {
+        feature: "outputScanner",
+        toolName: "read",
+        input: { toolName: "read", operation: "read" },
+        reason: `[sentinel-creds] Blocked: yolo-auto secret-read review did not allow access (${yoloAutoSecretReadReason}).`,
+        userDenied: false,
+      });
     }
 
     // No UI — apply headlessMode policy
@@ -716,83 +787,82 @@ export function registerSentinelCreds(pi: ExtensionAPI, deps: SentinelCredsDeps)
   // Guard 4: Result scanning — redact secrets from tool output
   // ════════════════════════════════════════════════════════════════════════
 
-  if (config.resultScanning) {
-    pi.on("tool_result", async (event, ctx) => {
-      const { toolName } = event;
-      if (toolName !== "read" && toolName !== "bash" && toolName !== "grep" && toolName !== "search") {
-        return undefined;
-      }
+  pi.on("tool_result", async (event, ctx) => {
+    const { toolName } = event;
+    if (toolName !== "read" && toolName !== "bash" && toolName !== "grep" && toolName !== "search") {
+      return undefined;
+    }
 
-      const runtimeConfig = loadSentinelCredsConfig(deps.getConfig(ctx.cwd) as { sentinelCreds?: Partial<SentinelCredsConfig> });
+    const runtimeConfig = loadSentinelCredsConfig(deps.getConfig(ctx.cwd) as { sentinelCreds?: Partial<SentinelCredsConfig> });
+    if (!runtimeConfig.resultScanning) return undefined;
 
-      if (toolName === "read") {
-        const rawPath = event.input?.path;
-        if (rawPath && typeof rawPath === "string") {
-          const absolutePath = session.resolvePath(rawPath);
-          const wasAllowed = session.isReadResultAllowed(event.toolCallId, absolutePath);
-          session.consumeReadResultAllowance(event.toolCallId, absolutePath);
-          if (wasAllowed && runtimeConfig.allowRawReveal) return undefined;
-        }
-      }
-
-      if (toolName === "bash") {
-        const command = typeof event.input?.command === "string" ? event.input.command : "";
-        const wasAllowed = command && session.isBashResultAllowed(event.toolCallId, command);
-        if (command) session.consumeBashResultAllowance(event.toolCallId, command);
+    if (toolName === "read") {
+      const rawPath = event.input?.path;
+      if (rawPath && typeof rawPath === "string") {
+        const absolutePath = session.resolvePath(rawPath);
+        const wasAllowed = session.isReadResultAllowed(event.toolCallId, absolutePath);
+        session.consumeReadResultAllowance(event.toolCallId, absolutePath);
         if (wasAllowed && runtimeConfig.allowRawReveal) return undefined;
       }
+    }
 
-      const scannedBlocks = await Promise.all(
-        event.content.map(async (block) => {
-          if (block.type !== "text") return { block };
-          if (Buffer.byteLength(block.text, "utf8") > MAX_SCAN_BYTES) {
-            return { block, scanUnavailable: true };
-          }
-          try {
-            return { block, result: await scanContentForSecrets(block.text) };
-          } catch {
-            return { block, scanUnavailable: true };
-          }
-        }),
-      );
+    if (toolName === "bash") {
+      const command = typeof event.input?.command === "string" ? event.input.command : "";
+      const wasAllowed = command && session.isBashResultAllowed(event.toolCallId, command);
+      if (command) session.consumeBashResultAllowance(event.toolCallId, command);
+      if (wasAllowed && runtimeConfig.allowRawReveal) return undefined;
+    }
 
-      if (scannedBlocks.some(({ scanUnavailable }) => scanUnavailable)) {
-        const content = scannedBlocks.map(({ block, result, scanUnavailable }) => {
-          if (scanUnavailable && block.type === "text") {
-            return { ...block, text: "[sentinel-creds] Output withheld because secret scanning was unavailable." };
-          }
-          if (block.type !== "text" || !result?.hasSecrets) return block;
-          const redacted = redactSecrets(block.text, result.matches);
-          return redacted === block.text ? block : { ...block, text: redacted };
-        });
-        emitDangerous(pi, config, {
-          feature: "outputScanner",
-          toolName,
-          input: { redactedSecrets: true },
-          description: "Withheld tool output because secret scanning was unavailable.",
-          labels: ["Secret scan unavailable"],
-        });
-        return { content };
-      }
+    const scannedBlocks = await Promise.all(
+      event.content.map(async (block) => {
+        if (block.type !== "text") return { block };
+        if (Buffer.byteLength(block.text, "utf8") > MAX_SCAN_BYTES) {
+          return { block, scanUnavailable: true };
+        }
+        try {
+          return { block, result: await scanContentForSecrets(block.text) };
+        } catch {
+          return { block, scanUnavailable: true };
+        }
+      }),
+    );
 
-      const matches = scannedBlocks.flatMap(({ result }) => result?.matches ?? []);
-      if (matches.length === 0) return undefined;
-
-      const content = scannedBlocks.map(({ block, result }) => {
+    if (scannedBlocks.some(({ scanUnavailable }) => scanUnavailable)) {
+      const content = scannedBlocks.map(({ block, result, scanUnavailable }) => {
+        if (scanUnavailable && block.type === "text") {
+          return { ...block, text: "[sentinel-creds] Output withheld because secret scanning was unavailable." };
+        }
         if (block.type !== "text" || !result?.hasSecrets) return block;
         const redacted = redactSecrets(block.text, result.matches);
         return redacted === block.text ? block : { ...block, text: redacted };
       });
-
       emitDangerous(pi, config, {
         feature: "outputScanner",
         toolName,
         input: { redactedSecrets: true },
-        description: `Redacted ${matches.length} secret(s) from tool output.`,
-        labels: [...new Set(matches.map((match) => match.label))],
+        description: "Withheld tool output because secret scanning was unavailable.",
+        labels: ["Secret scan unavailable"],
       });
-
       return { content };
+    }
+
+    const matches = scannedBlocks.flatMap(({ result }) => result?.matches ?? []);
+    if (matches.length === 0) return undefined;
+
+    const content = scannedBlocks.map(({ block, result }) => {
+      if (block.type !== "text" || !result?.hasSecrets) return block;
+      const redacted = redactSecrets(block.text, result.matches);
+      return redacted === block.text ? block : { ...block, text: redacted };
     });
-  }
+
+    emitDangerous(pi, config, {
+      feature: "outputScanner",
+      toolName,
+      input: { redactedSecrets: true },
+      description: `Redacted ${matches.length} secret(s) from tool output.`,
+      labels: [...new Set(matches.map((match) => match.label))],
+    });
+
+    return { content };
+  });
 }

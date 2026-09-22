@@ -46,6 +46,10 @@ interface InputPayload {
   text: string;
 }
 
+interface PermissionGateHandlerOptions {
+  isTrustedClipboardReadPath?: (pathValue: string) => boolean;
+}
+
 /**
  * Handles permission gate events: tool_call and input.
  *
@@ -59,6 +63,7 @@ export class PermissionGateHandler {
     private readonly session: PermissionSession,
     private readonly events: PermissionEventBus,
     private readonly toolRegistry: ToolRegistry,
+    private readonly options: PermissionGateHandlerOptions = {},
   ) {}
 
   async handleToolCall(
@@ -184,7 +189,11 @@ export class PermissionGateHandler {
       ...session.getInfrastructureDirs(),
       ...session.getInfrastructureReadPaths(),
     ];
-    const extDirDesc = describeExternalDirectoryGate(tcc, infraDirs);
+    const extDirDesc = describeExternalDirectoryGate(
+      tcc,
+      infraDirs,
+      this.options.isTrustedClipboardReadPath,
+    );
     if (extDirDesc) {
       if (isGateBypass(extDirDesc)) {
         if (extDirDesc.log) {
