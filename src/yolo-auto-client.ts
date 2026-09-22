@@ -111,6 +111,14 @@ export type YoloAutoRuntimeStatus =
   | { state: "warm" }
   | { state: "fallback"; reason: string };
 
+export const MAX_MODEL_PROVENANCE_LENGTH = 128;
+
+function isBoundedModelProvenance(value: unknown): value is string {
+  return typeof value === "string"
+    && value.length <= MAX_MODEL_PROVENANCE_LENGTH
+    && !/[\u0000-\u001f\u007f]/.test(value);
+}
+
 function isClassifierResult(value: unknown): value is YoloAutoClassifierResult {
   if (!value || typeof value !== "object") return false;
   const result = value as Record<string, unknown>;
@@ -119,7 +127,8 @@ function isClassifierResult(value: unknown): value is YoloAutoClassifierResult {
     && (result.pipeline === undefined || typeof result.pipeline === "string")
     && typeof result.accepted === "boolean"
     && typeof result.complete === "boolean"
-    && typeof result.degraded === "boolean";
+    && typeof result.degraded === "boolean"
+    && (result.provenance === undefined || isBoundedModelProvenance(result.provenance));
 }
 
 function isL1Response(value: unknown): value is YoloAutoL1Response {
@@ -131,7 +140,7 @@ function isL1Response(value: unknown): value is YoloAutoL1Response {
     && typeof response.accepted === "boolean"
     && typeof response.complete === "boolean"
     && typeof response.degraded === "boolean"
-    && (response.provenance === undefined || typeof response.provenance === "string");
+    && (response.provenance === undefined || isBoundedModelProvenance(response.provenance));
 }
 
 function isL2Response(value: unknown): value is YoloAutoL2Response {
@@ -145,10 +154,11 @@ function isL2Response(value: unknown): value is YoloAutoL2Response {
 function isL3Response(value: unknown): value is YoloAutoL3Response {
   if (!value || typeof value !== "object") return false;
   const response = value as Record<string, unknown>;
-  return response.recommendation === "allow"
+  return (response.recommendation === "allow"
     || response.recommendation === "prompt"
     || response.recommendation === "block"
-    || response.recommendation === "review";
+    || response.recommendation === "review")
+    && (response.provenance === undefined || isBoundedModelProvenance(response.provenance));
 }
 
 function isSafeL1(response: YoloAutoL1Response): boolean {

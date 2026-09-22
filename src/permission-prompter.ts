@@ -1,3 +1,5 @@
+import { createHash } from "node:crypto";
+
 import type { ExtensionContext } from "@earendil-works/pi-coding-agent";
 import type { PermissionSystemExtensionConfig } from "./extension-config";
 import type { ForwardedPermissionLogger } from "./forwarded-permissions/io";
@@ -67,6 +69,8 @@ export interface PermissionPrompterDeps {
   getConfig(): PermissionSystemExtensionConfig;
   /** Write structured entries to the permission review log. */
   writeReviewLog(event: string, details: Record<string, unknown>): void;
+  /** Write privacy-safe diagnostic entries when debug logging is enabled. */
+  writeDebugLog?: (event: string, details: Record<string, unknown>) => void;
   /** Directory containing subagent session state. */
   subagentSessionsDir: string;
   /** Directory used for file-based permission forwarding requests/responses. */
@@ -105,7 +109,9 @@ export class PermissionPrompter implements PermissionPrompterApi {
     ctx: ExtensionContext,
     details: PromptPermissionDetails,
   ): Promise<PermissionPromptDecision> {
+    const startedAt = Date.now();
     const config = this.deps.getConfig();
+    this.writeDebugPrompt("permission_prompt.requested", details);
     const yoloContext = {
       toolName: details.toolName,
       command: details.command,
@@ -129,6 +135,11 @@ export class PermissionPrompter implements PermissionPrompterApi {
       && Boolean(details.yoloAutoOperation);
     if (shouldAutoApprovePermissionState("ask", config, yoloContext) && !yoloAutoCandidate) {
       this.writeReviewEntry("permission_request.auto_approved", details);
+      this.writeDebugPrompt("permission_prompt.resolved", details, {
+        approved: true,
+        resolution: "auto_approved",
+        latencyMs: Date.now() - startedAt,
+      });
       return { approved: true, state: "approved", autoApproved: true };
     }
 
@@ -137,6 +148,12 @@ export class PermissionPrompter implements PermissionPrompterApi {
       this.writeReviewEntry("permission_request.yolo_auto_approved", {
         ...details,
         yoloAutoReason: yoloAutoDecision.reason,
+      });
+      this.writeDebugPrompt("permission_prompt.resolved", details, {
+        approved: true,
+        resolution: "yolo_auto_approved",
+        yoloAutoReason: yoloAutoDecision.reason,
+        latencyMs: Date.now() - startedAt,
       });
       return { approved: true, state: "approved", autoApproved: true };
     }
@@ -174,8 +191,20 @@ export class PermissionPrompter implements PermissionPrompterApi {
           denialReason: decision.denialReason,
         },
       );
+      this.writeDebugPrompt("permission_prompt.resolved", details, {
+        approved: decision.approved,
+        resolution: decision.state,
+        denialReason: decision.denialReason ?? null,
+        latencyMs: Date.now() - startedAt,
+      });
 
       return decision;
+    } catch (error) {
+      this.writeDebugPrompt("permission_prompt.failed", details, {
+        errorName: error instanceof Error ? error.name : "UnknownError",
+        latencyMs: Date.now() - startedAt,
+      });
+      throw error;
     } finally {
       this.deps.promptWaitTracker.end(ctx, promptToken);
     }
@@ -245,6 +274,26 @@ export class PermissionPrompter implements PermissionPrompterApi {
     });
   }
 
+  private writeDebugPrompt(
+    event: string,
+    details: PromptPermissionDetails,
+    extra: Record<string, unknown> = {},
+  ): void {
+    this.deps.writeDebugLog?.(event, {
+      requestId: details.requestId,
+      source: details.source,
+      agentName: details.agentName,
+      toolCallId: details.toolCallId ?? null,
+      toolName: details.toolName ?? null,
+      pathPresent: Boolean(details.path),
+      commandPresent: Boolean(details.command),
+      targetPresent: Boolean(details.target),
+      messageLength: details.message.length,
+      messageHash: createHash("sha256").update(details.message).digest("hex").slice(0, 16),
+      ...extra,
+    });
+  }
+
   private writeReviewEntry(
     event: string,
     details: PromptPermissionDetails & {
@@ -282,14 +331,15 @@ export class PermissionPrompter implements PermissionPrompterApi {
    * processForwardedPermissionRequests does, and that has its own deps).
    *
    * The logger delegates writeReviewLog to deps and uses a no-op writeDebugLog
-   * (trace-level forwarding debug is deferred — see open question in the plan).
+   * Debug forwarding entries use the same privacy-safe logger as prompts.
    */
   private buildForwardingDeps(): PermissionForwardingDeps {
     const { deps } = this;
     const logger: ForwardedPermissionLogger = {
       // eslint-disable-next-line @typescript-eslint/unbound-method -- logger methods are plain function closures; no this-binding issue
       writeReviewLog: deps.writeReviewLog,
-      writeDebugLog: () => undefined,
+      // eslint-disable-next-line @typescript-eslint/unbound-method -- logger is a plain function closure
+      writeDebugLog: deps.writeDebugLog ?? (() => undefined),
     };
     return {
       forwardingDir: deps.forwardingDir,

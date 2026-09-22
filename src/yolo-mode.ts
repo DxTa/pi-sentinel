@@ -1,5 +1,8 @@
 import type { PermissionSystemExtensionConfig } from "./extension-config";
-import { isPathOutsideWorkingDirectory } from "./path-utils";
+import {
+  isPathOutsideWorkingDirectory,
+  isPathWithinCanonicalWorkingDirectory,
+} from "./path-utils";
 import type { RuleOrigin } from "./rule";
 import type { PermissionCheckResult, PermissionState } from "./types";
 import { wildcardMatch } from "./wildcard-matcher";
@@ -115,7 +118,10 @@ export function shouldRelaxBundledToolDenyInYolo(
     return false;
   }
 
-  if (!isPathOutsideWorkingDirectory(options.path, options.cwd)) {
+  if (
+    !isPathOutsideWorkingDirectory(options.path, options.cwd)
+    && isPathWithinCanonicalWorkingDirectory(options.path, options.cwd)
+  ) {
     return true;
   }
 

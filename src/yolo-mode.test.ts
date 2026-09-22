@@ -100,8 +100,8 @@ describe("shouldRelaxBundledToolDenyInYolo", () => {
         relaxer({
           config: yoloConfig,
           toolName,
-          path: "/tmp/project/file.txt",
-          cwd: "/tmp/project",
+          path: `${process.cwd()}/file.txt`,
+          cwd: process.cwd(),
           toolPermission: bundledDeny(toolName),
         }),
       ).toBe(true);

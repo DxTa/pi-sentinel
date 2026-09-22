@@ -9,6 +9,8 @@ import type {
   YoloAutoPhaseSummary,
 } from "./yolo-auto-client";
 
+const MAX_MODEL_PROVENANCE_VALUES = 8;
+
 type EvaluationFlow = "permission" | "secret_read";
 type EvaluationOperation = "read" | "list";
 type EvaluationSkipReason =
@@ -47,6 +49,7 @@ export interface YoloAutoEvaluatorDeps {
   client: Pick<YoloAutoClient, "evaluate">;
   waitForStartup?: () => Promise<void>;
   writeReviewLog?: (event: string, details: Record<string, unknown>) => void;
+  writeDebugLog?: (event: string, details: Record<string, unknown>) => void;
   now?: () => number;
 }
 
@@ -56,6 +59,21 @@ function elapsed(now: () => number, startedAt: number): number {
 
 function phaseSummary(result: YoloAutoClientResult): readonly YoloAutoPhaseSummary[] {
   return result.phases;
+}
+
+function emptyModelProvenance(): Record<string, unknown> {
+  return { l1: null, l2: [], l3: null };
+}
+
+function modelProvenance(result: Extract<YoloAutoClientResult, { status: "complete" }>): Record<string, unknown> {
+  return {
+    l1: result.l1.provenance ?? null,
+    l2: [...new Set(result.l2?.results
+      .map((item) => item.provenance)
+      .filter((value): value is string => Boolean(value)) ?? [])]
+      .slice(0, MAX_MODEL_PROVENANCE_VALUES),
+    l3: result.l3?.provenance ?? null,
+  };
 }
 
 export class YoloAutoEvaluator {
@@ -86,6 +104,7 @@ export class YoloAutoEvaluator {
         totalLatencyMs: elapsed(this.now, startedAt),
         failureReason: reason,
         escalated: false,
+        modelProvenance: emptyModelProvenance(),
       });
       return decision;
     }
@@ -106,6 +125,7 @@ export class YoloAutoEvaluator {
           totalLatencyMs: elapsed(this.now, startedAt),
           failureReason: "startup_failed",
           escalated: false,
+          modelProvenance: emptyModelProvenance(),
         });
         return decision;
       }
@@ -136,6 +156,7 @@ export class YoloAutoEvaluator {
         totalLatencyMs: elapsed(this.now, startedAt),
         failureReason: "transport_failure",
         escalated: false,
+        modelProvenance: emptyModelProvenance(),
       });
       return decision;
     }
@@ -152,6 +173,7 @@ export class YoloAutoEvaluator {
         totalLatencyMs: elapsed(this.now, startedAt),
         failureReason: result.reason,
         escalated: result.escalated,
+        modelProvenance: emptyModelProvenance(),
       });
       return decision;
     }
@@ -184,6 +206,7 @@ export class YoloAutoEvaluator {
       totalLatencyMs: elapsed(this.now, startedAt),
       failureReason: null,
       escalated: result.escalated,
+      modelProvenance: modelProvenance(result),
     });
     return decision;
   }
@@ -213,31 +236,36 @@ export class YoloAutoEvaluator {
       totalLatencyMs: number;
       failureReason: string | null;
       escalated: boolean;
+      modelProvenance: Record<string, unknown>;
     },
   ): void {
-    try {
-      this.deps.writeReviewLog?.("yolo_auto.evaluation", {
-        evaluationId: details.evaluationId,
-        flow: request.flow,
-        disposition: details.disposition,
-        toolName: request.toolName,
-        operation: request.operation,
-        pathPresent: Boolean(request.workspaceRelativePath),
-        workspaceLocal: request.workspaceLocal,
-        permissionState: request.permissionState,
-        source: request.source,
-        maxLevel: request.maxLevel,
-        phases: details.phases,
-        startupLatencyMs: details.startupLatencyMs,
-        totalLatencyMs: details.totalLatencyMs,
-        outcome: details.outcome,
-        policyAction: decision.action,
-        policyReason: decision.reason,
-        failureReason: details.failureReason,
-        escalated: details.escalated,
-      });
-    } catch {
-      // Telemetry cannot affect authorization.
+    const telemetry = {
+      evaluationId: details.evaluationId,
+      flow: request.flow,
+      disposition: details.disposition,
+      toolName: request.toolName,
+      operation: request.operation,
+      pathPresent: Boolean(request.workspaceRelativePath),
+      workspaceLocal: request.workspaceLocal,
+      permissionState: request.permissionState,
+      source: request.source,
+      maxLevel: request.maxLevel,
+      phases: details.phases,
+      startupLatencyMs: details.startupLatencyMs,
+      totalLatencyMs: details.totalLatencyMs,
+      outcome: details.outcome,
+      policyAction: decision.action,
+      policyReason: decision.reason,
+      failureReason: details.failureReason,
+      escalated: details.escalated,
+      modelProvenance: details.modelProvenance,
+    };
+    for (const writeLog of [this.deps.writeReviewLog, this.deps.writeDebugLog]) {
+      try {
+        writeLog?.("yolo_auto.evaluation", telemetry);
+      } catch {
+        // Telemetry cannot affect authorization.
+      }
     }
   }
 }

@@ -1,6 +1,6 @@
 import { existsSync, realpathSync } from "node:fs";
 import { homedir } from "node:os";
-import { join, normalize, resolve, sep } from "node:path";
+import { basename, dirname, join, normalize, resolve, sep } from "node:path";
 
 import { getNonEmptyString, toRecord } from "./common";
 import { expandHomePath } from "./expand-home";
@@ -100,8 +100,71 @@ export function getPathBearingToolPath(
 }
 
 /**
+ * Returns true when a file tool operates within the canonical session workspace.
+ * Missing paths are checked through their nearest existing parent so new writes
+ * remain eligible without weakening symlink containment.
+ */
+export interface WorkspaceLocalFileOperationOptions {
+  allowWorkspaceEnvRead?: boolean;
+}
+
+export function hasProtectedEnvSelector(toolName: string, input: unknown): boolean {
+  if (toolName !== "grep" && toolName !== "find" && toolName !== "ls") {
+    return false;
+  }
+
+  const record = toRecord(input);
+  return [record.path, record.glob, record.pattern].some(
+    (value) => typeof value === "string" && value.includes(".env"),
+  );
+}
+
+export function isWorkspaceLocalFileOperation(
+  toolName: string,
+  input: unknown,
+  cwd: string,
+  options: WorkspaceLocalFileOperationOptions = {},
+): boolean {
+  if (!PATH_BEARING_TOOLS.has(toolName) || !cwd) return false;
+
+  if (hasProtectedEnvSelector(toolName, input)) return false;
+
+  const inputPath = getPathBearingToolPath(toolName, input);
+  const pathValue = inputPath ?? (
+    toolName === "find" || toolName === "grep" || toolName === "ls" ? cwd : null
+  );
+  if (!pathValue) return false;
+
+  const normalizedPath = normalizePathForComparison(pathValue, cwd);
+  const normalizedCwd = normalizePathForComparison(cwd, cwd);
+  if (!normalizedPath || !normalizedCwd || !existsSync(normalizedCwd)) return false;
+
+  const isEnvPath = basename(normalizedPath).startsWith(".env");
+  if (toolName === "edit" && !existsSync(normalizedPath)) return false;
+
+  try {
+    const canonicalCwd = realpathSync.native(normalizedCwd);
+    let candidate = normalizedPath;
+    while (!existsSync(candidate)) {
+      const parent = dirname(candidate);
+      if (parent === candidate) return false;
+      candidate = parent;
+    }
+    const isCanonicalWorkspacePath = isPathWithinDirectory(
+      realpathSync.native(candidate),
+      canonicalCwd,
+    );
+    return isCanonicalWorkspacePath
+      && (!isEnvPath || (toolName === "read" && options.allowWorkspaceEnvRead === true));
+  } catch {
+    return false;
+  }
+}
+
+/**
  * Check workspace locality using canonical filesystem targets.
- * Missing/unresolvable targets fail closed for model-backed auto-approval.
+ * Missing targets are checked through their nearest existing parent so new
+ * paths inherit canonical containment; unresolvable targets fail closed.
  */
 export function isPathWithinCanonicalWorkingDirectory(
   pathValue: string,
@@ -112,8 +175,13 @@ export function isPathWithinCanonicalWorkingDirectory(
   if (!normalizedPath || !normalizedCwd || !existsSync(normalizedCwd)) return false;
   try {
     const canonicalCwd = realpathSync.native(normalizedCwd);
-    const canonicalPath = realpathSync.native(normalizedPath);
-    return isPathWithinDirectory(canonicalPath, canonicalCwd);
+    let candidate = normalizedPath;
+    while (!existsSync(candidate)) {
+      const parent = dirname(candidate);
+      if (parent === candidate) return false;
+      candidate = parent;
+    }
+    return isPathWithinDirectory(realpathSync.native(candidate), canonicalCwd);
   } catch {
     return false;
   }

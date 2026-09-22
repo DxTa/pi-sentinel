@@ -22,6 +22,27 @@ import type { GateOutcome } from "./types";
  *
  * Gate functions produce descriptors; this runner executes them.
  */
+function getSafeDebugLogContext(
+  context: Record<string, unknown>,
+): Record<string, unknown> {
+  const { command, message, target, toolInputPreview, ...safeContext } = context;
+  return {
+    ...safeContext,
+    ...(typeof command === "string"
+      ? { commandPresent: true, commandLength: command.length }
+      : {}),
+    ...(typeof message === "string"
+      ? { messagePresent: true, messageLength: message.length }
+      : {}),
+    ...(typeof target === "string"
+      ? { targetPresent: true, targetLength: target.length }
+      : {}),
+    ...(typeof toolInputPreview === "string"
+      ? { toolInputPreviewPresent: true, toolInputPreviewLength: toolInputPreview.length }
+      : {}),
+  };
+}
+
 export async function runGateCheck(
   descriptor: GateDescriptor,
   agentName: string | null,
@@ -48,6 +69,15 @@ export async function runGateCheck(
     );
   }
 
+  deps.writeDebugLog?.("permission_gate.checked", {
+    ...getSafeDebugLogContext(descriptor.logContext),
+    agentName,
+    surface: descriptor.surface,
+    state: check.state,
+    origin: check.origin ?? null,
+    matchedPattern: check.matchedPattern ?? null,
+  });
+
   // 2. Session-hit fast path
   if (check.source === "session") {
     deps.writeReviewLog("permission_request.session_approved", {
@@ -55,6 +85,14 @@ export async function runGateCheck(
       agentName,
       resolution: "session_approved",
       sessionApprovalPattern: check.matchedPattern,
+    });
+    deps.writeDebugLog?.("permission_gate.resolved", {
+      ...getSafeDebugLogContext(descriptor.logContext),
+      agentName,
+      surface: descriptor.surface,
+      action: "allow",
+      resolution: "session_approved",
+      approvalKind: "session",
     });
     deps.emitDecision({
       surface: descriptor.decision.surface,
@@ -120,17 +158,28 @@ export async function runGateCheck(
     : null;
 
   // 5. Emit decision event
+  const resolution = deriveResolution(
+    check.state,
+    gateResult.action,
+    approvalKind,
+    canConfirm,
+    autoApproved,
+  );
+  deps.writeDebugLog?.("permission_gate.resolved", {
+    ...getSafeDebugLogContext(descriptor.logContext),
+    agentName,
+    surface: descriptor.surface,
+    action: gateResult.action,
+    resolution,
+    approvalKind,
+    canConfirm,
+    autoApproved,
+  });
   deps.emitDecision({
     surface: descriptor.decision.surface,
     value: descriptor.decision.value,
     result: gateResult.action === "allow" ? "allow" : "deny",
-    resolution: deriveResolution(
-      check.state,
-      gateResult.action,
-      approvalKind,
-      canConfirm,
-      autoApproved,
-    ),
+    resolution,
     // eslint-disable-next-line @typescript-eslint/no-unnecessary-condition -- ?? null normalises undefined to null for the log record
     origin: check.origin ?? null,
     agentName: agentName ?? null,

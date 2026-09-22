@@ -7,6 +7,7 @@ import { toRecord } from "#src/common";
 import {
   getPathBearingToolPath,
   isPathOutsideWorkingDirectory,
+  isWorkspaceLocalFileOperation,
   normalizePathForComparison,
 } from "#src/path-utils";
 import { suggestSessionPattern } from "#src/pattern-suggest";
@@ -48,6 +49,7 @@ interface InputPayload {
 
 interface PermissionGateHandlerOptions {
   isTrustedClipboardReadPath?: (pathValue: string) => boolean;
+  isWorkspaceEnvReadRedactionEnabled?: (cwd: string) => boolean;
 }
 
 /**
@@ -112,6 +114,14 @@ export class PermissionGateHandler {
       cwd: ctx.cwd,
     };
 
+    session.logger.debug("tool_call.received", {
+      source: "tool_call",
+      toolCallId,
+      toolName,
+      agentName,
+      pathPresent: Boolean(getPathBearingToolPath(toolName, input)),
+    });
+
     // ── Shared gate adapter closures ─────────────────────────────────────
     const canConfirm: GateRunnerDeps["canConfirm"] = (details) =>
       session.canPrompt(ctx, details);
@@ -143,6 +153,7 @@ export class PermissionGateHandler {
       approveSessionRule,
       persistPermissionRule,
       writeReviewLog,
+      writeDebugLog: session.logger.debug,
       emitDecision,
       canConfirm,
       promptPermission,
@@ -165,7 +176,12 @@ export class PermissionGateHandler {
     }
 
     // ── Path gate for tools (descriptor + runner) ────────────────────────────
-    const pathDesc = describePathGate(tcc, checkPermission, getSessionRuleset);
+    const pathDesc = describePathGate(
+      tcc,
+      checkPermission,
+      getSessionRuleset,
+      this.options.isWorkspaceEnvReadRedactionEnabled,
+    );
     if (pathDesc) {
       if (isGateBypass(pathDesc)) {
         if (pathDesc.log) {
@@ -213,6 +229,26 @@ export class PermissionGateHandler {
           return { block: true, reason: extDirResult.reason };
         }
       }
+    }
+
+    // ── Deterministic workspace file allow ──────────────────────────────────
+    if (
+      tcc.cwd
+      && isWorkspaceLocalFileOperation(tcc.toolName, tcc.input, tcc.cwd, {
+        allowWorkspaceEnvRead:
+          this.options.isWorkspaceEnvReadRedactionEnabled?.(tcc.cwd) === true,
+      })
+    ) {
+      session.logger.debug("permission_gate.resolved", {
+        source: "tool_call",
+        toolCallId,
+        toolName,
+        agentName,
+        action: "allow",
+        resolution: "workspace_auto_allowed",
+        workspaceLocal: true,
+      });
+      return {};
     }
 
     // ── Bash external-directory gate (descriptor + runner) ───────────────────

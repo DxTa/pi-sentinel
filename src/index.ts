@@ -69,6 +69,7 @@ import {
 
 // ── Our modules ──────────────────────────────────────────────────────────
 import { registerSentinelCreds } from "./sentinel-creds/index";
+import { loadSentinelCredsConfig } from "./sentinel-creds/config";
 import { loadDomainPolicy, type DomainGateConfig } from "./network/config.js";
 import { registerDomainGateCommand } from "./network/domain-gate.js";
 import { clearSessionNetworkApprovals, getSessionNetworkApprovals, handleNetworkToolCall, handleNetworkUserBash } from "./network/network-gate-handler.js";
@@ -605,12 +606,14 @@ export default function piPermissionSystemExtension(pi: ExtensionAPI): void {
     client: yoloAutoClient,
     waitForStartup: ensureYoloAutoWorkerReady,
     writeReviewLog: runtime.writeReviewLog.bind(runtime),
+    writeDebugLog: runtime.writeDebugLog.bind(runtime),
   });
 
   const prompter = new PermissionPrompter({
     promptWaitTracker,
     getConfig: () => runtime.config,
     writeReviewLog: runtime.writeReviewLog.bind(runtime),
+    writeDebugLog: runtime.writeDebugLog.bind(runtime),
     subagentSessionsDir: runtime.subagentSessionsDir,
     forwardingDir: runtime.forwardingDir,
     resolveFallbackTargetSessionId: (ctx) =>
@@ -704,6 +707,7 @@ export default function piPermissionSystemExtension(pi: ExtensionAPI): void {
     getRuntimeContext: () => runtime.runtimeContext,
     requestPermissionDecisionFromUi,
     writeReviewLog: runtime.writeReviewLog.bind(runtime),
+    writeDebugLog: runtime.writeDebugLog.bind(runtime),
   });
 
   const permissionsService: PermissionsService = {
@@ -743,6 +747,10 @@ export default function piPermissionSystemExtension(pi: ExtensionAPI): void {
   const agentPrep = new AgentPrepHandler(session, toolRegistry);
   const gates = new PermissionGateHandler(session, pi.events, toolRegistry, {
     isTrustedClipboardReadPath: clipboardTempCleanup.isTrackedInteractivePath,
+    isWorkspaceEnvReadRedactionEnabled: (cwd) => {
+      const sentinelConfig = loadSentinelCredsConfig(loadConfig(cwd));
+      return sentinelConfig.enabled && sentinelConfig.resultScanning;
+    },
   });
 
   type PersistentGrantRecord =

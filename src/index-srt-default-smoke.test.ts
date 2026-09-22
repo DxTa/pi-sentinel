@@ -36,7 +36,7 @@ interface FakePi {
   };
 }
 
-function createFakePi(): FakePi {
+function createFakePi(toolNames: string[] = ["bash"]): FakePi {
   const handlers = new Map<string, (event: unknown, ctx: unknown) => unknown>();
   const commands = new Map<string, unknown>();
   const eventHandlers = new Map<string, Array<(event: unknown) => unknown>>();
@@ -49,7 +49,7 @@ function createFakePi(): FakePi {
     registerCommand: (name, command) => {
       commands.set(name, command);
     },
-    getAllTools: () => ["bash"],
+    getAllTools: () => toolNames,
     setActiveTools: vi.fn(),
     events: {
       on: (name, handler) => {
@@ -152,7 +152,7 @@ describe("piPermissionSystemExtension SRT default smoke", () => {
     expect(event.input.command).toContain("PI_SRT_HELPER_INPUT_B64=");
   });
 
-  it("keeps Bash host-accessible while direct file tools remain gated", async () => {
+  it("keeps Bash host-accessible while local file tools use workspace policy", async () => {
     const agentDir = await makeTempDir("pi-permission-agent-");
     const projectDir = await makeTempDir("pi-permission-project-");
     process.env.PI_CODING_AGENT_DIR = agentDir;
@@ -160,13 +160,14 @@ describe("piPermissionSystemExtension SRT default smoke", () => {
       permission: {
         "*": "allow",
         bash: { "*": "allow" },
+        path: { "*": "allow" },
         write: "deny",
         external_directory: { "*": "allow" },
       },
       sandbox: { enabled: true, backend: "srt", defaultProfile: "online-dev", bypassCommands: ["*"] },
     });
 
-    const pi = createFakePi();
+    const pi = createFakePi(["bash", "write"]);
     piPermissionSystemExtension(pi as never);
     const commandEvent = { toolName: "bash", input: { command: "printf 'host && command'" } };
     const commandResult = await pi.handlers.get("tool_call")?.(
@@ -186,7 +187,228 @@ describe("piPermissionSystemExtension SRT default smoke", () => {
       createContext(projectDir) as never,
     );
 
-    expect(writeResult).toMatchObject({ block: true });
+    expect(writeResult).toEqual({});
+  });
+
+  it.each(["manual", "yolo", "yolo-auto"] as const)(
+    "auto-approves normal workspace file tools in %s mode",
+    async (mode) => {
+      const agentDir = await makeTempDir("pi-permission-agent-");
+      const projectDir = await makeTempDir("pi-permission-project-");
+      process.env.PI_CODING_AGENT_DIR = agentDir;
+      const existingPath = path.join(projectDir, "notes.txt");
+      await writeFile(existingPath, "needle\\n", "utf8");
+      await writeExtensionConfig(agentDir, {
+        mode,
+        permission: {
+          "*": "deny",
+          path: { "*": "allow" },
+          external_directory: { "*": "deny" },
+          read: "deny",
+          write: "deny",
+          edit: "deny",
+          grep: "deny",
+          find: "deny",
+          ls: "deny",
+        },
+        sandbox: { enabled: false, backend: "srt", defaultProfile: "online-dev" },
+      });
+
+      const pi = createFakePi(["bash", "read", "write", "edit", "grep", "find", "ls"]);
+      piPermissionSystemExtension(pi as never);
+      const toolCall = pi.handlers.get("tool_call")!;
+      const context = createContext(projectDir);
+      const events = [
+        { toolName: "read", input: { path: existingPath } },
+        { toolName: "write", input: { path: path.join(projectDir, "new.txt"), content: "new" } },
+        { toolName: "edit", input: { path: existingPath, oldText: "needle", newText: "changed" } },
+        { toolName: "grep", input: { pattern: "needle", path: projectDir } },
+        { toolName: "find", input: { path: projectDir } },
+        { toolName: "ls", input: {} },
+      ];
+
+      for (const event of events) {
+        await expect(toolCall(event, context as never)).resolves.toEqual({});
+      }
+    },
+  );
+
+  it("keeps external paths gated", async () => {
+    const agentDir = await makeTempDir("pi-permission-agent-");
+    const projectDir = await makeTempDir("pi-permission-project-");
+    const outsideDir = await makeTempDir("pi-permission-outside-");
+    process.env.PI_CODING_AGENT_DIR = agentDir;
+    await writeExtensionConfig(agentDir, {
+      permission: {
+        "*": "deny",
+        path: { "*": "allow" },
+        external_directory: { "*": "deny" },
+        read: "deny",
+      },
+      sandbox: { enabled: false, backend: "srt", defaultProfile: "online-dev" },
+    });
+
+    const pi = createFakePi(["bash", "read"]);
+    piPermissionSystemExtension(pi as never);
+    const result = await pi.handlers.get("tool_call")?.(
+      { toolName: "read", input: { path: path.join(outsideDir, "secret.txt") } },
+      createContext(projectDir) as never,
+    );
+
+    expect(result).toMatchObject({ block: true });
+  });
+
+  it("rejects symlink escapes instead of treating them as workspace-local", async () => {
+    const agentDir = await makeTempDir("pi-permission-agent-");
+    const projectDir = await makeTempDir("pi-permission-project-");
+    const outsideDir = await makeTempDir("pi-permission-outside-");
+    const outsidePath = path.join(outsideDir, "secret.txt");
+    const linkPath = path.join(projectDir, ".env.local");
+    process.env.PI_CODING_AGENT_DIR = agentDir;
+    await writeFile(outsidePath, "secret", "utf8");
+    await symlink(outsidePath, linkPath);
+    await writeExtensionConfig(agentDir, {
+      permission: {
+        "*": "deny",
+        path: { "*": "allow" },
+        external_directory: { "*": "deny" },
+        read: "deny",
+      },
+      sandbox: { enabled: false, backend: "srt", defaultProfile: "online-dev" },
+    });
+
+    const pi = createFakePi(["bash", "read"]);
+    piPermissionSystemExtension(pi as never);
+    const result = await pi.handlers.get("tool_call")?.(
+      { toolName: "read", input: { path: linkPath } },
+      createContext(projectDir) as never,
+    );
+
+    expect(result).toMatchObject({ block: true });
+  });
+
+  it.each(["manual", "yolo", "yolo-auto"] as const)(
+    "blocks canonical symlink writes in %s mode",
+    async (mode) => {
+      const agentDir = await makeTempDir("pi-permission-agent-");
+      const projectDir = await makeTempDir("pi-permission-project-");
+      const outsideDir = await makeTempDir("pi-permission-outside-");
+      const linkDir = path.join(projectDir, "linked");
+      const outsideFile = path.join(outsideDir, "existing.txt");
+      process.env.PI_CODING_AGENT_DIR = agentDir;
+      await writeFile(outsideFile, "old", "utf8");
+      await symlink(outsideDir, linkDir);
+      await writeExtensionConfig(agentDir, {
+        mode,
+        permission: {
+          "*": "allow",
+          path: { "*": "allow" },
+          external_directory: { "*": "allow" },
+          write: "deny",
+          edit: "deny",
+        },
+        sandbox: { enabled: false, backend: "srt", defaultProfile: "online-dev" },
+      });
+
+      const pi = createFakePi(["bash", "write", "edit"]);
+      piPermissionSystemExtension(pi as never);
+      const context = createContext(projectDir, { hasUI: true });
+      await expect(pi.handlers.get("tool_call")?.(
+        { toolName: "write", input: { path: path.join(linkDir, "new.txt"), content: "new" } },
+        context as never,
+      )).resolves.toMatchObject({ block: true });
+      await expect(pi.handlers.get("tool_call")?.(
+        { toolName: "edit", input: { path: path.join(linkDir, "existing.txt"), oldText: "old", newText: "new" } },
+        context as never,
+      )).resolves.toMatchObject({ block: true });
+    },
+  );
+
+  it("allows a canonical .env read when result scanning is enabled", async () => {
+    const agentDir = await makeTempDir("pi-permission-agent-");
+    const projectDir = await makeTempDir("pi-permission-project-");
+    const envPath = path.join(projectDir, ".env");
+    process.env.PI_CODING_AGENT_DIR = agentDir;
+    await writeFile(envPath, "TOKEN=secret", "utf8");
+    await writeExtensionConfig(agentDir, {
+      sentinelCreds: { enabled: true, resultScanning: true },
+      permission: {
+        "*": "deny",
+        path: { "*": "allow", "*.env": "deny", "*.env.*": "deny" },
+        external_directory: { "*": "deny" },
+        read: "deny",
+      },
+      sandbox: { enabled: false, backend: "srt", defaultProfile: "online-dev" },
+    });
+
+    const pi = createFakePi(["bash", "read"]);
+    piPermissionSystemExtension(pi as never);
+    await expect(pi.handlers.get("tool_call")?.(
+      { toolName: "read", input: { path: envPath } },
+      createContext(projectDir) as never,
+    )).resolves.toEqual({});
+  });
+
+  it("keeps .env reads and selectors gated when result scanning is disabled", async () => {
+    const agentDir = await makeTempDir("pi-permission-agent-");
+    const projectDir = await makeTempDir("pi-permission-project-");
+    const envPath = path.join(projectDir, ".env.local");
+    process.env.PI_CODING_AGENT_DIR = agentDir;
+    await writeFile(envPath, "TOKEN=secret", "utf8");
+    await writeExtensionConfig(agentDir, {
+      sentinelCreds: { enabled: true, resultScanning: false },
+      permission: {
+        "*": "allow",
+        path: { "*": "allow", "*.env": "deny", "*.env.*": "deny" },
+        external_directory: { "*": "allow" },
+        read: "allow",
+        grep: "deny",
+      },
+      sandbox: { enabled: false, backend: "srt", defaultProfile: "online-dev" },
+    });
+
+    const pi = createFakePi(["bash", "read", "grep"]);
+    piPermissionSystemExtension(pi as never);
+    const context = createContext(projectDir);
+    await expect(pi.handlers.get("tool_call")?.(
+      { toolName: "read", input: { path: envPath } },
+      context as never,
+    )).resolves.toMatchObject({ block: true });
+    await expect(pi.handlers.get("tool_call")?.(
+      { toolName: "grep", input: { path: projectDir, glob: ".env*", pattern: "." } },
+      context as never,
+    )).resolves.toMatchObject({ block: true });
+  });
+
+  it("keeps workspace .env writes protected", async () => {
+    const agentDir = await makeTempDir("pi-permission-agent-");
+    const projectDir = await makeTempDir("pi-permission-project-");
+    process.env.PI_CODING_AGENT_DIR = agentDir;
+    await writeExtensionConfig(agentDir, {
+      permission: {
+        "*": "allow",
+        path: { "*": "allow", "*.env": "deny", "*.env.*": "deny" },
+        external_directory: { "*": "allow" },
+        write: "allow",
+        edit: "allow",
+      },
+      sandbox: { enabled: false, backend: "srt", defaultProfile: "online-dev" },
+    });
+
+    const pi = createFakePi(["bash", "write", "edit"]);
+    piPermissionSystemExtension(pi as never);
+    const context = createContext(projectDir);
+
+    for (const envName of [".env", ".env.local", ".env.example"]) {
+      await expect(pi.handlers.get("tool_call")?.(
+        { toolName: "write", input: { path: path.join(projectDir, envName), content: "TOKEN=secret" } },
+        context as never,
+      )).resolves.toMatchObject({ block: true });
+      await expect(pi.handlers.get("tool_call")?.(
+        { toolName: "edit", input: { path: path.join(projectDir, envName), oldText: "TOKEN=old", newText: "TOKEN=new" } },
+        context as never,
+      )).resolves.toMatchObject({ block: true });
+    }
   });
 
   it("hard-blocks host Bash mutation outside safe roots", async () => {

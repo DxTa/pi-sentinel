@@ -95,7 +95,12 @@ export function createPermissionSystemLogger(
       return undefined;
     }
 
-    return writeLine("debug", debugLogPath, event, details);
+    const config = options.getConfig();
+    return writeLine("debug", debugLogPath, event, {
+      ...details,
+      mode: config.mode,
+      yoloAutoMaxLevel: config.yoloAutoMaxLevel,
+    });
   };
 
   const review = (

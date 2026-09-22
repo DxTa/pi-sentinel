@@ -1,7 +1,9 @@
 import {
   getPathBearingToolPath,
   isPathOutsideWorkingDirectory,
+  isPathWithinCanonicalWorkingDirectory,
   isPiInfrastructureRead,
+  isSafeSystemPath,
   normalizePathForComparison,
 } from "#src/path-utils";
 import { deriveApprovalPattern } from "#src/session-rules";
@@ -27,14 +29,16 @@ export function describeExternalDirectoryGate(
   const externalDirectoryPath = getPathBearingToolPath(tcc.toolName, tcc.input);
   if (!externalDirectoryPath) return null;
 
-  if (!isPathOutsideWorkingDirectory(externalDirectoryPath, tcc.cwd)) {
-    return null;
-  }
-
   const normalizedExtPath = normalizePathForComparison(
     externalDirectoryPath,
     tcc.cwd,
   );
+  const isCanonicalExternal =
+    !isSafeSystemPath(normalizedExtPath)
+    && !isPathWithinCanonicalWorkingDirectory(externalDirectoryPath, tcc.cwd);
+  if (!isPathOutsideWorkingDirectory(externalDirectoryPath, tcc.cwd) && !isCanonicalExternal) {
+    return null;
+  }
 
   // ── Pi infrastructure read bypass ──────────────────────────────────────
   if (tcc.toolName === "read" && isTrustedClipboardReadPath?.(normalizedExtPath)) {

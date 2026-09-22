@@ -50,6 +50,8 @@ export interface PermissionRpcDeps {
   ): Promise<PermissionPromptDecision>;
   /** Write structured entries to the permission review log. */
   writeReviewLog(event: string, details: Record<string, unknown>): void;
+  /** Write privacy-safe diagnostic entries. */
+  writeDebugLog?: (event: string, details: Record<string, unknown>) => void;
 }
 
 /** Unsubscribe handles returned from registerPermissionRpcHandlers. */
@@ -140,14 +142,33 @@ async function handlePromptRpc(
   }
 
   const replyChannel = `${PERMISSIONS_RPC_PROMPT_CHANNEL}:reply:${requestId}`;
+  const startedAt = Date.now();
+  deps.writeDebugLog?.("permission_rpc.requested", {
+    requestId,
+    surface: surface ?? null,
+    valuePresent: Boolean(value),
+    agentName: agentName ?? null,
+    messagePresent: typeof message === "string" && message.length > 0,
+    messageLength: typeof message === "string" ? message.length : 0,
+  });
 
   const ctx = deps.getRuntimeContext();
   if (!ctx?.hasUI) {
+    deps.writeDebugLog?.("permission_rpc.failed", {
+      requestId,
+      reason: "no_ui",
+      latencyMs: Math.max(0, Date.now() - startedAt),
+    });
     events.emit(replyChannel, errorReply("no_ui"));
     return;
   }
 
   if (typeof message !== "string" || !message) {
+    deps.writeDebugLog?.("permission_rpc.failed", {
+      requestId,
+      reason: "message_required",
+      latencyMs: Math.max(0, Date.now() - startedAt),
+    });
     events.emit(replyChannel, errorReply("message is required"));
     return;
   }
@@ -173,15 +194,24 @@ async function handlePromptRpc(
         },
       );
 
-      deps.writeReviewLog("permission_request.rpc_prompt", {
+      const promptLog = {
         requestId,
         surface: surface ?? null,
-        value: value ?? null,
+        valuePresent: Boolean(value),
         agentName: agentName ?? null,
-        message,
+        messageLength: message.length,
         approved: decision.approved,
         resolution: decision.state,
         denialReason: decision.denialReason ?? null,
+      };
+      deps.writeReviewLog("permission_request.rpc_prompt", {
+        ...promptLog,
+        message,
+      });
+      deps.writeDebugLog?.("permission_request.rpc_prompt", promptLog);
+      deps.writeDebugLog?.("permission_rpc.resolved", {
+        ...promptLog,
+        latencyMs: Math.max(0, Date.now() - startedAt),
       });
 
       const data: PermissionsPromptReplyData = {
@@ -197,6 +227,12 @@ async function handlePromptRpc(
     }
   } catch (err) {
     const message_ = err instanceof Error ? err.message : String(err);
+    deps.writeDebugLog?.("permission_rpc.failed", {
+      requestId,
+      reason: "handler_error",
+      latencyMs: Math.max(0, Date.now() - startedAt),
+      errorPresent: Boolean(message_),
+    });
     events.emit(replyChannel, errorReply(message_));
   }
 }

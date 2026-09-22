@@ -14,10 +14,10 @@ Git is the supported distribution path. No build step is required. The npm name 
 
 ## Security defaults
 
-- Direct reads are allowed; writes and edits are denied.
+- Normal workspace-local `read`, `write`, `edit`, `grep`, `find`, and `ls` operations are auto-approved after canonical workspace checks. `.env*` direct reads proceed only with result scanning and masked output; `.env*` writes and edits remain protected. External paths and symlink escapes still use the existing gates.
 - Bash asks by default, except `git status` and `git diff`.
 - Recognized literal network destinations not on the allowlist require approval. Domain preflight uses static command extraction; dynamic or obfuscated destinations may not be identified. Host-bypassed commands have normal host network access after Bash approval.
-- `yolo-auto` is enabled for eligible workspace-local reads and listings. Deterministic permission, path, credential, network, sandbox, and destructive-action gates still run first.
+- `yolo-auto` is available for eligible workspace-local reads and listings, but it is not required for normal workspace file approval. Deterministic path, credential, network, sandbox, and destructive-action gates remain authoritative.
 - Pi clipboard images may be read directly in `manual`, `yolo`, and `yolo-auto` only when they come from an interactive input event and match the current OS temp-root `pi-clipboard-<UUID>.<extension>` shape. Writes, Bash, compound commands, and untracked temp files remain protected.
 - SRT is enabled with the network-capable `online-dev` profile.
 - **Approved Bash runs on the host by default** because bundled `sandbox.bypassCommands` is `['*']`. Set it to `[]` to require SRT wrapping and fail closed when SRT is unavailable.
@@ -32,7 +32,7 @@ Git is the supported distribution path. No build step is required. The npm name 
 
 **Enforcement boundary:** deterministic gates run before execution and before `yolo-auto`. Credential files and secret environment variables are masked or denied. Non-bypassed Bash is wrapped by SRT; bypassed Bash has normal host filesystem and network access after permission and network preflight. A bypass is not a sandbox.
 
-**Model safety:** `yolo-auto` considers only eligible ask-state workspace-local `read`, `find`, `grep`, and `ls` requests. A secret-scanner-detected direct workspace-local regular-file `read` may use the same evaluator only with active result scanning and a stable tool-call ID; deterministic scanning remains authoritative and output stays redacted. The worker receives bounded metadata, not file contents, secret labels, paths, prompts, commands, or tool output; it cannot detect prompt injection inside a file before reading it. At maximum level `l1`, an accepted, complete, non-degraded safe L1 result can authorize. Levels `l2` and `l3` require exact accepted L2 results. Missing, stale, malformed, degraded, uncertain, or timed-out results prompt. L3 is advisory only and never authorizes an escalated request.
+**Model safety:** deterministic workspace approval covers only canonical local `read`, `write`, `edit`, `grep`, `find`, and `ls` operations, excluding protected writes/edits and symlink escapes. `yolo-auto` considers only eligible ask-state workspace-local reads/lists and secret reads with active result scanning; deterministic scanning remains authoritative and output stays redacted. The worker receives bounded metadata, not file contents, secret labels, paths, prompts, commands, or tool output; it cannot detect prompt injection inside a file before reading it. At maximum level `l1`, an accepted, complete, non-degraded safe L1 result can authorize. Levels `l2` and `l3` require exact accepted L2 results. Missing, stale, malformed, degraded, uncertain, or timed-out results prompt. L3 is advisory only and never authorizes an escalated request.
 
 **Worker trust:** the configured worker and model cache are trusted components. The socket uses owner-only filesystem permissions, but the protocol does not authenticate the peer or prove response honesty.
 
@@ -43,7 +43,7 @@ See [`SECURITY.md`](SECURITY.md) for reporting instructions.
 ## How it works
 
 ```text
-request -> permission/path/network/credential gates
+request -> canonical workspace file check or permission/path/network/credential gates
         -> yolo-auto only for eligible local reads/lists
         -> SRT wrapper or approved host bypass
         -> execute or prompt/deny
@@ -82,11 +82,11 @@ Use `--no-download-files` for offline startup. Missing assets then stop the work
 | `/sandbox-grant network --domain <domain> [--ttl <duration>]` | Grant a sandbox network domain. |
 | `/sandbox-revoke <grant-id>` | Revoke a sandbox grant. |
 
-`mode` selects one behavior: `manual` prompts, `yolo` enables classic eligible auto-approval, and `yolo-auto` uses model-backed approval for eligible workspace-local reads and listings while retaining classic yolo bypass elsewhere. Protected Bash patterns and first-time external writes still prompt.
+`mode` selects one behavior: `manual` prompts ordinary gated requests, `yolo` enables classic eligible auto-approval, and `yolo-auto` adds model-backed approval for eligible reads/lists while retaining classic yolo bypass elsewhere. The deterministic canonical workspace file rule applies in every mode. Protected Bash patterns, `.env*` writes/edits, and external paths still use their safety gates.
 
 ## Logs
 
-`permissionReviewLog` defaults to `true` and writes JSONL under `~/.pi/agent/extensions/pi-sentinel/logs/`. Records may include commands, paths, prompt messages, targets, and bounded tool-input previews. `yolo_auto.evaluation` records use opaque evaluation IDs plus phase/latency and bounded decision metadata; they omit secret contents and request paths. Treat logs as sensitive; they are not guaranteed to be fully redacted or automatically rotated. Disable review logging when it is not required and restrict the agent directory to the owning user.
+`permissionReviewLog` defaults to `true` and writes JSONL under `~/.pi/agent/extensions/pi-sentinel/logs/`. Records may include commands, paths, prompt messages, targets, and bounded tool-input previews. `debugLog` is opt-in and records mode, tool/gate metadata, prompt timing and outcome, and `yolo_auto.evaluation` phase/latency/provenance metadata. Debug prompt records use lengths and hashes instead of prompt bodies; neither stream is intended to store write content, model payloads, or secret values. Treat both logs as sensitive; they are not guaranteed to be fully redacted or automatically rotated. Disable logging when it is not required and restrict the agent directory to the owning user.
 
 ## Configuration
 

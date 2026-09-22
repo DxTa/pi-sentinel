@@ -2,8 +2,8 @@ import { relative, resolve } from "node:path";
 
 import {
   getPathBearingToolPath,
-  isPathOutsideWorkingDirectory,
-  isPathWithinCanonicalWorkingDirectory,
+  hasProtectedEnvSelector,
+  isWorkspaceLocalFileOperation,
   PATH_BEARING_TOOLS,
   READ_ONLY_PATH_BEARING_TOOLS,
 } from "#src/path-utils";
@@ -66,11 +66,11 @@ export function describeToolGate(
         : undefined;
   const yoloAutoWorkspaceLocal =
     yoloAutoOperation !== undefined
-    && (toolPath
-      ? tcc.cwd !== undefined
-        && !isPathOutsideWorkingDirectory(toolPath, tcc.cwd)
-        && isPathWithinCanonicalWorkingDirectory(toolPath, tcc.cwd)
-      : tcc.toolName !== "read");
+    && tcc.cwd !== undefined
+    && isWorkspaceLocalFileOperation(tcc.toolName, tcc.input, tcc.cwd, {
+      allowWorkspaceEnvRead: true,
+    });
+  const forcePromptInYolo = hasProtectedEnvSelector(tcc.toolName, tcc.input);
   const yoloAutoWorkspaceRelativePath =
     yoloAutoWorkspaceLocal && toolPath && tcc.cwd
       ? relative(tcc.cwd, resolve(tcc.cwd, toolPath)).replaceAll("\\", "/")
@@ -105,6 +105,7 @@ export function describeToolGate(
               ? { yoloAutoWorkspaceRelativePath }
               : {}),
             yoloAutoOperation,
+            ...(forcePromptInYolo ? { forcePromptInYolo: true } : {}),
           }
         : {}),
     },

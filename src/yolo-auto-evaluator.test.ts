@@ -27,12 +27,12 @@ const safeResult = {
   ],
   totalLatencyMs: 5,
   escalated: false,
-  l1: { verdict: "safe" as const, accepted: true, complete: true, degraded: false },
+  l1: { verdict: "safe" as const, accepted: true, complete: true, degraded: false, provenance: "model-l1" },
   l2: {
     escalated: false,
     results: [
       { category: "injection", className: "safe", accepted: true, complete: true, degraded: false },
-      { category: "tool_class", className: "file", accepted: true, complete: true, degraded: false },
+      { category: "tool_class", className: "file", accepted: true, complete: true, degraded: false, provenance: "model-l2" },
       { category: "tool_action", className: "read", accepted: true, complete: true, degraded: false },
       ...["source_sensitive", "source_untrusted", "sink_external"].map((pipeline) => ({
         category: "tool_tags",
@@ -80,10 +80,31 @@ describe("YoloAutoEvaluator", () => {
         policyAction: "allow",
         policyReason: "safe_workspace_read",
         phases: safeResult.phases,
+        modelProvenance: { l1: "model-l1", l2: ["model-l2"], l3: null },
         totalLatencyMs: expect.any(Number),
       }),
     );
     expect(JSON.stringify(writeReviewLog.mock.calls[0])).not.toContain("src/index.ts");
+  });
+
+  it("mirrors evaluation telemetry into the debug stream", async () => {
+    const writeDebugLog = vi.fn();
+    const evaluator = new YoloAutoEvaluator({
+      client: { evaluate: vi.fn(async () => safeResult) },
+      writeDebugLog,
+    } as never);
+
+    await evaluator.evaluate(request);
+
+    expect(writeDebugLog).toHaveBeenCalledWith(
+      "yolo_auto.evaluation",
+      expect.objectContaining({
+        evaluationId: "opaque-eval-1",
+        phases: safeResult.phases,
+        totalLatencyMs: expect.any(Number),
+      }),
+    );
+    expect(JSON.stringify(writeDebugLog.mock.calls[0])).not.toContain("src/index.ts");
   });
 
   it("fails closed and records one startup failure", async () => {

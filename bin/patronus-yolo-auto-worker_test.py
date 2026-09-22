@@ -30,10 +30,22 @@ class PatronusWorkerMappingTests(unittest.TestCase):
         self.assertTrue(result["complete"])
         self.assertFalse(result["degraded"])
 
+    def test_discards_unbounded_model_provenance(self):
+        result = module.map_l1_result({
+            "category": "injection",
+            "class_name": "safe",
+            "level": "L1",
+            "model": "x" * 129,
+            "decision": {
+                "terminality": {"completion": "complete", "degraded": False},
+            },
+        })
+        self.assertNotIn("provenance", result)
+
     def test_l2_maps_tag_result_order_to_pipeline_names(self):
         raw = [
             {"category": "injection", "class_name": "benign", "level": "L2", "confidence": 0.99},
-            {"category": "tool_class", "class_name": "file", "level": "L2", "confidence": 0.99},
+            {"category": "tool_class", "class_name": "file", "level": "L2", "confidence": 0.99, "model": "native:tool_class_l2"},
             {"category": "tool_action", "class_name": "read", "level": "L2", "confidence": 0.99},
             {"category": "tool_tags", "class_name": "absent", "level": "L2", "confidence": 0.99},
             {"category": "tool_tags", "class_name": "absent", "level": "L2", "confidence": 0.99},
@@ -44,6 +56,7 @@ class PatronusWorkerMappingTests(unittest.TestCase):
             "source_sensitive", "source_untrusted", "sink_external",
         ])
         self.assertEqual(results[0]["className"], "safe")
+        self.assertEqual(results[1]["provenance"], "native:tool_class_l2")
 
     def test_payload_text_excludes_absolute_paths(self):
         text = module.payload_text({

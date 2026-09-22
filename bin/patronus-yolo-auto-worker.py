@@ -23,6 +23,7 @@ from typing import Any
 PROTOCOL_VERSION = 1
 MAX_FRAME_BYTES = 1024 * 1024
 PIPELINES = ("source_sensitive", "source_untrusted", "sink_external")
+MAX_PROVENANCE_LENGTH = 128
 CATEGORIES = ("injection", "tool_class", "tool_action", "tool_tags")
 NEUTRAL_CLASSES = {"safe", "benign"}
 
@@ -114,7 +115,12 @@ def _decision_status(result: dict[str, Any]) -> tuple[bool, bool]:
 def _provenance(result: dict[str, Any]) -> str | None:
     decision = result.get("decision") or {}
     provenance = decision.get("provenance") or {}
-    return provenance.get("model") or result.get("model")
+    candidate = provenance.get("model") or result.get("model")
+    if not isinstance(candidate, str) or len(candidate) > MAX_PROVENANCE_LENGTH:
+        return None
+    if any(ord(char) < 32 or ord(char) == 127 for char in candidate):
+        return None
+    return candidate
 
 
 def map_l1_result(result: dict[str, Any] | None) -> dict[str, Any]:
@@ -160,6 +166,9 @@ def map_l2_results(raw_results: list[dict[str, Any]]) -> list[dict[str, Any]]:
             if tag_index < len(PIPELINES):
                 item["pipeline"] = PIPELINES[tag_index]
             tag_index += 1
+        provenance = _provenance(result)
+        if provenance:
+            item["provenance"] = provenance
         mapped.append(item)
     return mapped
 

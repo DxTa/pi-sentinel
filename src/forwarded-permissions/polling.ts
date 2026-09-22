@@ -197,6 +197,7 @@ export async function waitForForwardedPermissionApproval(
 
   const requestPath = join(location.requestsDir, `${requestId}.json`);
   const responsePath = join(location.responsesDir, `${requestId}.json`);
+  const startedAt = Date.now();
 
   deps.writeReviewLog("forwarded_permission.request_created", {
     requestId,
@@ -205,6 +206,15 @@ export async function waitForForwardedPermissionApproval(
     targetSessionId,
     requestPath,
     responsePath,
+  });
+  deps.logger.writeDebugLog("forwarded_permission.requested", {
+    requestId,
+    requesterAgentName,
+    requesterSessionId: request.requesterSessionId,
+    targetSessionId,
+    toolName: request.toolName ?? null,
+    commandPresent: Boolean(request.command),
+    forcePromptInYolo: request.forcePromptInYolo === true,
   });
 
   try {
@@ -215,6 +225,11 @@ export async function waitForForwardedPermissionApproval(
       `Failed to write forwarded permission request '${requestPath}'`,
       error,
     );
+    deps.logger.writeDebugLog("forwarded_permission.failed", {
+      requestId,
+      reason: "request_write_failed",
+      latencyMs: Math.max(0, Date.now() - startedAt),
+    });
     return { approved: false, state: "denied" };
   }
 
@@ -233,6 +248,13 @@ export async function waitForForwardedPermissionApproval(
         responderSessionId: response?.responderSessionId ?? null,
         targetSessionId,
         responsePath,
+      });
+      deps.logger.writeDebugLog("forwarded_permission.resolved", {
+        requestId,
+        approved: response?.approved ?? null,
+        state: response?.state ?? null,
+        latencyMs: Math.max(0, Date.now() - startedAt),
+        responsePresent: response !== null,
       });
       safeDeleteFile(
         deps.logger,
@@ -256,6 +278,11 @@ export async function waitForForwardedPermissionApproval(
     requesterAgentName,
     targetSessionId,
     responsePath,
+  });
+  deps.logger.writeDebugLog("forwarded_permission.failed", {
+    requestId,
+    reason: "response_timeout",
+    latencyMs: Math.max(0, Date.now() - startedAt),
   });
   safeDeleteFile(deps.logger, requestPath, "forwarded permission request");
   cleanupPermissionForwardingLocationIfEmpty(deps.logger, location);
@@ -352,12 +379,14 @@ export async function processForwardedPermissionRequests(
         "forwarded_permission.auto_approved",
         forwardedPermissionLogDetails,
       );
+      deps.logger.writeDebugLog("forwarded_permission.auto_approved", forwardedPermissionLogDetails);
       decision = { approved: true, state: "approved" };
     } else {
       deps.writeReviewLog(
         "forwarded_permission.prompted",
         forwardedPermissionLogDetails,
       );
+      deps.logger.writeDebugLog("forwarded_permission.prompted", forwardedPermissionLogDetails);
       const promptToken = deps.promptWaitTracker?.begin(
         ctx,
         "Waiting for subagent permission approval",
@@ -394,6 +423,16 @@ export async function processForwardedPermissionRequests(
         responsePath,
         resolution: decision.state,
         denialReason: decision.denialReason ?? null,
+      },
+    );
+    deps.logger.writeDebugLog(
+      decision.approved
+        ? "forwarded_permission.approved"
+        : "forwarded_permission.denied",
+      {
+        ...forwardedPermissionLogDetails,
+        resolution: decision.state,
+        denialReasonPresent: Boolean(decision.denialReason),
       },
     );
     try {

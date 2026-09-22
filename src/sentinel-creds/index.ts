@@ -12,7 +12,7 @@
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { appendFileSync, lstatSync, mkdirSync, statSync } from "node:fs";
 import { homedir } from "node:os";
-import { dirname, join, resolve } from "node:path";
+import { basename, dirname, join, resolve } from "node:path";
 import { createHash } from "node:crypto";
 
 import type { PromptWaitTracker } from "../prompt-state";
@@ -141,6 +141,11 @@ function blockToolCall(
 }
 
 // ── File scanning ────────────────────────────────────────────────────────
+
+function isWorkspaceEnvRead(absolutePath: string, cwd: string | undefined): boolean {
+  return basename(absolutePath).startsWith(".env")
+    && isCanonicalWorkspaceRegularFile(absolutePath, cwd);
+}
 
 function isCanonicalWorkspaceRegularFile(absolutePath: string, cwd: string | undefined): boolean {
   if (!cwd) return false;
@@ -409,6 +414,22 @@ export function registerSentinelCreds(pi: ExtensionAPI, deps: SentinelCredsDeps)
       }
       yoloAutoSecretReadAttempted = evaluation.attempted;
       yoloAutoSecretReadReason = evaluation.reason;
+    }
+
+    if (
+      config.resultScanning
+      && event.toolName === "read"
+      && isWorkspaceEnvRead(absolutePath, ctx.cwd)
+    ) {
+      auditDecision(
+        config,
+        "outputScanner",
+        "read",
+        { toolName: "read", operation: "read", redactedSecrets: true },
+        "allow_workspace_env_redacted",
+        "Allowed canonical workspace .env* read; result scanning remains mandatory.",
+      );
+      return;
     }
 
     if (ctx.hasUI) {

@@ -23,6 +23,7 @@ export interface YoloAutoClassifierResult {
   accepted: boolean;
   complete: boolean;
   degraded: boolean;
+  provenance?: string;
 }
 
 export interface YoloAutoPolicyInput {

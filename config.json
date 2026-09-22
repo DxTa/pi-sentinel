@@ -28,8 +28,7 @@
     "path": {
       "*": "allow",
       "*.env": "deny",
-      "*.env.*": "deny",
-      "*.env.example": "allow"
+      "*.env.*": "deny"
     },
     "read": "allow",
     "write": "deny",

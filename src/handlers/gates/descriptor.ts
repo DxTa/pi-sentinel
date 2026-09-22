@@ -95,6 +95,7 @@ export interface GateRunnerDeps {
     pattern: string,
   ): void;
   writeReviewLog(event: string, details: Record<string, unknown>): void;
+  writeDebugLog?: (event: string, details: Record<string, unknown>) => void;
   emitDecision(event: PermissionDecisionEvent): void;
   canConfirm(details: Omit<PromptPermissionDetails, "requestId">): boolean;
   promptPermission(

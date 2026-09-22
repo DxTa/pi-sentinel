@@ -245,6 +245,65 @@ describe("sentinel-creds structured prompt integration", () => {
     ]);
   });
 
+  it.each([".env", ".env.local", ".env.example"])(
+    "auto-reads workspace %s files while masking detected credentials",
+    async (fileName) => {
+      const root = mkdtempSync(join(tmpdir(), "sentinel-env-read-"));
+      const secret = ["AKIA", "1234567890ABCDEF"].join("");
+      const secretPath = join(root, fileName);
+      writeFileSync(secretPath, `AWS_ACCESS_KEY_ID=${secret}\n`, "utf8");
+      const harness = createHarness({
+        envShield: false,
+        scanBashReads: false,
+        resultScanning: true,
+      });
+      const context = createContext(harness.selected, root);
+
+      const callResult = await runToolCall(
+        harness,
+        { toolCallId: `env-${fileName}`, toolName: "read", input: { path: secretPath } },
+        context,
+      );
+      const result = await runToolResult(
+        harness,
+        {
+          toolCallId: `env-${fileName}`,
+          toolName: "read",
+          input: { path: secretPath },
+          content: [{ type: "text", text: `AWS_ACCESS_KEY_ID=${secret}` }],
+          isError: false,
+        },
+        context,
+      );
+
+      expect(callResult).toBeUndefined();
+      expect(harness.selected).toEqual([]);
+      expect(result).toEqual({
+        content: [{ type: "text", text: "AWS_ACCESS_KEY_ID=[REDACTED: AWS Access Key]" }],
+      });
+    },
+  );
+
+  it("does not auto-read workspace env files when result scanning is disabled", async () => {
+    const root = mkdtempSync(join(tmpdir(), "sentinel-env-read-"));
+    const secretPath = join(root, ".env.local");
+    writeFileSync(secretPath, `AWS_ACCESS_KEY_ID=${["AKIA", "1234567890ABCDEF"].join("")}\n`, "utf8");
+    const harness = createHarness({
+      envShield: false,
+      scanBashReads: false,
+      resultScanning: false,
+    });
+
+    const result = await runToolCall(
+      harness,
+      { toolName: "read", input: { path: secretPath } },
+      createContext(harness.selected, root),
+    );
+
+    expect(result).toMatchObject({ block: true });
+    expect(harness.selected).toHaveLength(1);
+  });
+
   it("uses structured prompt metadata for environment exposure", async () => {
     const harness = createHarness({
       envShield: true,

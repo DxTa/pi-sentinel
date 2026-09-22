@@ -232,6 +232,26 @@ describe("YoloAutoClient", () => {
     });
   });
 
+  it("fails closed on oversized model provenance", async () => {
+    const transport: YoloAutoWorkerTransport = {
+      request: vi.fn(async (request) => response(request, {
+        l1: {
+          verdict: "safe",
+          accepted: true,
+          complete: true,
+          degraded: false,
+          provenance: "x".repeat(129),
+        },
+      })),
+    };
+    const client = new YoloAutoClient(transport);
+
+    await expect(client.evaluate(payload, "l1")).resolves.toMatchObject({
+      status: "unavailable",
+      reason: "protocol_mismatch",
+    });
+  });
+
   it("fails closed on malformed classifier results", async () => {
     const transport: YoloAutoWorkerTransport = {
       request: vi.fn(async (request) => response(request, {

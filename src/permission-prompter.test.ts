@@ -224,6 +224,51 @@ describe("PermissionPrompter", () => {
     ]);
   });
 
+  it("writes privacy-safe prompt debug records", async () => {
+    const debugLog: Array<{ event: string; details: Record<string, unknown> }> = [];
+    const prompter = new PermissionPrompter({
+      promptWaitTracker: new PromptWaitTracker({ emit() {} }),
+      getConfig: () => ({
+        debugLog: true,
+        permissionReviewLog: true,
+        mode: "manual",
+        yoloAutoMaxLevel: "l3",
+        yoloAskBashPatterns: [],
+      }),
+      writeReviewLog() {},
+      subagentSessionsDir: "/tmp/subagents",
+      forwardingDir: "/tmp/forwarding",
+      requestPermissionDecisionFromUi: vi.fn(async () => ({
+        approved: false,
+        state: "denied" as const,
+      })),
+      writeDebugLog(event, details) {
+        debugLog.push({ event, details });
+      },
+    } as never);
+
+    await prompter.prompt({ hasUI: true, ui: { setStatus() {} } } as never, {
+      requestId: "req-debug",
+      source: "tool_call",
+      agentName: null,
+      message: "Run command with secret-value",
+      toolCallId: "tool-debug",
+      toolName: "bash",
+      command: "printf secret-value",
+    });
+
+    expect(debugLog.map(({ event }) => event)).toEqual([
+      "permission_prompt.requested",
+      "permission_prompt.resolved",
+    ]);
+    expect(debugLog[0]?.details).toMatchObject({
+      requestId: "req-debug",
+      toolName: "bash",
+      messageLength: expect.any(Number),
+    });
+    expect(JSON.stringify(debugLog)).not.toContain("secret-value");
+  });
+
   it("auto-approves yolo requests when no bash exception matches", async () => {
     const requestPermissionDecisionFromUi = vi.fn(async () => ({
       approved: true,

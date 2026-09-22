@@ -32,3 +32,10 @@ Permission decisions, network domain gating, sandbox isolation, credential filte
 On macOS and Linux, SRT-wrapped commands can reach local Unix sockets by default. This can expose Docker, SSH agents, databases, and other local services. Docker access remains separately gated by normal command permission, but approving a command does not make local Unix services safe to expose.
 
 Supported security fixes are released from reviewed Git tags. Verify checksums or commit signatures when your deployment process supports them.
+## Workspace file approval and diagnostics
+
+Normal workspace-local `read`, `write`, `edit`, `grep`, `find`, and `ls` operations may be auto-approved in every permission mode only after canonical containment checks. Existing targets and canonical parents for new writes are checked; symlink targets that leave the session workspace and external paths do not qualify. Bash is not covered by this rule.
+
+Direct `.env*` reads may proceed without a second secret-approval prompt only when `sentinel-creds` result scanning is enabled. Returned content remains subject to masking and output withholding if scanning fails. `.env*` writes and edits remain on the protected path flow.
+
+The opt-in debug log records bounded permission, prompt, phase, latency, failure, decision, and model-provenance metadata. Prompt bodies, write content, raw model payloads, and secret values must not be added to debug records. Review and debug logs are sensitive local artifacts and require the same filesystem protection as other agent state.

@@ -1,4 +1,4 @@
-import { getPathBearingToolPath } from "#src/path-utils";
+import { getPathBearingToolPath, isWorkspaceLocalFileOperation } from "#src/path-utils";
 import type { Rule } from "#src/rule";
 import { deriveApprovalPattern } from "#src/session-rules";
 import type { PermissionCheckResult } from "#src/types";
@@ -25,6 +25,7 @@ export function describePathGate(
   tcc: ToolCallContext,
   checkPermission: CheckPermissionFn,
   getSessionRuleset: () => Rule[],
+  isWorkspaceEnvReadRedactionEnabled?: (cwd: string) => boolean,
 ): GateResult {
   const filePath = getPathBearingToolPath(tcc.toolName, tcc.input);
   if (!filePath) return null;
@@ -38,6 +39,18 @@ export function describePathGate(
   );
 
   if (check.state === "allow") return null;
+
+  // Workspace reads remain available to the result-redaction layer, including
+  // protected .env* reads; writes and edits still use the path gate.
+  if (
+    tcc.toolName === "read"
+    && tcc.cwd
+    && isWorkspaceLocalFileOperation(tcc.toolName, tcc.input, tcc.cwd, {
+      allowWorkspaceEnvRead: isWorkspaceEnvReadRedactionEnabled?.(tcc.cwd) === true,
+    })
+  ) {
+    return null;
+  }
 
   // No explicit path rule matched — only the universal default fired.
   // Skip the gate to preserve backward compatibility: configs without a
