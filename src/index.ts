@@ -79,7 +79,12 @@ import {
   isHostCapabilityBootstrapCommand,
   shouldBypassSandboxCommand,
 } from "./sandbox/bypass-command.js";
-import { createSrtBackend } from "./sandbox/backends/srt-backend.js";
+import {
+  createSrtBackend,
+  DEFAULT_SRT_HELPER_ENV,
+  DEFAULT_SRT_HELPER_INPUT_FILE_ENV,
+} from "./sandbox/backends/srt-backend.js";
+import { summarizeEnvironmentSizes } from "./sandbox/spawn-diagnostics.js";
 import { defaultSrtHelperPath, defaultSrtStatus } from "./sandbox/srt-status.js";
 import { SandboxPolicyManager, type Grant, type GrantDuration } from "./sandbox/policy-manager.js";
 import { createSandboxRuntimeLoader } from "./sandbox/runtime-lazy.js";
@@ -561,6 +566,11 @@ export default function piPermissionSystemExtension(pi: ExtensionAPI): void {
   );
   const promptWaitTracker = new PromptWaitTracker(pi.events);
   const clipboardTempCleanup = createPiClipboardTempCleanup();
+  const pendingSrtWraps = new Map<string, {
+    cleanup?: () => void;
+    helperPayloadBytes?: number;
+    rawCommandBytes?: number;
+  }>();
 
   refreshExtensionConfig(runtime);
   let yoloAutoWorker: YoloAutoWorkerHandle | undefined;
@@ -892,6 +902,7 @@ export default function piPermissionSystemExtension(pi: ExtensionAPI): void {
     sandboxRuntime.getRuntime().policyManager;
   const getSandboxBackend = (_cwd?: string) => createSrtBackend({
     helperPath: () => defaultSrtHelperPath(null),
+    onE2Big: (details) => runtime.writeDebugLog("spawn.e2big", details),
   });
 
   function getEffectiveSandboxConfig(cwd: string): SandboxConfig {
@@ -1270,7 +1281,7 @@ export default function piPermissionSystemExtension(pi: ExtensionAPI): void {
   // ── Augmented tool_call handler (upstream + our gates) ────────────────
   pi.on("tool_call", (event: unknown, ctx: ExtensionContext) => (async () => {
     activeWorkspaceCwd = ctx.cwd;
-    const e = event as { toolName?: string; input?: unknown };
+    const e = event as { toolCallId?: string; toolName?: string; input?: unknown };
     clipboardTempCleanup.trackValue(e.input);
     let sc: SandboxConfig;
     let policyManager: SandboxPolicyManager;
@@ -1578,6 +1589,13 @@ export default function piPermissionSystemExtension(pi: ExtensionAPI): void {
         }
         if (result && "command" in result) {
           (e.input as { command: string }).command = result.command;
+          if (e.toolCallId && (result.cleanup || result.helperPayloadBytes !== undefined || result.rawCommandBytes !== undefined)) {
+            pendingSrtWraps.set(e.toolCallId, {
+              cleanup: result.cleanup,
+              helperPayloadBytes: result.helperPayloadBytes,
+              rawCommandBytes: result.rawCommandBytes,
+            });
+          }
         }
       }
     }
@@ -1932,5 +1950,34 @@ export default function piPermissionSystemExtension(pi: ExtensionAPI): void {
   pi.on("user_bash", (event: { command: string; cwd: string }, ctx: ExtensionContext) => {
     clipboardTempCleanup.trackText(event.command);
     return handleUserBash(event, ctx).catch(() => blockedUserBash("Permission authorization failed; command blocked."));
+  });
+
+  pi.on("tool_result", (event) => {
+    const wrapped = pendingSrtWraps.get(event.toolCallId);
+    if (wrapped) {
+      pendingSrtWraps.delete(event.toolCallId);
+      wrapped.cleanup?.();
+    }
+
+    const text = event.content.length === 1 && event.content[0]?.type === "text"
+      ? event.content[0].text.trim()
+      : "";
+    const isPiSpawnE2Big = /^spawn(?:[ \t]+.+)?[ \t]+E2BIG$/.test(text);
+    const isHelperSpawnE2Big = /^sandbox-run error: spawn(?:[ \t]+.+)?[ \t]+E2BIG$/.test(text);
+    if (event.toolName !== "bash" || !event.isError || (!isPiSpawnE2Big && !isHelperSpawnE2Big)) return;
+
+    const command = event.input.command;
+    runtime.writeDebugLog("spawn.e2big", {
+      route: isHelperSpawnE2Big ? "srt-helper" : "pi-bash",
+      errorCode: "E2BIG",
+      commandBytes: typeof command === "string" ? Buffer.byteLength(command, "utf8") : null,
+      rawCommandBytes: wrapped?.rawCommandBytes ?? null,
+      helperPayloadBytes: wrapped?.helperPayloadBytes ?? null,
+      srtWrappedCommand: typeof command === "string" && (
+        command.includes(DEFAULT_SRT_HELPER_ENV + "=") ||
+        command.includes(DEFAULT_SRT_HELPER_INPUT_FILE_ENV + "=")
+      ),
+      processEnvironment: summarizeEnvironmentSizes(process.env),
+    });
   });
 }

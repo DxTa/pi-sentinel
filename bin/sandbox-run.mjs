@@ -1,13 +1,13 @@
 #!/usr/bin/env node
 import { execFileSync, spawn } from 'node:child_process'
-import { chmod, mkdtemp, realpath, rm, writeFile } from 'node:fs/promises'
+import { chmod, lstat, mkdtemp, readFile, realpath, rm, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
-import { basename, join } from 'node:path'
+import { basename, dirname, join, resolve } from 'node:path'
 
 const ENV_KEY = 'PI_SRT_HELPER_INPUT_B64'
+const INPUT_FILE_ENV = 'PI_SRT_HELPER_INPUT_FILE'
 const MASK_MAP_ENV = 'PI_SRT_MASK_MAP_B64'
 const INTERNAL_ENV_NAMES = new Set([
-  ENV_KEY,
   MASK_MAP_ENV,
   'PI_SRT_OPERATION_PAYLOAD_B64',
 ])
@@ -47,7 +47,48 @@ const REAL_COMMANDS = {
   rg: '/usr/bin/grep',
 }
 
-function decodeHelperInput() {
+async function readHelperInputFile(inputFile) {
+  const file = resolve(inputFile)
+  const directory = dirname(file)
+  const tempDirectory = resolve(tmpdir())
+  if (
+    dirname(directory) !== tempDirectory ||
+    !basename(directory).startsWith('pi-srt-helper-') ||
+    basename(file) !== 'input.json'
+  ) {
+    throw new Error(`${INPUT_FILE_ENV} must name a private helper input file`)
+  }
+
+  let directoryInfo
+  let fileInfo
+  try {
+    ;[directoryInfo, fileInfo] = await Promise.all([lstat(directory), lstat(file)])
+  } catch {
+    throw new Error(`${INPUT_FILE_ENV} must name a private helper input file`)
+  }
+  const uid = process.getuid?.()
+  if (
+    !directoryInfo.isDirectory() ||
+    directoryInfo.isSymbolicLink() ||
+    !fileInfo.isFile() ||
+    fileInfo.isSymbolicLink() ||
+    (directoryInfo.mode & 0o077) !== 0 ||
+    (fileInfo.mode & 0o077) !== 0 ||
+    (uid !== undefined && (directoryInfo.uid !== uid || fileInfo.uid !== uid))
+  ) {
+    throw new Error(`${INPUT_FILE_ENV} must name a private helper input file`)
+  }
+
+  try {
+    return JSON.parse(await readFile(file, 'utf8'))
+  } finally {
+    await rm(directory, { recursive: true, force: true })
+  }
+}
+
+async function decodeHelperInput() {
+  const inputFile = process.env[INPUT_FILE_ENV]
+  if (inputFile) return readHelperInputFile(inputFile)
   const encoded = process.env[ENV_KEY]
   if (!encoded) {
     throw new Error(`${ENV_KEY} is not set`)
@@ -69,6 +110,13 @@ function matchesEnvPattern(name, pattern) {
 
 function isProtectedEnvironmentName(name) {
   return /(?:TOKEN|SECRET|PASSWORD|PASSWD|API[_-]?KEY|PRIVATE[_-]?KEY|CREDENTIAL|AUTH)/i.test(name)
+}
+
+function stripHelperInputEnvironment(env) {
+  const childEnv = { ...env }
+  delete childEnv[ENV_KEY]
+  delete childEnv[INPUT_FILE_ENV]
+  return childEnv
 }
 
 function filterChildEnvironment(helperInput, env, generatedRuntimeEnvNames = new Set()) {
@@ -292,7 +340,7 @@ async function runChild(argv, cwd, env) {
 }
 
 async function main() {
-  const helperInput = decodeHelperInput()
+  const helperInput = await decodeHelperInput()
   let mod
   try {
     mod = await import('@anthropic-ai/sandbox-runtime')
@@ -315,7 +363,7 @@ async function main() {
     const wrappedEnv = wrapped.env ?? {}
     const env = filterChildEnvironment(
       helperInput,
-      { ...process.env, ...wrappedEnv, ...shim.env },
+      stripHelperInputEnvironment({ ...process.env, ...wrappedEnv, ...shim.env }),
       new Set(Object.keys(wrappedEnv)),
     )
     if (dockerHost) env.DOCKER_HOST = dockerHost

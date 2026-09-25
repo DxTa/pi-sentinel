@@ -19,7 +19,9 @@
     "README.md",
     "CHANGELOG.md",
     "LICENSE",
-    "SECURITY.md"
+    "SECURITY.md",
+    "bin/patch-sandbox-runtime.mjs",
+    "patches"
   ],
   "keywords": [
     "pi-package",
@@ -69,13 +71,14 @@
     "vitest": "3.2.7"
   },
   "dependencies": {
-    "@anthropic-ai/sandbox-runtime": "0.0.59",
+    "@anthropic-ai/sandbox-runtime": "0.0.75",
     "tree-sitter-bash": "0.25.1",
     "web-tree-sitter": "0.26.9"
   },
   "scripts": {
     "check": "tsc --noEmit",
     "test": "vitest run",
-    "test:watch": "vitest"
+    "test:watch": "vitest",
+    "postinstall": "node bin/patch-sandbox-runtime.mjs"
   }
 }

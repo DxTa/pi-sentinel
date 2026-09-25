@@ -144,7 +144,7 @@ Call `getPermissionsService()` per use so `/reload` and extension load order do 
 
 ## Security release gate
 
-This repository carries a historical hardening patch for `@anthropic-ai/sandbox-runtime@0.0.59` under [`patches/`](patches/). Git installs use npm and do not apply pnpm patches automatically. Do not publish or tag a security release until an upstream fixed release replaces the patched dependency or the install process applies the hardening explicitly.
+This repository carries a historical hardening patch for `@anthropic-ai/sandbox-runtime@0.0.59` under [`patches/`](patches/). The current 0.0.75 dependency is pinned for macOS profile compaction; macOS npm installs with lifecycle scripts enabled run `bin/patch-sandbox-runtime.mjs` to split oversized SBPL filter sets into bounded rules and spill oversized profile text to private files while retaining every filter. This does not establish equivalence with the historical hardening patch. Do not publish or tag a security release until that equivalence is verified or the install process applies the historical hardening explicitly.
 
 ## License
 

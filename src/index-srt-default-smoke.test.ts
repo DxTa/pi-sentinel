@@ -1,5 +1,5 @@
 import { execFileSync } from "node:child_process";
-import { existsSync } from "node:fs";
+import { existsSync, readFileSync, rmSync, statSync } from "node:fs";
 import { chmod, mkdir, mkdtemp, realpath, readFile, rename, rm, symlink, writeFile } from "node:fs/promises";
 import { homedir, tmpdir } from "node:os";
 import path from "node:path";
@@ -112,12 +112,119 @@ async function writeExtensionConfig(agentDir: string, overrides: Record<string, 
 }
 
 function extractHelperInput(command: string) {
+  const fileMatch = command.match(/PI_SRT_HELPER_INPUT_FILE=(?:'([^']*)'|([^\s]+))/);
+  const file = fileMatch?.[1] || fileMatch?.[2];
+  if (file) {
+    const input = JSON.parse(readFileSync(file, "utf8"));
+    rmSync(path.dirname(file), { recursive: true, force: true });
+    return input;
+  }
   const match = command.match(/PI_SRT_HELPER_INPUT_B64=([^\s]+)\s/);
   if (!match) throw new Error(`Missing helper input in command: ${command}`);
   return JSON.parse(Buffer.from(match[1]!, "base64").toString("utf8"));
 }
 
 describe("piPermissionSystemExtension SRT default smoke", () => {
+  it("captures E2BIG result metadata from final wrapped Bash input", async () => {
+    const agentDir = await makeTempDir("pi-permission-agent-");
+    const projectDir = await makeTempDir("pi-permission-project-");
+    process.env.PI_CODING_AGENT_DIR = agentDir;
+    await writeExtensionConfig(agentDir, { debugLog: true });
+
+    const pi = createFakePi();
+    piPermissionSystemExtension(pi as never);
+    const context = createContext(projectDir);
+    const toolCallEvent = { toolName: "bash", input: { command: "echo ok" } };
+    await pi.handlers.get("tool_call")?.(toolCallEvent, context as never);
+    expect(toolCallEvent.input.command).toContain("PI_SRT_HELPER_INPUT_B64=");
+
+    const toolResult = pi.handlers.get("tool_result");
+    expect(toolResult).toBeDefined();
+    const logPath = path.join(agentDir, "extensions", "pi-sentinel", "logs", "pi-sentinel-debug.jsonl");
+    const readDiagnostics = async () => (await readFile(logPath, "utf8"))
+      .trim()
+      .split("\n")
+      .map((line) => JSON.parse(line))
+      .filter((record) => record.event === "spawn.e2big");
+
+    await toolResult?.({
+      toolName: "bash",
+      input: toolCallEvent.input,
+      content: [{ type: "text", text: "spawn E2BIG" }],
+      isError: true,
+    }, context);
+
+    const diagnostics = await readDiagnostics();
+    expect(diagnostics).toHaveLength(1);
+    const [diagnostic] = diagnostics;
+    expect(diagnostic).toMatchObject({
+      event: "spawn.e2big",
+      route: "pi-bash",
+      processEnvironment: {
+        totalBytes: expect.any(Number),
+        largestVariables: expect.any(Array),
+      },
+    });
+    expect(diagnostic.commandBytes).toBe(Buffer.byteLength(toolCallEvent.input.command));
+    expect(diagnostic.srtWrappedCommand).toBe(true);
+    expect(JSON.stringify(diagnostic)).not.toContain(toolCallEvent.input.command);
+
+    await toolResult?.({
+      toolName: "bash",
+      input: toolCallEvent.input,
+      content: [{ type: "text", text: "spawn E2BIG\n\nCommand exited with code 1" }],
+      isError: true,
+    }, context);
+    expect(await readDiagnostics()).toHaveLength(1);
+  });
+
+  it("cleans spilled helper input after Bash result and logs size-only diagnostics", async () => {
+    const agentDir = await makeTempDir("pi-permission-agent-");
+    const projectDir = await makeTempDir("pi-permission-project-");
+    process.env.PI_CODING_AGENT_DIR = agentDir;
+    await writeExtensionConfig(agentDir, {
+      debugLog: true,
+      permission: { "*": "allow", bash: { "*": "allow" } },
+    });
+
+    const pi = createFakePi();
+    piPermissionSystemExtension(pi as never);
+    const context = createContext(projectDir);
+    const command = `echo ${"x".repeat(100_000)}`;
+    const toolCallId = "large-helper-payload";
+    const toolCallEvent = { toolCallId, toolName: "bash", input: { command } };
+    await pi.handlers.get("tool_call")?.(toolCallEvent, context as never);
+
+    expect(toolCallEvent.input.command.length).toBeLessThan(2_000);
+    const payloadFile = toolCallEvent.input.command.match(/PI_SRT_HELPER_INPUT_FILE=(?:'([^']+)'|([^\s]+))/);
+    const file = payloadFile?.[1] ?? payloadFile?.[2];
+    expect(file).toBeDefined();
+    expect(existsSync(file!)).toBe(true);
+    expect(JSON.parse(await readFile(file!, "utf8")).command).toBe(command);
+
+    await pi.handlers.get("tool_result")?.({
+      toolCallId,
+      toolName: "bash",
+      input: toolCallEvent.input,
+      content: [{ type: "text", text: "spawn E2BIG" }],
+      isError: true,
+    }, context as never);
+
+    expect(existsSync(file!)).toBe(false);
+    const logPath = path.join(agentDir, "extensions", "pi-sentinel", "logs", "pi-sentinel-debug.jsonl");
+    const diagnostics = (await readFile(logPath, "utf8"))
+      .trim()
+      .split("\n")
+      .map((line) => JSON.parse(line))
+      .filter((record) => record.event === "spawn.e2big");
+    expect(diagnostics).toHaveLength(1);
+    expect(diagnostics[0]).toMatchObject({
+      rawCommandBytes: Buffer.byteLength(command),
+      helperPayloadBytes: expect.any(Number),
+    });
+    expect(JSON.stringify(diagnostics)).not.toContain(command);
+  });
+
   it("returns upstream permission blocks instead of continuing", async () => {
     const agentDir = await makeTempDir("pi-permission-agent-");
     const projectDir = await makeTempDir("pi-permission-project-");

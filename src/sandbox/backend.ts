@@ -28,7 +28,12 @@ export interface SandboxOperationsInput {
 }
 
 export type SandboxWrapResult =
-  | { command: string }
+  | {
+      command: string;
+      cleanup?: () => void;
+      helperPayloadBytes?: number;
+      rawCommandBytes?: number;
+    }
   | { block: true; reason: string }
   | undefined;
 
