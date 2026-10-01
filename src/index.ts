@@ -8,13 +8,17 @@
  * - Unified config with permission, network, and sandbox sections
  */
 
+import { scoreWithHistory } from "./yolo-auto-scorer";
+import { NEIGHBOUR_WINDOW_MS, summarizeNeighbours } from "./yolo-auto-neighbours";
+import { openDecisionStore, type DecisionStore } from "./yolo-auto-decision-store";
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
-import { spawn, type ChildProcess } from "node:child_process";
+import type { ChildProcess } from "node:child_process";
 
 // ── Extension imports ────────────────────────────────────────────────────
 import { registerPermissionSystemCommand } from "./config-modal";
 import {
   getBundledConfigPath,
+  getGlobalConfigDir,
   getGlobalConfigPath,
   getLegacyGlobalPolicyPath,
   getLegacyProjectConfigPath,
@@ -36,15 +40,20 @@ import { registerPermissionRpcHandlers } from "./permission-event-rpc";
 import { emitReadyEvent } from "./permission-events";
 import { PermissionPrompter } from "./permission-prompter";
 import { YoloAutoEvaluator } from "./yolo-auto-evaluator";
+import { writeYoloAutoCalibrationRecord } from "./yolo-auto-calibration";
 import {
   createUnixSocketWorkerTransport,
+  YoloAutoBuildMismatchError,
   YoloAutoClient,
 } from "./yolo-auto-client";
-import { isUnixSocketActive } from "./yolo-auto-startup";
+import { isUnixSocketActive, spawnDetachedYoloAutoWorker, waitForWorkerStartup } from "./yolo-auto-startup";
+import { YOLO_AUTO_BUILD_ID } from "./yolo-auto-build";
 import { PromptWaitTracker } from "./prompt-state";
 import { getHardBlockedBashMutationPaths } from "./handlers/gates/bash-external-directory.js";
 import { extractExternalPathsFromBashCommand } from "./handlers/gates/bash-path-extractor.js";
+import { isPathWithinDirectory } from "./path-utils";
 import { PermissionSession } from "./permission-session";
+import { matchTrustedPiRequest } from "./handlers/gates/trusted-pi-dirs";
 import {
   createExtensionRuntime,
   logResolvedConfigPaths,
@@ -54,6 +63,7 @@ import {
   resetExtensionConfig,
   resolveInteractiveSessionFallback,
   saveExtensionConfig,
+  saveSandboxEnabled,
 } from "./runtime";
 import type { PermissionsService } from "./service";
 import {
@@ -64,7 +74,7 @@ import { createSessionLogger } from "./session-logger";
 import { isSubagentExecutionContext } from "./subagent-context";
 import {
   canResolveAskPermissionRequest,
-  shouldAutoApprovePermissionState,
+  shouldAutoApproveForwardedPermissionRequest,
 } from "./yolo-mode";
 
 // ── Our modules ──────────────────────────────────────────────────────────
@@ -96,7 +106,12 @@ import {
   formatMaskedAccessSuggestion,
   isPathMasked,
 } from "./sandbox/masked-file-gate.js";
-import { detectExternalPaths, formatExternalPathPrompt, resolveRepoRoot } from "./sandbox/external-path-gate.js";
+import {
+  detectExternalPaths,
+  detectExternalWritePaths,
+  formatExternalPathPrompt,
+  resolveRepoRoot,
+} from "./sandbox/external-path-gate.js";
 import {
   getScopedConfigPath,
   loadMergedScopedConfig,
@@ -138,7 +153,7 @@ function getExtensionDir(): string {
 
 interface YoloAutoWorkerHandle {
   process?: ChildProcess;
-  ready: Promise<void>;
+  startupSignal: Promise<void>;
 }
 
 async function startYoloAutoWorker(
@@ -148,46 +163,34 @@ async function startYoloAutoWorker(
 ): Promise<YoloAutoWorkerHandle> {
   if (await isUnixSocketActive(socketPath)) {
     writeDebugLog("yolo_auto.worker_reused", { reason: "active_socket" });
-    return { ready: Promise.resolve() };
+    return { startupSignal: Promise.resolve() };
   }
-  const workerPath = join(EXTENSION_ROOT, "bin", "patronus-yolo-auto-worker.py");
-  const modelDir = process.env.PI_SENTINEL_PATRONUS_MODEL_DIR
-    || join(agentDir, "runtime", "pi-sentinel", "patronus", "models");
-  const child = spawn(
-    process.env.PI_SENTINEL_PYTHON || "python3",
-    [workerPath, "--socket", socketPath, "--model-dir", modelDir],
-    {
-      cwd: agentDir,
-      env: {
-        ...process.env,
-        PI_SENTINEL_PATRONUS_MODEL_DIR: modelDir,
-        PI_SENTINEL_PATRONUS_DOWNLOAD_FILES: process.env.PI_SENTINEL_PATRONUS_DOWNLOAD_FILES || "1",
-      },
-      stdio: ["ignore", "ignore", "pipe"],
-    },
-  );
-  const ready = new Promise<void>((resolve) => {
-    const timer = setTimeout(resolve, 120_000);
-    timer.unref();
-    child.once("error", () => {
-      clearTimeout(timer);
+  const workerPath = join(EXTENSION_ROOT, "src", "yolo-auto-worker-main.ts");
+  const modelDir = process.env.PI_SENTINEL_YOLO_AUTO_MODEL_DIR
+    || join(agentDir, "runtime", "pi-sentinel", "yolo-auto", "models");
+  const args = [
+    "--experimental-strip-types",
+    workerPath,
+    "--socket",
+    socketPath,
+    "--model-dir",
+    modelDir,
+  ];
+  try {
+    const worker = await spawnDetachedYoloAutoWorker(agentDir, process.execPath, args);
+    const startupSignal = worker.startupSignal.catch((error: unknown) => {
       writeDebugLog("yolo_auto.worker_unavailable", { reason: "spawn_error" });
-      resolve();
+      throw error;
     });
-    child.once("exit", () => {
-      clearTimeout(timer);
-      writeDebugLog("yolo_auto.worker_unavailable", { reason: "process_exit" });
-      resolve();
-    });
-    child.stderr?.setEncoding("utf8");
-    child.stderr?.on("data", (chunk: string) => {
-      if (chunk.includes("Patronus worker ready")) {
-        clearTimeout(timer);
-        resolve();
-      }
-    });
-  });
-  return { process: child, ready };
+    void startupSignal.catch(() => undefined);
+    return { process: worker.process, startupSignal };
+  } catch (error) {
+    writeDebugLog("yolo_auto.worker_unavailable", { reason: "spawn_error" });
+    const startupSignal = Promise.reject(error);
+    void startupSignal.catch(() => undefined);
+    return { startupSignal };
+  }
+
 }
 
 interface UnifiedConfig {
@@ -563,6 +566,7 @@ export default function piPermissionSystemExtension(pi: ExtensionAPI): void {
     || join(runtime.agentDir, "runtime", "pi-sentinel", "yolo-auto.sock");
   const yoloAutoClient = new YoloAutoClient(
     createUnixSocketWorkerTransport(yoloAutoSocketPath),
+    { expectedBuildId: YOLO_AUTO_BUILD_ID },
   );
   const promptWaitTracker = new PromptWaitTracker(pi.events);
   const clipboardTempCleanup = createPiClipboardTempCleanup();
@@ -588,12 +592,13 @@ export default function piPermissionSystemExtension(pi: ExtensionAPI): void {
       if (child?.exitCode !== null) yoloAutoWorker = undefined;
       return;
     }
-    child.once("exit", () => {
+    const clearWorker = (): void => {
       if (yoloAutoWorker?.process === child) yoloAutoWorker = undefined;
-    });
+    };
+    child.once("error", clearWorker);
+    child.once("exit", clearWorker);
   };
-  const ensureYoloAutoWorkerReady = async (): Promise<void> => {
-    if (runtime.config.mode !== "yolo-auto") return;
+  const startOrAdoptYoloAutoWorker = async (): Promise<void> => {
     if (!yoloAutoWorkerStart && !yoloAutoWorker) {
       yoloAutoWorkerStart = startYoloAutoWorker(
         yoloAutoSocketPath,
@@ -609,7 +614,45 @@ export default function piPermissionSystemExtension(pi: ExtensionAPI): void {
         if (yoloAutoWorkerStart === starting) yoloAutoWorkerStart = undefined;
       }
     }
-    await yoloAutoWorker?.ready;
+    await yoloAutoWorker?.startupSignal;
+  };
+  let yoloAutoReadiness: Promise<void> | undefined;
+  const ensureYoloAutoWorkerReady = async (): Promise<void> => {
+    if (runtime.config.mode !== "yolo-auto") return;
+    if (yoloAutoReadiness) return yoloAutoReadiness;
+
+    const readiness = (async () => {
+      await startOrAdoptYoloAutoWorker();
+      try {
+        await waitForWorkerStartup(
+          () => yoloAutoClient.waitUntilReady(),
+          async () => {
+            yoloAutoWorker = undefined;
+            yoloAutoWorkerStart = undefined;
+            await startOrAdoptYoloAutoWorker();
+          },
+        );
+      } catch (error) {
+        runtime.writeDebugLog("yolo_auto.worker_unavailable", {
+          reason: error instanceof YoloAutoBuildMismatchError ? "build_mismatch" : "handshake_failed",
+        });
+        throw error;
+      }
+    })();
+    yoloAutoReadiness = readiness;
+    try {
+      await readiness;
+    } finally {
+      if (yoloAutoReadiness === readiness) yoloAutoReadiness = undefined;
+    }
+  };
+
+  let decisionStore: DecisionStore | undefined;
+  const getDecisionStore = (): DecisionStore => {
+    decisionStore ??= openDecisionStore(
+      join(getGlobalConfigDir(runtime.agentDir), "decision-store", "decisions.db"),
+    );
+    return decisionStore;
   };
 
   const yoloAutoEvaluator = new YoloAutoEvaluator({
@@ -617,10 +660,31 @@ export default function piPermissionSystemExtension(pi: ExtensionAPI): void {
     waitForStartup: ensureYoloAutoWorkerReady,
     writeReviewLog: runtime.writeReviewLog.bind(runtime),
     writeDebugLog: runtime.writeDebugLog.bind(runtime),
+    writeCalibrationLog: (record) => writeYoloAutoCalibrationRecord(runtime.agentDir, record),
+    recordEvaluation: (row) => getDecisionStore().recordEvaluation(row),
+    summarizeNeighbours: (query) => summarizeNeighbours(
+      getDecisionStore().listLabelled(query.toolName, query.operation, query.now - NEIGHBOUR_WINDOW_MS),
+      query,
+    ),
+    scoreRequest: (query) => scoreWithHistory(
+      getDecisionStore()
+        .listLabelled(query.toolName, query.operation, query.now - NEIGHBOUR_WINDOW_MS)
+        .filter((row) => row.scope === query.scope)
+        .map((row) => ({ features: row.features, label: row.humanAction === "deny" ? 0 : 1 })),
+      query.features,
+    ),
   });
 
   const prompter = new PermissionPrompter({
     promptWaitTracker,
+    recordHumanDecision: (evaluationId, action, ts) => {
+      getDecisionStore().recordHumanDecision(evaluationId, action, ts);
+    },
+    recordHostBashDecision: (scope, patternKey, action, ts) => {
+      getDecisionStore().recordHostBashDecision(scope, patternKey, action, ts);
+    },
+    getHostBashDecisionCounts: (scope, patternKey, since) =>
+      getDecisionStore().getHostBashDecisionCounts(scope, patternKey, since),
     getConfig: () => runtime.config,
     writeReviewLog: runtime.writeReviewLog.bind(runtime),
     writeDebugLog: runtime.writeDebugLog.bind(runtime),
@@ -645,7 +709,7 @@ export default function piPermissionSystemExtension(pi: ExtensionAPI): void {
     writeReviewLog: runtime.writeReviewLog.bind(runtime),
     requestPermissionDecisionFromUi,
     shouldAutoApprove: (request) =>
-      shouldAutoApprovePermissionState("ask", runtime.config, {
+      shouldAutoApproveForwardedPermissionRequest(runtime.config, {
         toolName: request.toolName,
         command: request.command,
         forcePromptInYolo: request.forcePromptInYolo,
@@ -702,6 +766,12 @@ export default function piPermissionSystemExtension(pi: ExtensionAPI): void {
       runtime.permissionManager.getComposedConfigRules(
         runtime.lastKnownActiveAgentName ?? undefined,
       ),
+    getSandboxEnabled: () => normalizeSandboxConfig(loadConfig().sandbox).enabled,
+    setSandboxEnabled: (enabled, ctx) => {
+      if (!saveSandboxEnabled(runtime, enabled, ctx)) return;
+      sandboxRuntime.reloadConfig();
+      ctx.ui.notify(`Bash sandbox ${enabled ? "on" : "off"} (global).`, "info");
+    },
     getYoloAutoStatus: () => {
       const status = yoloAutoClient.getStatus();
       return status.state === "fallback"
@@ -861,7 +931,6 @@ export default function piPermissionSystemExtension(pi: ExtensionAPI): void {
     lifecycle.handleResourcesDiscover(event),
   );
   pi.on("session_shutdown", () => {
-    if (yoloAutoWorker?.process && !yoloAutoWorker.process.killed) yoloAutoWorker.process.kill("SIGTERM");
     yoloAutoClient.close();
     clipboardTempCleanup.cleanup();
     promptWaitTracker.clear(runtime.runtimeContext ?? undefined);
@@ -904,6 +973,12 @@ export default function piPermissionSystemExtension(pi: ExtensionAPI): void {
     helperPath: () => defaultSrtHelperPath(null),
     onE2Big: (details) => runtime.writeDebugLog("spawn.e2big", details),
   });
+
+  /** Configured bypass patterns, plus trusted Pi agent scripts which always run on the host. */
+  function bypassesSandbox(command: string, cwd: string): boolean {
+    return shouldBypassSandboxCommand(command, getSandboxConfig(cwd).bypassCommands ?? [])
+      || matchTrustedPiRequest("bash", { command }, cwd, session.getTrustedPiDirs())?.kind === "script";
+  }
 
   function getEffectiveSandboxConfig(cwd: string): SandboxConfig {
     const config = getSandboxConfig(cwd);
@@ -1319,8 +1394,13 @@ export default function piPermissionSystemExtension(pi: ExtensionAPI): void {
 
     let bashPermissionAlreadyChecked = false;
     if (e.toolName === "bash") {
+      const command = (e.input as { command?: unknown })?.command;
+      const sandboxedForYoloAuto = typeof command === "string"
+        && sc.enabled
+        && sc.backend === "srt"
+        && !bypassesSandbox(command, ctx.cwd);
       try {
-        const upstreamResult = await gates.handleToolCall(event, ctx);
+        const upstreamResult = await gates.handleToolCall(event, ctx, sandboxedForYoloAuto);
         if (upstreamResult.block) return upstreamResult;
       } catch {
         return { block: true, reason: "Permission authorization failed; command blocked." };
@@ -1331,7 +1411,7 @@ export default function piPermissionSystemExtension(pi: ExtensionAPI): void {
     // 2. Sandbox wrapping with dynamic grants (mutates event.input.command)
     if (e.toolName === "bash" && sc.enabled) {
       const command = (e.input as { command?: unknown })?.command;
-      if (typeof command === "string" && !shouldBypassSandboxCommand(command, sc.bypassCommands ?? [])) {
+      if (typeof command === "string" && !bypassesSandbox(command, ctx.cwd)) {
         let effectiveConfig = getEffectiveSandboxConfig(ctx.cwd);
         policyManager.updateConfig(effectiveConfig);
         let resolved = policyManager.resolveProfile(command, ctx.cwd, resolveRepoRoot(ctx.cwd));
@@ -1475,6 +1555,7 @@ export default function piPermissionSystemExtension(pi: ExtensionAPI): void {
         if (sc.enabled) {
           const activeProfile = resolved.profile;
           let externalPaths: ReturnType<typeof detectExternalPaths>;
+          let externalWritePaths: Awaited<ReturnType<typeof detectExternalWritePaths>>;
           try {
             externalPaths = detectExternalPaths(
               command,
@@ -1484,22 +1565,39 @@ export default function piPermissionSystemExtension(pi: ExtensionAPI): void {
               undefined,
               unmaskedPaths.map((entry) => entry.path),
             );
+            externalWritePaths = await detectExternalWritePaths(
+              command, ctx.cwd, activeProfile, effectiveConfig,
+            );
           } catch (error) {
             const detail = error instanceof Error && error.message
               ? error.message
               : "invalid external path";
             return { block: true, reason: `Sandbox: ${detail}; command blocked.` };
           }
-          const notYetGranted = externalPaths.filter(
-            (ep) => !activeGrantPaths.has(ep.path)
-          );
-          if (notYetGranted.length > 0) {
+          const approvalGroups = [
+            {
+              mode: "ro" as const,
+              paths: externalPaths.filter(
+                (entry) =>
+                  !externalWritePaths.some(
+                    (write) =>
+                      entry.path === write.path ||
+                      (write.isDirectory && isPathWithinDirectory(entry.path, write.path)),
+                  ) && !activeGrantPaths.has(entry.path),
+              ),
+            },
+            { mode: "rw" as const, paths: externalWritePaths },
+          ];
+          let promptedForExternalPaths = false;
+          for (const { mode, paths } of approvalGroups) {
+            if (paths.length === 0) continue;
+            promptedForExternalPaths = true;
             const extPromptResult = await promptSandboxGrant(ctx, {
               change: {
                 type: "path",
-                mode: "ro",
-                values: notYetGranted.map((p) => p.path),
-                description: formatExternalPathPrompt(notYetGranted, command),
+                mode,
+                values: paths.map((entry) => entry.path),
+                description: formatExternalPathPrompt(paths, command, mode),
               },
               command,
               promptWaitTracker,
@@ -1508,51 +1606,52 @@ export default function piPermissionSystemExtension(pi: ExtensionAPI): void {
             if (extPromptResult.action === "deny") {
               return {
                 block: true,
-                reason: `Sandbox: external paths not granted: ${notYetGranted.map((p) => p.displayPath).join(", ")}`,
+                reason:
+                  "Sandbox: external paths not granted: "
+                  + paths.map((entry) => entry.displayPath).join(", "),
               };
             }
 
             if (extPromptResult.duration === "once") {
-              for (const { path } of notYetGranted) {
-                invocationPathGrants.push({ path, mode: "ro" });
+              for (const { path } of paths) {
+                invocationPathGrants.push({ path, mode });
                 activeGrantPaths.add(path);
               }
-            } else {
-              const grants: Grant[] = [];
-              let snapshots: ConfigSnapshot[] = [];
-              try {
-                const scope = extPromptResult.scope ?? "global";
-                for (const p of notYetGranted) {
-                  const configPath = extPromptResult.duration === "always"
-                    ? getSafeScopedConfigPath(scope, ctx.cwd)
-                    : undefined;
-                  if (configPath && snapshots.length === 0) snapshots = snapshotConfigs([configPath]);
-                  if (extPromptResult.duration === "always") {
-                    persistScopedSandboxPathGrant(scope, ctx.cwd, p.path, "ro");
-                  }
-                  const grant = policyManager.grantPath(p.path, "ro", {
-                    duration: extPromptResult.duration,
-                    projectRoot: resolveRepoRoot(ctx.cwd),
-                  });
-                  grants.push(grant);
-                  activeGrantPaths.add(p.path);
-                  if (configPath) rememberPersistentGrant(grant, { kind: "path", configPath, value: p.path, scope });
-                }
-
-                if (extPromptResult.duration === "always") {
-                  effectiveConfig = getEffectiveSandboxConfig(ctx.cwd);
-                  policyManager.updateConfig(effectiveConfig);
-                }
-              } catch {
-                rollbackSandboxChanges(policyManager, grants, snapshots, extPromptResult.scope === "workspace" ? ctx.cwd : undefined);
-                return {
-                  block: true,
-                  reason: "Sandbox: failed to persist external path approval; command blocked.",
-                };
-              }
+              continue;
             }
 
+            const grants: Grant[] = [];
+            let snapshots: ConfigSnapshot[] = [];
+            try {
+              const scope = extPromptResult.scope ?? "global";
+              for (const entry of paths) {
+                const configPath = extPromptResult.duration === "always"
+                  ? getSafeScopedConfigPath(scope, ctx.cwd)
+                  : undefined;
+                if (configPath && snapshots.length === 0) snapshots = snapshotConfigs([configPath]);
+                if (extPromptResult.duration === "always") {
+                  persistScopedSandboxPathGrant(scope, ctx.cwd, entry.path, mode);
+                }
+                const grant = policyManager.grantPath(entry.path, mode, {
+                  duration: extPromptResult.duration,
+                  projectRoot: resolveRepoRoot(ctx.cwd),
+                });
+                grants.push(grant);
+                activeGrantPaths.add(entry.path);
+                if (configPath) rememberPersistentGrant(grant, { kind: "path", configPath, value: entry.path, scope });
+              }
 
+              if (extPromptResult.duration === "always") {
+                effectiveConfig = getEffectiveSandboxConfig(ctx.cwd);
+                policyManager.updateConfig(effectiveConfig);
+              }
+            } catch {
+              rollbackSandboxChanges(policyManager, grants, snapshots, extPromptResult.scope === "workspace" ? ctx.cwd : undefined);
+              return { block: true, reason: "Sandbox: failed to persist external path approval; command blocked." };
+            }
+          }
+
+          if (promptedForExternalPaths) {
             resolved = policyManager.resolveProfile(
               command,
               ctx.cwd,
@@ -1843,16 +1942,41 @@ export default function piPermissionSystemExtension(pi: ExtensionAPI): void {
         undefined,
         unmaskedPaths.map((entry) => entry.path),
       );
-      const notYetGranted = externalPaths.filter(
-        (ep) => !activeGrantPaths.has(ep.path)
-      );
-      if (notYetGranted.length > 0) {
+      let externalWritePaths: Awaited<ReturnType<typeof detectExternalWritePaths>>;
+      try {
+        externalWritePaths = await detectExternalWritePaths(
+          event.command, event.cwd, activeProfile, effectiveConfig,
+        );
+      } catch (error) {
+        const detail = error instanceof Error && error.message
+          ? error.message
+          : "invalid external write target";
+        return blockedUserBash("Sandbox: " + detail + "; command blocked.");
+      }
+      const approvalGroups = [
+        {
+          mode: "ro" as const,
+          paths: externalPaths.filter(
+            (entry) =>
+              !externalWritePaths.some(
+                (write) =>
+                  entry.path === write.path ||
+                  (write.isDirectory && isPathWithinDirectory(entry.path, write.path)),
+              ) && !activeGrantPaths.has(entry.path),
+          ),
+        },
+        { mode: "rw" as const, paths: externalWritePaths },
+      ];
+      let promptedForExternalPaths = false;
+      for (const { mode, paths } of approvalGroups) {
+        if (paths.length === 0) continue;
+        promptedForExternalPaths = true;
         const extPromptResult = await promptSandboxGrant(ctx, {
           change: {
             type: "path",
-            mode: "ro",
-            values: notYetGranted.map((p) => p.path),
-            description: formatExternalPathPrompt(notYetGranted, event.command),
+            mode,
+            values: paths.map((entry) => entry.path),
+            description: formatExternalPathPrompt(paths, event.command, mode),
           },
           command: event.command,
           promptWaitTracker,
@@ -1861,7 +1985,9 @@ export default function piPermissionSystemExtension(pi: ExtensionAPI): void {
         if (extPromptResult.action === "deny") {
           return {
             result: {
-              output: `Sandbox: external paths not granted: ${notYetGranted.map((p) => p.displayPath).join(", ")}`,
+              output:
+                "Sandbox: external paths not granted: "
+                + paths.map((entry) => entry.displayPath).join(", "),
               exitCode: 1,
               cancelled: false,
               truncated: false,
@@ -1870,49 +1996,52 @@ export default function piPermissionSystemExtension(pi: ExtensionAPI): void {
         }
 
         if (extPromptResult.duration === "once") {
-          for (const { path } of notYetGranted) {
-            invocationPathGrants.push({ path, mode: "ro" });
+          for (const { path } of paths) {
+            invocationPathGrants.push({ path, mode });
             activeGrantPaths.add(path);
           }
-        } else {
-          const grants: Grant[] = [];
-          let snapshots: ConfigSnapshot[] = [];
-          try {
-            const scope = extPromptResult.scope ?? "global";
-            for (const p of notYetGranted) {
-              const configPath = extPromptResult.duration === "always"
-                ? getSafeScopedConfigPath(scope, event.cwd)
-                : undefined;
-              if (configPath && snapshots.length === 0) snapshots = snapshotConfigs([configPath]);
-              if (extPromptResult.duration === "always") {
-                persistScopedSandboxPathGrant(scope, event.cwd, p.path, "ro");
-              }
-              const grant = policyManager.grantPath(p.path, "ro", {
-                duration: extPromptResult.duration,
-                projectRoot: resolveRepoRoot(event.cwd),
-              });
-              grants.push(grant);
-              activeGrantPaths.add(p.path);
-              if (configPath) rememberPersistentGrant(grant, { kind: "path", configPath, value: p.path, scope });
-            }
-
-            if (extPromptResult.duration === "always") {
-              effectiveConfig = getEffectiveSandboxConfig(event.cwd);
-              policyManager.updateConfig(effectiveConfig);
-            }
-          } catch {
-            rollbackSandboxChanges(policyManager, grants, snapshots, extPromptResult.scope === "workspace" ? event.cwd : undefined);
-            return {
-              result: {
-                output: "Sandbox: failed to persist external path approval; command blocked.\n",
-                exitCode: 1,
-                cancelled: false,
-                truncated: false,
-              },
-            };
-          }
+          continue;
         }
 
+        const grants: Grant[] = [];
+        let snapshots: ConfigSnapshot[] = [];
+        try {
+          const scope = extPromptResult.scope ?? "global";
+          for (const entry of paths) {
+            const configPath = extPromptResult.duration === "always"
+              ? getSafeScopedConfigPath(scope, event.cwd)
+              : undefined;
+            if (configPath && snapshots.length === 0) snapshots = snapshotConfigs([configPath]);
+            if (extPromptResult.duration === "always") {
+              persistScopedSandboxPathGrant(scope, event.cwd, entry.path, mode);
+            }
+            const grant = policyManager.grantPath(entry.path, mode, {
+              duration: extPromptResult.duration,
+              projectRoot: resolveRepoRoot(event.cwd),
+            });
+            grants.push(grant);
+            activeGrantPaths.add(entry.path);
+            if (configPath) rememberPersistentGrant(grant, { kind: "path", configPath, value: entry.path, scope });
+          }
+
+          if (extPromptResult.duration === "always") {
+            effectiveConfig = getEffectiveSandboxConfig(event.cwd);
+            policyManager.updateConfig(effectiveConfig);
+          }
+        } catch {
+          rollbackSandboxChanges(policyManager, grants, snapshots, extPromptResult.scope === "workspace" ? event.cwd : undefined);
+          return {
+            result: {
+              output: "Sandbox: failed to persist external path approval; command blocked.\n",
+              exitCode: 1,
+              cancelled: false,
+              truncated: false,
+            },
+          };
+        }
+      }
+
+      if (promptedForExternalPaths) {
         activeProfile = policyManager.resolveProfile(
           event.command,
           event.cwd,
@@ -1920,7 +2049,6 @@ export default function piPermissionSystemExtension(pi: ExtensionAPI): void {
           { network: networkApprovedForInvocation, pathGrants: invocationPathGrants },
         ).profile;
       }
-
       const hostCapabilityDecision = await resolveHostCapabilityDecision(event.command, ctx);
       if (hostCapabilityDecision === "denied") {
         return blockedUserBash("Sandbox: host toolchain approval denied.");

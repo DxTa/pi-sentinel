@@ -1,3 +1,4 @@
+import { splitBashSegments } from "./bash-segments";
 import { isPermissionState } from "./common";
 import { normalizeInput } from "./input-normalizer";
 import { normalizeFlatConfig } from "./normalize";
@@ -250,7 +251,9 @@ export class PermissionManager {
       this.loader.getConfiguredMcpServerNames(),
     );
 
-    const { rule, value } = evaluateFirst(surface, values, fullRules);
+    const { rule, value } = surface === "bash"
+      ? evaluateBashCommand(values, composedRules, fullRules)
+      : evaluateFirst(surface, values, fullRules);
 
     // For MCP, replace the normalizer's fallback target with the actual
     // matched candidate value so PermissionCheckResult.target is accurate.
@@ -269,6 +272,29 @@ export class PermissionManager {
       ...extras,
     };
   }
+}
+
+const STATE_RANK: Record<PermissionState, number> = { allow: 0, ask: 1, deny: 2 };
+
+/**
+ * Bash rules are prefix wildcards, so a whole-string match would let `cd *`
+ * cover `cd x && rm -rf y`. Compound commands are checked per segment and the
+ * most restrictive result wins; a whole-command config deny still applies.
+ * Commands with substitution never match session approvals.
+ */
+function evaluateBashCommand(
+  values: string[],
+  composedRules: Ruleset,
+  fullRules: Ruleset,
+): ReturnType<typeof evaluateFirst> {
+  const segments = splitBashSegments(values[0] ?? "");
+  if (segments === null) return evaluateFirst("bash", values, composedRules);
+  if (segments.length <= 1) return evaluateFirst("bash", values, fullRules);
+  const whole = evaluateFirst("bash", values, composedRules);
+  if (whole.rule.action === "deny") return whole;
+  return segments
+    .map((segment) => evaluateFirst("bash", [segment], fullRules))
+    .reduce((worst, next) => (STATE_RANK[next.rule.action] > STATE_RANK[worst.rule.action] ? next : worst));
 }
 
 /**

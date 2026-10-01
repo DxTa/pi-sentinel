@@ -1,11 +1,11 @@
-import { mkdtemp, rm, writeFile } from "node:fs/promises";
-import { homedir } from "node:os";
+import { mkdtemp, rm, symlink, writeFile } from "node:fs/promises";
+import { homedir, tmpdir } from "node:os";
 import { createServer } from "node:net";
 import path from "node:path";
 
 import { afterEach, describe, expect, it } from "vitest";
 
-import { detectExternalPaths } from "./external-path-gate.js";
+import { detectExternalPaths, detectExternalWritePaths, extractPathTokens } from "./external-path-gate.js";
 import { validateSandboxGrantPath } from "./settings.js";
 
 const tempPaths: string[] = [];
@@ -15,6 +15,11 @@ afterEach(async () => {
 });
 
 describe("detectExternalPaths", () => {
+  it("ignores slash-only comment markers but keeps real root paths", () => {
+    expect(extractPathTokens("python3 - <<'EOF'\nx = 1  " + "/".repeat(2) + " note\nEOF")).toEqual([]);
+    expect(extractPathTokens("ls /")).toEqual(["/"]);
+  });
+
   it("rejects broad system roots instead of offering generic path approval", async () => {
     const workspace = await mkdtemp(path.join("/tmp", "pi-external-workspace-"));
     tempPaths.push(workspace);
@@ -93,5 +98,145 @@ describe("detectExternalPaths", () => {
     } finally {
       await new Promise<void>((resolveClose) => server.close(() => resolveClose()));
     }
+  });
+});
+
+
+describe("detectExternalWritePaths", () => {
+  it("requests write access even when an external target is already read-visible", async () => {
+    const workspace = await mkdtemp(path.join(tmpdir(), "pi-external-write-workspace-"));
+    const outside = await mkdtemp(path.join(homedir(), ".pi-external-write-"));
+    tempPaths.push(workspace, outside);
+    const target = path.join(outside, "existing.txt");
+    await writeFile(target, "before", "utf8");
+    const profile = {
+      name: "offline-dev",
+      network: false,
+      roBinds: [outside],
+      rwBinds: [],
+      env: { allow: [], deny: [] },
+      maskedPaths: [],
+    };
+
+    await expect(detectExternalWritePaths(
+      `printf value > ${target}`,
+      workspace,
+      profile,
+      undefined,
+      () => workspace,
+    )).resolves.toEqual([{ path: target, isDirectory: false, displayPath: target }]);
+  });
+
+  it("does not offer generic write access to masked credentials", async () => {
+    const workspace = await mkdtemp(path.join(tmpdir(), "pi-external-write-workspace-"));
+    const outside = await mkdtemp(path.join(homedir(), ".pi-external-write-"));
+    tempPaths.push(workspace, outside);
+    const target = path.join(outside, ".env");
+    await writeFile(target, "SECRET=value", "utf8");
+
+    await expect(detectExternalWritePaths(
+      "printf value > " + target,
+      workspace,
+      {
+        name: "offline-dev",
+        network: false,
+        roBinds: [],
+        rwBinds: [],
+        env: { allow: [], deny: [] },
+        maskedPaths: ["**/.env"],
+      },
+      undefined,
+      () => workspace,
+    )).resolves.toEqual([]);
+  });
+  it("grants nearest existing parent for missing output targets", async () => {
+    const workspace = await mkdtemp(path.join(tmpdir(), "pi-external-write-workspace-"));
+    const outside = await mkdtemp(path.join(homedir(), ".pi-external-write-"));
+    tempPaths.push(workspace, outside);
+    const target = path.join(outside, "not-created-yet", "output.txt");
+
+    await expect(detectExternalWritePaths(
+      "printf value > " + target,
+      workspace,
+      {
+        name: "offline-dev",
+        network: false,
+        roBinds: [],
+        rwBinds: [],
+        env: { allow: [], deny: [] },
+        maskedPaths: [],
+      },
+      undefined,
+      () => workspace,
+    )).resolves.toEqual([{ path: outside, isDirectory: true, displayPath: outside }]);
+  });
+
+  it("rejects masked names for missing output targets", async () => {
+    const workspace = await mkdtemp(path.join(tmpdir(), "pi-external-write-workspace-"));
+    const outside = await mkdtemp(path.join(homedir(), ".pi-external-write-"));
+    tempPaths.push(workspace, outside);
+    const target = path.join(outside, ".env");
+
+    await expect(detectExternalWritePaths(
+      "printf value > " + target,
+      workspace,
+      {
+        name: "offline-dev",
+        network: false,
+        roBinds: [],
+        rwBinds: [],
+        env: { allow: [], deny: [] },
+        maskedPaths: ["**/.env"],
+      },
+      undefined,
+      () => workspace,
+    )).rejects.toThrow(/masked.*write target/i);
+  });
+
+  it("rejects missing output targets below dangling symlinks", async () => {
+    const workspace = await mkdtemp(path.join(tmpdir(), "pi-external-write-workspace-"));
+    const outside = await mkdtemp(path.join(homedir(), ".pi-external-write-"));
+    tempPaths.push(workspace, outside);
+    const danglingLink = path.join(outside, "dangling");
+    await symlink(path.join(outside, "not-created"), danglingLink);
+    const target = path.join(danglingLink, "output.txt");
+
+    await expect(detectExternalWritePaths(
+      "printf value > " + target,
+      workspace,
+      {
+        name: "offline-dev",
+        network: false,
+        roBinds: [],
+        rwBinds: [],
+        env: { allow: [], deny: [] },
+        maskedPaths: [],
+      },
+      undefined,
+      () => workspace,
+    )).rejects.toThrow(/unresolved symlink/i);
+  });
+
+  it("does not request write access when target is already writable", async () => {
+    const workspace = await mkdtemp(path.join(tmpdir(), "pi-external-write-workspace-"));
+    const outside = await mkdtemp(path.join(homedir(), ".pi-external-write-"));
+    tempPaths.push(workspace, outside);
+    const target = path.join(outside, "existing.txt");
+    await writeFile(target, "before", "utf8");
+
+    await expect(detectExternalWritePaths(
+      `printf value > ${target}`,
+      workspace,
+      {
+        name: "offline-dev",
+        network: false,
+        roBinds: [],
+        rwBinds: [outside],
+        env: { allow: [], deny: [] },
+        maskedPaths: [],
+      },
+      undefined,
+      () => workspace,
+    )).resolves.toEqual([]);
   });
 });

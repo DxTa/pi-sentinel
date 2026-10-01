@@ -13,8 +13,6 @@ export interface PermissionSystemExtensionConfig {
   permissionReviewLog: boolean;
   /** Permission approval mode. yolo-auto uses model flow for eligible reads/lists and classic bypass elsewhere. */
   mode: PermissionMode;
-  /** Maximum automatic-approval classifier level. */
-  yoloAutoMaxLevel: "l1" | "l2" | "l3";
   /** Bash command patterns that still prompt in yolo and yolo-auto modes. */
   yoloAskBashPatterns: string[];
   /** Additional directories to auto-allow for reads as Pi infrastructure. */
@@ -25,7 +23,6 @@ export const DEFAULT_EXTENSION_CONFIG: PermissionSystemExtensionConfig = {
   debugLog: false,
   permissionReviewLog: true,
   mode: "yolo-auto",
-  yoloAutoMaxLevel: "l3",
   yoloAskBashPatterns: [],
 };
 
@@ -78,12 +75,6 @@ export function normalizePermissionSystemConfig(
           : record.yoloMode === true
             ? "yolo"
             : "manual",
-    yoloAutoMaxLevel:
-      record.yoloAutoMaxLevel === "l1"
-        ? "l1"
-        : record.yoloAutoMaxLevel === "l2"
-          ? "l2"
-          : "l3",
     yoloAskBashPatterns,
   };
   if (piInfrastructureReadPaths !== undefined) {

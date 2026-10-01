@@ -72,6 +72,25 @@ const privateScriptPath = path.join(
 );
 
 describe("buildSrtCommandSpec", () => {
+  it("keeps UV cache roots readable without masked-scanning their package trees", async () => {
+    const repoRoot = await makeTempDir("pi-srt-spec-uv-scan-");
+    const cachedPem = path.join(process.env.HOME!, ".cache", "uv", "wheels", "certifi", "cacert.pem");
+    await mkdir(path.dirname(cachedPem), { recursive: true });
+    await writeFile(cachedPem, "PUBLIC CA\n", "utf8");
+    const input = {
+      command: "uv run pytest",
+      cwd: repoRoot,
+      repoRoot,
+      sandboxConfig: makeConfig(),
+      profile: makeProfile({ maskedPaths: ["**/*.pem"] }),
+    };
+
+    for (const spec of [buildSrtCommandSpec(input), await buildSrtCommandSpecAsync(input)]) {
+      expect(spec.runtimeReadAllowPaths).toContain(canonicalPath(path.join(process.env.HOME!, ".cache", "uv")));
+      expect(spec.maskedShimPlan.maskedDenyPaths).not.toContain(canonicalPath(cachedPem));
+    }
+  });
+
   it("scopes UV runtime roots to commands that invoke UV", { timeout: 30_000 }, async () => {
     const repoRoot = await makeTempDir("pi-srt-spec-uv-roots-");
     const uvRoots = [
@@ -226,7 +245,8 @@ describe("buildSrtCommandSpec", () => {
       expect(spec.maskedShimPlan.maskedDenyPaths).toEqual(
         expect.arrayContaining([
           canonicalPath(maskedConfigPath),
-          canonicalPath(nestedMaskedConfigPath),
+          // `~/.config/gcloud/**` is denied as one directory, covering nested credentials.
+          canonicalPath(path.join(homePath, ".config", "gcloud")),
         ]),
       );
     }

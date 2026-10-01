@@ -18,11 +18,13 @@ import { createHash } from "node:crypto";
 import type { PromptWaitTracker } from "../prompt-state";
 import type { YoloAutoEvaluator } from "../yolo-auto-evaluator";
 import { isPathWithinCanonicalWorkingDirectory } from "../path-utils";
+import { isSensitivePath } from "../yolo-auto-sensitive-paths";
 import {
   getScopedConfigPath,
   persistSentinelReadAllowedPathToConfig,
   type PersistentApprovalScope,
 } from "../scoped-config";
+import { allMatchesLowTier } from "./credential-tier.js";
 import type { SentinelCredsConfig } from "./config";
 import { loadSentinelCredsConfig } from "./config";
 import {
@@ -76,7 +78,6 @@ export interface SentinelCredsDeps {
   getConfig: (cwd?: string) => Record<string, unknown>;
   getPermissionConfig?: (cwd?: string) => {
     mode?: "manual" | "yolo" | "yolo-auto";
-    yoloAutoMaxLevel?: "l1" | "l2" | "l3";
   };
   yoloAutoEvaluator?: Pick<YoloAutoEvaluator, "evaluate">;
 }
@@ -203,6 +204,7 @@ export function registerSentinelCreds(pi: ExtensionAPI, deps: SentinelCredsDeps)
   if (!config.enabled) return;
 
   const session = new CredsSession(process.cwd(), config);
+  const redactionNote = () => (config.resultScanning ? "output is redacted." : "output is NOT redacted.");
   const { promptWaitTracker } = deps;
 
   // ── Prompt wrapper using shared tracker ────────────────────────────────
@@ -385,13 +387,13 @@ export function registerSentinelCreds(pi: ExtensionAPI, deps: SentinelCredsDeps)
       && config.resultScanning
       && event.toolName === "read"
       && hasStableToolCallId
+      && allMatchesLowTier(matches)
       && isCanonicalWorkspaceRegularFile(absolutePath, ctx.cwd);
     if (yoloAutoSecretReadCandidate) {
       const evaluation = await yoloAutoEvaluator.evaluate({
         flow: "secret_read",
         candidate: true,
         enabled: true,
-        maxLevel: permissionConfig.yoloAutoMaxLevel ?? "l3",
         permissionState: "ask",
         source: "tool_call",
         eligible: true,
@@ -399,7 +401,9 @@ export function registerSentinelCreds(pi: ExtensionAPI, deps: SentinelCredsDeps)
         workspaceLocal: true,
         operation: "read",
         toolName: "read",
+        hardRuleHit: isSensitivePath(absolutePath, homedir()),
         toolCallIdPresent: true,
+        toolCallId: event.toolCallId,
       });
       if (evaluation.action === "allow") {
         auditDecision(
@@ -432,6 +436,14 @@ export function registerSentinelCreds(pi: ExtensionAPI, deps: SentinelCredsDeps)
       return;
     }
 
+    const autoApprovalNote = permissionConfig?.mode !== "yolo-auto"
+      ? ""
+      : !allMatchesLowTier(matches)
+        ? "\n\nAuto-approval skipped: high-sensitivity credential type present."
+        : yoloAutoSecretReadAttempted
+          ? `\n\nAuto-approval declined by model (${yoloAutoSecretReadReason}).`
+          : "";
+
     if (ctx.hasUI) {
       const choice = await selectWithPromptWait(
         ctx,
@@ -439,21 +451,21 @@ export function registerSentinelCreds(pi: ExtensionAPI, deps: SentinelCredsDeps)
         createSentinelPrompt({
           header: "Secret read",
           question: "Allow reading this file?",
-          details: `Secret detected\n\n${formatConfirmMessage(matches)}`,
+          details: `Secret detected\n\n${formatConfirmMessage(matches)}${autoApprovalNote}`,
           options: [
             {
               label: "Allow once",
-              description: "Read once; output follows configured result-scanning policy.",
+              description: `Read once; ${redactionNote()}`,
             },
             ...(ctx.cwd
               ? [{
                   label: "Allow for this workspace",
-                  description: "Remember this path for this workspace; output follows configured result-scanning policy.",
+                  description: `Remember this path for this workspace; ${redactionNote()}`,
                 }]
               : []),
             {
               label: "Allow globally",
-              description: "Remember this path globally; output follows configured result-scanning policy.",
+              description: `Remember this path globally; ${redactionNote()}`,
             },
             {
               label: "Deny",
@@ -557,7 +569,7 @@ export function registerSentinelCreds(pi: ExtensionAPI, deps: SentinelCredsDeps)
                 options: [
                   {
                     label: "Allow once",
-                    description: "Run this command once; output follows configured result-scanning policy.",
+                    description: `Run this command once; ${redactionNote()}`,
                   },
                   {
                     label: "Deny",
@@ -657,17 +669,17 @@ export function registerSentinelCreds(pi: ExtensionAPI, deps: SentinelCredsDeps)
             options: [
               {
                 label: "Allow once",
-                description: "Run this command once; output follows configured result-scanning policy.",
+                description: `Run this command once; ${redactionNote()}`,
               },
               ...(ctx.cwd
                 ? [{
                     label: "Allow for this workspace",
-                    description: "Remember these paths for this workspace; output follows configured result-scanning policy.",
+                    description: `Remember these paths for this workspace; ${redactionNote()}`,
                   }]
                 : []),
               {
                 label: "Allow globally",
-                description: "Remember these paths globally; output follows configured result-scanning policy.",
+                description: `Remember these paths globally; ${redactionNote()}`,
               },
               {
                 label: "Deny",
@@ -754,6 +766,55 @@ export function registerSentinelCreds(pi: ExtensionAPI, deps: SentinelCredsDeps)
       labels: ["Secret Pattern Search"],
     });
 
+    // D15: model may approve only a single workspace file whose secrets are all low-tier.
+    const grepEvaluator = deps.yoloAutoEvaluator;
+    const grepPath = resolve(ctx.cwd ?? process.cwd(), inputPath);
+    if (
+      grepEvaluator !== undefined
+      && deps.getPermissionConfig?.(ctx.cwd)?.mode === "yolo-auto"
+      && config.resultScanning
+      && typeof event.toolCallId === "string" && event.toolCallId.length > 0
+      && isCanonicalWorkspaceRegularFile(grepPath, ctx.cwd)
+      && allMatchesLowTier(await scanFile(grepPath, session))
+    ) {
+      const evaluation = await grepEvaluator.evaluate({
+        flow: "secret_read",
+        candidate: true,
+        enabled: true,
+        permissionState: "ask",
+        source: "tool_call",
+        eligible: true,
+        forcedPrompt: false,
+        workspaceLocal: true,
+        operation: "read",
+        toolName: "grep",
+        hardRuleHit: isSensitivePath(grepPath, homedir()),
+        toolCallIdPresent: true,
+        toolCallId: event.toolCallId,
+      });
+      if (evaluation.action === "allow") {
+        auditDecision(
+          config,
+          "outputScanner",
+          event.toolName,
+          { toolName: event.toolName, operation: "read" },
+          "allow_model_redacted",
+          "Model allowed one low-tier secret search; output redaction remains enabled.",
+        );
+        return;
+      }
+      // Model-routed secret searches fail closed in headless mode after an attempt (matches Guard 1).
+      if (!ctx.hasUI && evaluation.attempted) {
+        return blockToolCall(pi, config, {
+          feature: "outputScanner",
+          toolName: event.toolName,
+          input: { toolName: event.toolName, operation: "read" },
+          reason: `[sentinel-creds] Blocked: yolo-auto secret-search review did not allow access (${evaluation.reason}).`,
+          userDenied: false,
+        });
+      }
+    }
+
     if (ctx.hasUI) {
       const choice = await selectWithPromptWait(
         ctx,
@@ -761,11 +822,11 @@ export function registerSentinelCreds(pi: ExtensionAPI, deps: SentinelCredsDeps)
         createSentinelPrompt({
           header: "Secret search",
           question: "Allow this search?",
-          details: `Pattern "${pattern}" may expose secret values in search results.`,
+          details: `Pattern "${pattern}" in ${inputPath} may expose secret values in search results.`,
           options: [
             {
               label: "Allow once",
-              description: "Run this search once; matching output follows configured result-scanning policy.",
+              description: `Run this search once; matching ${redactionNote()}`,
             },
             {
               label: "Deny",

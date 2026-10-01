@@ -57,7 +57,7 @@ export const SECRET_PATTERNS: readonly SecretPattern[] = [
   { label: "Generic Secret", regex: /\b(?:secret|password|token|api_key|apikey|api-key)\b\s*[=:]\s*['"][^'"]{12,}['"]/i },
   { label: "Generic Secret (unquoted)", regex: /\b(?:secret|password|token|api_key|apikey|api-key)\b\s*[=:]\s*[A-Za-z0-9_+=/-]{16,}\b/i },
   { label: "Env Assignment (quoted)", regex: /^[A-Z_][A-Z0-9_]*(?:KEY|TOKEN|SECRET|PASSWORD|CREDENTIAL|AUTH|API|PRIVATE)\s*=\s*['"][^'"]{12,}['"]/m },
-  { label: "Database URL with password", regex: /(?:mysql|postgres|mongodb|redis):\/\/[^:\s]+:[^@\s]+@/i },
+  { label: "Database URL with password", regex: /(?:mysql|postgres|mongodb|redis):\/\/[^:\s]+:[^@\s]+@(?=((?:\[[^\]\s]*\]|[^\s/?#:]*)(?::\d+)?))/i },
   { label: ".npmrc auth token", regex: /_authToken\s*=\s*\S{8,}/ },
   { label: ".netrc password", regex: /password\s+\S{8,}/ },
 ];
@@ -151,7 +151,8 @@ function scanPatternMatches(content: string): ScanMatch[] {
     for (const { label, regex } of SECRET_PATTERNS) {
       const match = regex.exec(line);
       if (!match || isLikelyFake(match[0])) continue;
-      matches.push({ label, line: lineNum, snippet: mask(match[0]), value: match[0] });
+      // Optional group 1 carries lookahead context (DB host) for tiering; fake-check stays on match[0].
+      matches.push({ label, line: lineNum, snippet: mask(match[0]), value: match[0] + (match[1] ?? "") });
     }
   }
 

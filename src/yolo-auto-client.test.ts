@@ -1,317 +1,194 @@
-import { describe, expect, it, vi } from "vitest";
+import { mkdtemp, rm } from "node:fs/promises";
+import { join } from "node:path";
+import { tmpdir } from "node:os";
 
-import {
-  YoloAutoClient,
-  type YoloAutoWorkerRequest,
-  type YoloAutoWorkerResponse,
-  type YoloAutoWorkerTransport,
-} from "./yolo-auto-client";
+import { afterEach, describe, expect, it, vi } from "vitest";
 
-const payload = {
-  toolName: "read_file",
-  operation: "read",
-  workspaceRelativePath: "src/index.ts",
+import { YoloAutoClient, createUnixSocketWorkerTransport } from "./yolo-auto-client";
+import type { YoloAutoHeads } from "./yolo-auto-policy";
+import { YoloAutoWorkerServer, type WorkerProvider } from "./yolo-auto-worker";
+
+const BUILD_ID = "pi-sentinel-test:model-r1";
+const TEXT = "tool=read_file path=src/index.ts";
+const roots: string[] = [];
+const heads: YoloAutoHeads = {
+  injection: { injection: 0.01 },
+  threat: { benign: 0.99 },
+  tool_class: { files: 1 },
+  tool_action: { read: 1 },
+  tool_tags: { "source:sensitive": 0, "source:untrusted": 0, "sink:external": 0 },
+  sensitive_document: { none: 1 },
+  routing: { local: 1 },
 };
 
-function response(
-  request: YoloAutoWorkerRequest,
-  overrides: Partial<YoloAutoWorkerResponse> = {},
-): YoloAutoWorkerResponse {
+afterEach(async () => {
+  await Promise.all(roots.splice(0).map((root) => rm(root, { recursive: true, force: true })));
+});
+
+function provider(overrides: Partial<WorkerProvider> = {}): WorkerProvider {
+  return { ready: async () => undefined, classify: async () => heads, ...overrides };
+}
+
+function completeResponse(request: { requestId: string }, overrides: Record<string, unknown> = {}) {
   return {
+    type: "classify",
+    protocolVersion: 2,
     requestId: request.requestId,
-    phase: request.phase,
-    completion: "complete",
-    l1: { verdict: "safe", accepted: true, complete: true, degraded: false },
-    l2: { results: [], escalated: false },
+    status: "complete",
+    heads,
     ...overrides,
   };
 }
 
-describe("YoloAutoClient", () => {
-  it("runs L1 before one non-escalated L2 request", async () => {
-    const requests: YoloAutoWorkerRequest[] = [];
-    const transport: YoloAutoWorkerTransport = {
-      request: vi.fn(async (request) => {
+describe("YoloAutoClient protocol v2", () => {
+  it("sends one classify request and returns all heads", async () => {
+    const requests: Record<string, unknown>[] = [];
+    const transport = {
+      waitUntilReady: vi.fn(async () => BUILD_ID),
+      request: vi.fn(async (request: Record<string, unknown>) => {
         requests.push(request);
-        return response(request);
+        return completeResponse(request as { requestId: string });
       }),
+      shutdownWorker: vi.fn(async () => undefined),
     };
-    const client = new YoloAutoClient(transport);
+    const client = new YoloAutoClient(transport, { expectedBuildId: BUILD_ID });
 
-    const result = await client.evaluate(payload, "l2");
+    const result = await client.evaluate(TEXT);
 
-    expect(result).toMatchObject({
-      status: "complete",
-      l1: { verdict: "safe", accepted: true, complete: true, degraded: false },
-      l2: { results: [], escalated: false },
-      l3: undefined,
-      escalated: false,
-    });
-    expect(requests).toHaveLength(2);
-    expect(requests[0]).toMatchObject({ phase: "l1", deadlineMs: 250, payload });
-    expect(requests[1]).toMatchObject({ phase: "l2", deadlineMs: 250, payload });
-    expect(result).toMatchObject({
-      evaluationId: expect.any(String),
-      phases: [
-        { phase: "l1", status: "complete", latencyMs: expect.any(Number) },
-        { phase: "l2", status: "complete", latencyMs: expect.any(Number) },
-      ],
-      totalLatencyMs: expect.any(Number),
-    });
-  });
-
-  it("stops at L1 when configured with an L1 ceiling", async () => {
-    const requests: YoloAutoWorkerRequest[] = [];
-    const transport: YoloAutoWorkerTransport = {
-      request: vi.fn(async (request) => {
-        requests.push(request);
-        return response(request);
-      }),
-    };
-    const client = new YoloAutoClient(transport);
-
-    await expect(client.evaluate(payload, "l1")).resolves.toMatchObject({
-      status: "complete",
-      l1: { verdict: "safe", accepted: true, complete: true, degraded: false },
-      l2: undefined,
-      l3: undefined,
-      escalated: false,
-    });
+    expect(result).toMatchObject({ status: "complete", heads, buildId: BUILD_ID });
     expect(requests).toHaveLength(1);
-    expect(requests[0]).toMatchObject({ phase: "l1", deadlineMs: 250, payload });
-  });
-
-  it("does not run L2 after an unsafe L1 result", async () => {
-    const requests: YoloAutoWorkerRequest[] = [];
-    const transport: YoloAutoWorkerTransport = {
-      request: vi.fn(async (request) => {
-        requests.push(request);
-        return response(request, {
-          l1: { verdict: "unsafe", accepted: true, complete: true, degraded: false },
-        });
-      }),
-    };
-    const client = new YoloAutoClient(transport);
-
-    await expect(client.evaluate(payload, "l2")).resolves.toMatchObject({
-      status: "complete",
-      l1: { verdict: "unsafe" },
-      l2: undefined,
-      escalated: false,
-    });
-    expect(requests).toHaveLength(1);
-  });
-
-  it("runs L3 only after L2 requests escalation", async () => {
-    const requests: YoloAutoWorkerRequest[] = [];
-    const transport: YoloAutoWorkerTransport = {
-      request: vi.fn(async (request) => {
-        requests.push(request);
-        if (request.phase === "l2") {
-          return response(request, { l2: { results: [], escalated: true } });
-        }
-        return response(request, { l3: { recommendation: "prompt" } });
-      }),
-    };
-    const client = new YoloAutoClient(transport);
-
-    const result = await client.evaluate(payload, "l3");
-
-    expect(result).toMatchObject({
-      status: "complete",
-      l1: { verdict: "safe", accepted: true, complete: true, degraded: false },
-      l2: { results: [], escalated: true },
-      l3: { recommendation: "prompt" },
-      escalated: true,
-    });
-    expect(requests).toHaveLength(3);
-    expect(requests[2]).toMatchObject({ phase: "l3", deadlineMs: 1000, payload });
-    expect(requests[2].requestId).toBe(requests[0].requestId);
-  });
-
-  it("fails closed when L1 times out", async () => {
-    const transport: YoloAutoWorkerTransport = {
-      request: vi.fn(() => new Promise<YoloAutoWorkerResponse>(() => undefined)),
-    };
-    const client = new YoloAutoClient(transport, { l1RequestTimeoutMs: 5 });
-
-    await expect(client.evaluate(payload, "l2")).resolves.toMatchObject({
-      status: "unavailable",
-      reason: "l1_request_failed",
-      escalated: false,
+    expect(requests[0]).toMatchObject({
+      type: "classify",
+      protocolVersion: 2,
+      requestId: result.evaluationId,
+      deadlineMs: expect.any(Number),
+      text: TEXT,
     });
   });
 
-  it("fails closed when L2 times out after safe L1", async () => {
-    const transport: YoloAutoWorkerTransport = {
-      request: vi.fn(async (request) => {
-        if (request.phase === "l1") return response(request);
-        throw new Error("timeout");
-      }),
+  it("fails closed on worker-declared errors without exposing their text", async () => {
+    const transport = {
+      waitUntilReady: async () => BUILD_ID,
+      request: async (request: Record<string, unknown>) => completeResponse(
+        request as { requestId: string },
+        { status: "failed", error: "private worker diagnostic" },
+      ),
+      shutdownWorker: async () => undefined,
     };
-    const client = new YoloAutoClient(transport);
+    const client = new YoloAutoClient(transport, { expectedBuildId: BUILD_ID });
 
-    await expect(client.evaluate(payload, "l2")).resolves.toMatchObject({
-      status: "unavailable",
-      reason: "l2_request_failed",
-      escalated: false,
-    });
+    const result = await client.evaluate(TEXT);
+
+    expect(result).toMatchObject({ status: "unavailable", reason: "worker_failed" });
+    expect(JSON.stringify(result)).not.toContain("private worker diagnostic");
   });
 
-  it("does not exceed an L2 ceiling after escalation", async () => {
-    const requests: YoloAutoWorkerRequest[] = [];
-    const transport: YoloAutoWorkerTransport = {
-      request: vi.fn(async (request) => {
-        requests.push(request);
-        if (request.phase === "l2") return response(request, { l2: { results: [], escalated: true } });
-        return response(request, { l3: { recommendation: "prompt" } });
-      }),
+  it("fails closed on a mismatched response id", async () => {
+    const transport = {
+      waitUntilReady: async () => BUILD_ID,
+      request: async () => completeResponse({ requestId: "different" }),
+      shutdownWorker: async () => undefined,
     };
-    const client = new YoloAutoClient(transport);
+    const client = new YoloAutoClient(transport, { expectedBuildId: BUILD_ID });
 
-    await expect(client.evaluate(payload, "l2")).resolves.toMatchObject({
-      status: "complete",
-      l1: { verdict: "safe", accepted: true, complete: true, degraded: false },
-      l2: { results: [], escalated: true },
-      l3: undefined,
-      escalated: true,
-    });
-    expect(requests.map((request) => request.phase)).toEqual(["l1", "l2"]);
-  });
-
-  it("uses L3 as default client ceiling", async () => {
-    const requests: YoloAutoWorkerRequest[] = [];
-    const transport: YoloAutoWorkerTransport = {
-      request: vi.fn(async (request) => {
-        requests.push(request);
-        if (request.phase === "l2") return response(request, { l2: { results: [], escalated: true } });
-        return response(request, { l3: { recommendation: "prompt" } });
-      }),
-    };
-    const client = new YoloAutoClient(transport);
-
-    await expect(client.evaluate(payload)).resolves.toMatchObject({
-      status: "complete",
-      l3: { recommendation: "prompt" },
-      escalated: true,
-    });
-    expect(requests.map((request) => request.phase)).toEqual(["l1", "l2", "l3"]);
-  });
-
-  it("fails closed when escalated L3 times out", async () => {
-    const transport: YoloAutoWorkerTransport = {
-      request: vi.fn(async (request) => {
-        if (request.phase === "l1") return response(request);
-        if (request.phase === "l2") {
-          return response(request, { l2: { results: [], escalated: true } });
-        }
-        throw new Error("timeout");
-      }),
-    };
-    const client = new YoloAutoClient(transport);
-
-    await expect(client.evaluate(payload, "l3")).resolves.toMatchObject({
-      status: "unavailable",
-      reason: "l3_request_failed",
-      escalated: true,
-    });
-  });
-
-  it("fails closed on malformed L1 results", async () => {
-    const transport: YoloAutoWorkerTransport = {
-      request: vi.fn(async (request) => response(request, {
-        l1: { verdict: "safe", accepted: "yes" as never, complete: true, degraded: false },
-      })),
-    };
-    const client = new YoloAutoClient(transport);
-
-    await expect(client.evaluate(payload, "l2")).resolves.toMatchObject({
-      status: "unavailable",
-      reason: "protocol_mismatch",
-      escalated: false,
-    });
-  });
-
-  it("fails closed on oversized model provenance", async () => {
-    const transport: YoloAutoWorkerTransport = {
-      request: vi.fn(async (request) => response(request, {
-        l1: {
-          verdict: "safe",
-          accepted: true,
-          complete: true,
-          degraded: false,
-          provenance: "x".repeat(129),
-        },
-      })),
-    };
-    const client = new YoloAutoClient(transport);
-
-    await expect(client.evaluate(payload, "l1")).resolves.toMatchObject({
+    await expect(client.evaluate(TEXT)).resolves.toMatchObject({
       status: "unavailable",
       reason: "protocol_mismatch",
     });
   });
 
-  it("fails closed on malformed classifier results", async () => {
-    const transport: YoloAutoWorkerTransport = {
-      request: vi.fn(async (request) => response(request, {
-        l2: { results: "not-an-array" as never, escalated: false },
-      })),
+  it("fails closed when classification exceeds its deadline", async () => {
+    const transport = {
+      waitUntilReady: async () => BUILD_ID,
+      request: () => new Promise(() => undefined),
+      shutdownWorker: async () => undefined,
     };
-    const client = new YoloAutoClient(transport);
+    const client = new YoloAutoClient(transport, {
+      expectedBuildId: BUILD_ID,
+      requestTimeoutMs: 5,
+    });
 
-    await expect(client.evaluate(payload, "l2")).resolves.toMatchObject({
+    await expect(client.evaluate(TEXT)).resolves.toMatchObject({
       status: "unavailable",
-      reason: "protocol_mismatch",
-      escalated: false,
+      reason: "request_failed",
     });
   });
 
-  it("fails closed on malformed L3 recommendations", async () => {
-    const transport: YoloAutoWorkerTransport = {
-      request: vi.fn(async (request) => request.phase === "l3"
-        ? response(request, { l3: { recommendation: "allow-all" as never } })
-        : request.phase === "l2"
-          ? response(request, { l2: { results: [], escalated: true } })
-          : response(request)),
+  it("shuts down a mismatched worker before reporting its build ID", async () => {
+    const shutdownWorker = vi.fn(async () => undefined);
+    const transport = {
+      waitUntilReady: async () => "old-build",
+      request: vi.fn(),
+      shutdownWorker,
     };
-    const client = new YoloAutoClient(transport);
+    const client = new YoloAutoClient(transport, { expectedBuildId: BUILD_ID });
 
-    await expect(client.evaluate(payload, "l3")).resolves.toMatchObject({
-      status: "unavailable",
-      reason: "protocol_mismatch",
-      escalated: true,
-    });
+    await expect(client.waitUntilReady()).rejects.toMatchObject({ name: "YoloAutoBuildMismatchError" });
+    expect(shutdownWorker).toHaveBeenCalledOnce();
   });
 
-  it("classifies worker-declared phase failures with partial telemetry", async () => {
-    const transport: YoloAutoWorkerTransport = {
-      request: vi.fn(async (request) => response(request, {
-        completion: "failed",
-        error: "worker failure details must stay out of telemetry",
-      })),
-    };
-    const client = new YoloAutoClient(transport);
-
-    const result = await client.evaluate(payload, "l2");
-
-    expect(result).toMatchObject({
-      status: "unavailable",
-      reason: "worker_failed",
-      phases: [{ phase: "l1", status: "failed", failureReason: "worker_failed" }],
-      escalated: false,
+  it("keeps the shared worker available after a client closes", async () => {
+    const root = await mkdtemp(join(tmpdir(), "pi-yolo-client-close-"));
+    roots.push(root);
+    const socketPath = join(root, "worker.sock");
+    const classify = vi.fn(async () => heads);
+    const worker = new YoloAutoWorkerServer({
+      socketPath,
+      buildId: BUILD_ID,
+      provider: provider({ classify }),
     });
+    await worker.start();
+    const firstClient = new YoloAutoClient(createUnixSocketWorkerTransport(socketPath), {
+      expectedBuildId: BUILD_ID,
+    });
+    const nextClient = new YoloAutoClient(createUnixSocketWorkerTransport(socketPath), {
+      expectedBuildId: BUILD_ID,
+    });
+
+    try {
+      await expect(firstClient.evaluate(TEXT)).resolves.toMatchObject({ status: "complete", buildId: BUILD_ID });
+      firstClient.close();
+      await expect(nextClient.evaluate(TEXT)).resolves.toMatchObject({ status: "complete", buildId: BUILD_ID });
+      expect(classify).toHaveBeenCalledTimes(2);
+    } finally {
+      firstClient.close();
+      nextClient.close();
+      await worker.close();
+    }
   });
 
-  it("fails closed on mismatched worker response ids", async () => {
-    const transport: YoloAutoWorkerTransport = {
-      request: vi.fn(async (request) => response({ ...request, requestId: "other" })),
-    };
-    const client = new YoloAutoClient(transport);
-
-    await expect(client.evaluate(payload, "l2")).resolves.toMatchObject({
-      status: "unavailable",
-      reason: "protocol_mismatch",
+  it("replaces a mismatched worker and classifies through the replacement", async () => {
+    const root = await mkdtemp(join(tmpdir(), "pi-yolo-client-v2-"));
+    roots.push(root);
+    const socketPath = join(root, "worker.sock");
+    let markOldClosed!: () => void;
+    const oldClosed = new Promise<void>((resolve) => { markOldClosed = resolve; });
+    const oldWorker = new YoloAutoWorkerServer({
+      socketPath,
+      buildId: "old-build",
+      provider: provider({ close: markOldClosed }),
     });
+    await oldWorker.start();
+    const client = new YoloAutoClient(createUnixSocketWorkerTransport(socketPath), {
+      expectedBuildId: BUILD_ID,
+    });
+    let replacement: YoloAutoWorkerServer | undefined;
+
+    try {
+      await expect(client.waitUntilReady()).rejects.toMatchObject({ name: "YoloAutoBuildMismatchError" });
+      await oldClosed;
+      replacement = new YoloAutoWorkerServer({ socketPath, buildId: BUILD_ID, provider: provider() });
+      await replacement.start();
+
+      await expect(client.evaluate(TEXT)).resolves.toMatchObject({
+        status: "complete",
+        buildId: BUILD_ID,
+        heads,
+      });
+    } finally {
+      client.close();
+      await oldWorker.close();
+      await replacement?.close();
+    }
   });
 });

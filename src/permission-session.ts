@@ -1,3 +1,4 @@
+import { trustedPiDirs } from "./handlers/gates/trusted-pi-dirs";
 import type { ExtensionContext } from "@earendil-works/pi-coding-agent";
 
 import {
@@ -263,6 +264,11 @@ export class PermissionSession {
 
   getInfrastructureDirs(): readonly string[] {
     return this.paths.piInfrastructureDirs;
+  }
+
+  /** ~/.pi/agent/extensions and ~/.pi/agent/skills: trusted for reads and script runs. */
+  getTrustedPiDirs(): string[] {
+    return trustedPiDirs(this.paths.agentDir);
   }
 
   /** Config-derived infrastructure read paths (current at call time). */

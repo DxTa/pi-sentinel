@@ -7,6 +7,7 @@ import { afterEach, describe, expect, it } from "vitest";
 import {
   buildMaskedCommandShimPlan,
   buildMaskedCommandShimPlanAsync,
+  isPermissionDeniedOnly,
 } from "./masked-command-shim.js";
 import type { SandboxProfile } from "./types.js";
 import { DEFAULT_SCAN_DURATION_MS } from "./scan-budget.js";
@@ -37,6 +38,26 @@ function makeProfile(): SandboxProfile {
 }
 
 describe("buildMaskedCommandShimPlan", () => {
+  it("denies whole-directory masks as one directory instead of enumerating every file", async () => {
+    const cwd = canonicalPath(await makeTempDir("pi-mask-whole-dir-"));
+    const cloud = path.join(cwd, "cloud");
+    await mkdir(path.join(cloud, "venv", "lib"), { recursive: true });
+    await writeFile(path.join(cloud, "creds.db"), "x", "utf8");
+    await writeFile(path.join(cloud, "venv", "lib", "mod.py"), "x", "utf8");
+    await writeFile(path.join(cwd, ".env"), "SECRET=1\n", "utf8");
+    await writeFile(path.join(cwd, "readme.md"), "x", "utf8");
+    const profile = { ...makeProfile(), maskedPaths: ["**/.env", `${cloud}/**`] };
+
+    const syncPlan = buildMaskedCommandShimPlan("echo ok", profile, cwd);
+    const asyncPlan = await buildMaskedCommandShimPlanAsync("echo ok", profile, cwd, {
+      deadline: Date.now() + DEFAULT_SCAN_DURATION_MS,
+    });
+
+    for (const plan of [syncPlan, asyncPlan]) {
+      expect(plan.maskedDenyPaths.sort()).toEqual([path.join(cwd, ".env"), cloud].sort());
+    }
+  });
+
   it("keeps always-readable git config file roots out of directory scans", async () => {
     const cwd = await makeTempDir("pi-mask-gitconfig-");
     const gitconfig = path.join(homedir(), ".gitconfig");
@@ -423,7 +444,9 @@ describe("buildMaskedCommandShimPlan", () => {
       scanRoots: [configRoot],
     });
     expect(plan.maskedFilePaths).toEqual([]);
-    expect(plan.maskedDenyPaths).toEqual(expect.arrayContaining([pemPath, nestedCredentialPath]));
+    // Whole-dir mask denies gcloud itself (covers nested credentials) instead of listing each file.
+    const gcloudDir = canonicalPath(path.dirname(path.dirname(nestedCredentialPath)));
+    expect(plan.maskedDenyPaths).toEqual(expect.arrayContaining([pemPath, gcloudDir]));
     expect(plan.maskedDenyPaths).toHaveLength(2);
     expect(plan.shimCommands).toEqual([]);
 
@@ -433,7 +456,7 @@ describe("buildMaskedCommandShimPlan", () => {
       cwd,
       { scanRoots: [configRoot], deadline: Date.now() + 1_000, maxScanDurationMs: 1_000 },
     );
-    expect(asyncPlan.maskedDenyPaths).toEqual(expect.arrayContaining([pemPath, nestedCredentialPath]));
+    expect(asyncPlan.maskedDenyPaths).toEqual(expect.arrayContaining([pemPath, gcloudDir]));
     expect(asyncPlan.maskedDenyPaths).toHaveLength(2);
   });
 
@@ -458,5 +481,17 @@ describe("buildMaskedCommandShimPlan", () => {
 describe("masked scan budget", () => {
   it("uses a five-second default budget", () => {
     expect(DEFAULT_SCAN_DURATION_MS).toBe(5_000);
+  });
+});
+
+describe("isPermissionDeniedOnly", () => {
+  it("skips find exit 1 caused only by unreadable directories", () => {
+    expect(isPermissionDeniedOnly({ code: 1 }, "find: etc/cups/certs: Permission denied\n")).toBe(true);
+  });
+  it("fails closed on other find errors, kills, other codes, or empty stderr", () => {
+    expect(isPermissionDeniedOnly({ code: 1 }, "find: x: Permission denied\nfind: y: No such file or directory\n")).toBe(false);
+    expect(isPermissionDeniedOnly({ code: 1, killed: true }, "find: x: Permission denied\n")).toBe(false);
+    expect(isPermissionDeniedOnly({ code: 2 }, "find: x: Permission denied\n")).toBe(false);
+    expect(isPermissionDeniedOnly({ code: 1 }, "")).toBe(false);
   });
 });

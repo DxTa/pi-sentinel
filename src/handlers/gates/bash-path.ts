@@ -32,13 +32,14 @@ export async function describeBashPathGate(
   tcc: ToolCallContext,
   checkPermission: CheckPermissionFn,
   getSessionRuleset: () => Rule[],
+  extractedTokens?: string[],
 ): Promise<GateResult> {
   if (tcc.toolName !== "bash") return null;
 
   const command = getNonEmptyString(toRecord(tcc.input).command);
   if (!command) return null;
 
-  const tokens = await extractTokensForPathRules(command);
+  const tokens = extractedTokens ?? await extractTokensForPathRules(command);
   if (tokens.length === 0) return null;
 
   // Check each token against path rules with session rules appended.

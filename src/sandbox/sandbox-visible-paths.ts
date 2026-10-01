@@ -54,6 +54,11 @@ const KNOWN_HOME_VISIBLE_PATHS: string[] = [
   ".bun/bin",
 ];
 const UV_HOME_VISIBLE_PATHS: string[] = [".local/share/uv", ".cache/uv"];
+
+/** UV package cache/data roots: readable for uv commands, but too large to masked-scan (hundreds of thousands of public package files). */
+export function uvHomeRoots(): string[] {
+  return UV_HOME_VISIBLE_PATHS.map((relativePath) => canonicalPath(resolve(homedir(), relativePath)));
+}
 const DIRECT_UV_COMMAND_PATTERN = /^\s*(?:(?:env|command|exec|sudo)\s+)*(?:\S*\/)?uvx?(?!\s*\(\s*\))(?=$|\s)/;
 
 const KNOWN_HOME_FILES: string[] = [".gitconfig", ".gitignore"];

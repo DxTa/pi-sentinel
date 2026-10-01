@@ -1,109 +1,83 @@
 import { randomUUID } from "node:crypto";
+import { once } from "node:events";
 import * as net from "node:net";
 
-import {
-  type YoloAutoClassifierResult,
-  type YoloAutoL1Response,
-} from "./yolo-auto-policy";
+import type { YoloAutoHeads } from "./yolo-auto-policy.ts";
 
-export const L1_REQUEST_TIMEOUT_MS = 250;
-export const L2_REQUEST_TIMEOUT_MS = 250;
-export const L3_ESCALATION_TIMEOUT_MS = 1000;
+export const YOLO_AUTO_PROTOCOL_VERSION = 2;
+export const WORKER_HANDSHAKE_TIMEOUT_MS = 250;
+export const CLASSIFICATION_REQUEST_TIMEOUT_MS = 1_000;
+export const WORKER_STARTUP_TIMEOUT_MS = 120_000;
 export const WORKER_IDLE_EVICTION_MS = 10 * 60 * 1000;
+const MAX_FRAME_BYTES = 1024 * 1024;
+const READINESS_RETRY_INTERVAL_MS = 50;
 
 export interface YoloAutoPayload {
   toolName: string;
   operation: string;
   workspaceRelativePath?: string;
-  metadata?: Record<string, string | number | boolean>;
+  content?: string;
+  command?: string;
 }
 
-export const YOLO_AUTO_PROTOCOL_VERSION = 1;
+export function buildYoloAutoText(payload: YoloAutoPayload): string {
+  if (payload.operation === "exec" && payload.toolName === "bash") {
+    return "tool=bash command=" + (payload.command ?? "");
+  }
+  const path = payload.workspaceRelativePath ? " path=" + payload.workspaceRelativePath : "";
+  const content = payload.content === undefined ? "" : " content=" + payload.content.slice(0, 800);
+  return "tool=" + payload.toolName + path + content;
+}
 
 export interface YoloAutoWorkerRequest {
+  type: "classify";
   protocolVersion: typeof YOLO_AUTO_PROTOCOL_VERSION;
   requestId: string;
-  phase: "l1" | "l2" | "l3";
   deadlineMs: number;
-  payload: YoloAutoPayload;
-}
-
-export interface YoloAutoL2Response {
-  results: readonly YoloAutoClassifierResult[];
-  escalated: boolean;
-}
-
-export interface YoloAutoL3Response {
-  recommendation: "allow" | "prompt" | "block" | "review";
-  provenance?: string;
-}
-
-export type YoloAutoFailureReason =
-  | "l1_request_failed"
-  | "l2_request_failed"
-  | "l3_request_failed"
-  | "protocol_mismatch"
-  | "worker_failed";
-
-export interface YoloAutoPhaseSummary {
-  phase: "l1" | "l2" | "l3";
-  status: "complete" | "failed";
-  latencyMs: number;
-  failureReason?: YoloAutoFailureReason;
+  text: string;
 }
 
 export interface YoloAutoWorkerResponse {
-  requestId: string;
-  phase: "l1" | "l2" | "l3";
-  completion: "complete" | "failed";
-  l1?: YoloAutoL1Response;
-  l2?: YoloAutoL2Response;
-  l3?: YoloAutoL3Response;
-  error?: string;
-}
-
-export interface YoloAutoWorkerHandshakeResponse {
-  type: "handshake";
+  type: "classify";
   protocolVersion: typeof YOLO_AUTO_PROTOCOL_VERSION;
-  status: "ready" | "failed";
-  capabilities?: {
-    l1Ready: boolean;
-    l2Ready: boolean;
-    l3Available: boolean;
-    l3Strategy?: "multi";
-  };
+  requestId: string;
+  status: "complete" | "failed";
+  heads?: unknown;
   error?: string;
 }
 
-export interface YoloAutoWorkerTransport {
-  request(request: YoloAutoWorkerRequest): Promise<YoloAutoWorkerResponse>;
-  close?(): void;
-}
+export type YoloAutoFailureReason =
+  | "worker_unavailable"
+  | "build_mismatch"
+  | "request_failed"
+  | "protocol_mismatch"
+  | "worker_failed";
 
 export type YoloAutoClientResult =
   | {
       status: "complete";
       evaluationId: string;
-      phases: readonly YoloAutoPhaseSummary[];
+      buildId: string;
       totalLatencyMs: number;
-      l1: YoloAutoL1Response;
-      l2: YoloAutoL2Response | undefined;
-      l3: YoloAutoL3Response | undefined;
-      escalated: boolean;
+      heads: YoloAutoHeads;
     }
   | {
       status: "unavailable";
       evaluationId: string;
-      phases: readonly YoloAutoPhaseSummary[];
       totalLatencyMs: number;
       reason: YoloAutoFailureReason;
-      escalated: boolean;
     };
 
+export interface YoloAutoWorkerTransport {
+  request(request: YoloAutoWorkerRequest): Promise<YoloAutoWorkerResponse>;
+  waitUntilReady(): Promise<string>;
+  shutdownWorker(): Promise<void>;
+  close(): void;
+}
+
 export interface YoloAutoClientOptions {
-  l1RequestTimeoutMs?: number;
-  l2RequestTimeoutMs?: number;
-  l3EscalationTimeoutMs?: number;
+  expectedBuildId: string;
+  requestTimeoutMs?: number;
 }
 
 export type YoloAutoRuntimeStatus =
@@ -111,259 +85,155 @@ export type YoloAutoRuntimeStatus =
   | { state: "warm" }
   | { state: "fallback"; reason: string };
 
-export const MAX_MODEL_PROVENANCE_LENGTH = 128;
+export class YoloAutoBuildMismatchError extends Error {
+  readonly actualBuildId: string;
+  readonly expectedBuildId: string;
 
-function isBoundedModelProvenance(value: unknown): value is string {
+  constructor(actualBuildId: string, expectedBuildId: string) {
+    super("YoloAuto worker build ID mismatch.");
+    this.name = "YoloAutoBuildMismatchError";
+    this.actualBuildId = actualBuildId;
+    this.expectedBuildId = expectedBuildId;
+  }
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return Boolean(value) && typeof value === "object" && !Array.isArray(value);
+}
+
+function isBuildId(value: unknown): value is string {
   return typeof value === "string"
-    && value.length <= MAX_MODEL_PROVENANCE_LENGTH
+    && value.length > 0
+    && value.length <= 256
     && !/[\u0000-\u001f\u007f]/.test(value);
 }
 
-function isClassifierResult(value: unknown): value is YoloAutoClassifierResult {
-  if (!value || typeof value !== "object") return false;
-  const result = value as Record<string, unknown>;
-  return typeof result.category === "string"
-    && typeof result.className === "string"
-    && (result.pipeline === undefined || typeof result.pipeline === "string")
-    && typeof result.accepted === "boolean"
-    && typeof result.complete === "boolean"
-    && typeof result.degraded === "boolean"
-    && (result.provenance === undefined || isBoundedModelProvenance(result.provenance));
+function isHeads(value: unknown): value is YoloAutoHeads {
+  return isRecord(value);
 }
 
-function isL1Response(value: unknown): value is YoloAutoL1Response {
-  if (!value || typeof value !== "object") return false;
-  const response = value as Record<string, unknown>;
-  return (response.verdict === "safe"
-    || response.verdict === "unsafe"
-    || response.verdict === "unknown")
-    && typeof response.accepted === "boolean"
-    && typeof response.complete === "boolean"
-    && typeof response.degraded === "boolean"
-    && (response.provenance === undefined || isBoundedModelProvenance(response.provenance));
-}
-
-function isL2Response(value: unknown): value is YoloAutoL2Response {
-  if (!value || typeof value !== "object") return false;
-  const response = value as Record<string, unknown>;
-  return typeof response.escalated === "boolean"
-    && Array.isArray(response.results)
-    && response.results.every(isClassifierResult);
-}
-
-function isL3Response(value: unknown): value is YoloAutoL3Response {
-  if (!value || typeof value !== "object") return false;
-  const response = value as Record<string, unknown>;
-  return (response.recommendation === "allow"
-    || response.recommendation === "prompt"
-    || response.recommendation === "block"
-    || response.recommendation === "review")
-    && (response.provenance === undefined || isBoundedModelProvenance(response.provenance));
-}
-
-function isSafeL1(response: YoloAutoL1Response): boolean {
-  return response.verdict === "safe"
-    && response.accepted
-    && response.complete
-    && !response.degraded;
+function isWorkerResponse(value: unknown): value is YoloAutoWorkerResponse {
+  return isRecord(value)
+    && value.type === "classify"
+    && value.protocolVersion === YOLO_AUTO_PROTOCOL_VERSION
+    && typeof value.requestId === "string"
+    && (value.status === "complete" || value.status === "failed");
 }
 
 export class YoloAutoClient {
+  private readonly transport: YoloAutoWorkerTransport;
+  private readonly expectedBuildId: string;
+  private readonly requestTimeoutMs: number;
   private runtimeStatus: YoloAutoRuntimeStatus = { state: "cold" };
-  private readonly l1RequestTimeoutMs: number;
-  private readonly l2RequestTimeoutMs: number;
-  private readonly l3EscalationTimeoutMs: number;
 
-  constructor(
-    private readonly transport: YoloAutoWorkerTransport,
-    options: YoloAutoClientOptions = {},
-  ) {
-    this.l1RequestTimeoutMs = options.l1RequestTimeoutMs ?? L1_REQUEST_TIMEOUT_MS;
-    this.l2RequestTimeoutMs = options.l2RequestTimeoutMs ?? L2_REQUEST_TIMEOUT_MS;
-    this.l3EscalationTimeoutMs = options.l3EscalationTimeoutMs ?? L3_ESCALATION_TIMEOUT_MS;
+  constructor(transport: YoloAutoWorkerTransport, options: YoloAutoClientOptions) {
+    this.transport = transport;
+    this.expectedBuildId = options.expectedBuildId;
+    this.requestTimeoutMs = options.requestTimeoutMs ?? CLASSIFICATION_REQUEST_TIMEOUT_MS;
   }
 
-  async evaluate(
-    payload: YoloAutoPayload,
-    maxLevel: "l1" | "l2" | "l3" = "l3",
-  ): Promise<YoloAutoClientResult> {
+  async evaluate(text: string): Promise<YoloAutoClientResult> {
     const evaluationId = randomUUID();
-    const requestId = evaluationId;
     const startedAt = Date.now();
-    const phases: YoloAutoPhaseSummary[] = [];
-    const requestPhase = async (request: YoloAutoWorkerRequest) => {
-      const phaseStartedAt = Date.now();
-      const response = await this.request(request);
-      phases.push({
-        phase: request.phase,
-        status: response.status === "complete" ? "complete" : "failed",
-        latencyMs: Math.max(0, Date.now() - phaseStartedAt),
-        ...(response.status === "unavailable" ? { failureReason: response.reason } : {}),
-      });
-      return response;
+    let buildId: string;
+    try {
+      buildId = await this.waitUntilReady();
+    } catch (error) {
+      const reason = error instanceof YoloAutoBuildMismatchError
+        ? "build_mismatch"
+        : "worker_unavailable";
+      this.runtimeStatus = { state: "fallback", reason };
+      return this.unavailable(evaluationId, startedAt, reason);
+    }
+
+    const request: YoloAutoWorkerRequest = {
+      type: "classify",
+      protocolVersion: YOLO_AUTO_PROTOCOL_VERSION,
+      requestId: evaluationId,
+      deadlineMs: this.requestTimeoutMs,
+      text,
     };
-    const unavailable = (
-      reason: YoloAutoFailureReason,
-      escalated: boolean,
-    ): YoloAutoClientResult => ({
-      status: "unavailable",
-      evaluationId,
-      phases,
-      totalLatencyMs: Math.max(0, Date.now() - startedAt),
-      reason,
-      escalated,
-    });
-    const complete = (
-      l1: YoloAutoL1Response,
-      l2: YoloAutoL2Response | undefined,
-      l3: YoloAutoL3Response | undefined,
-      escalated: boolean,
-    ): YoloAutoClientResult => ({
-      status: "complete",
-      evaluationId,
-      phases,
-      totalLatencyMs: Math.max(0, Date.now() - startedAt),
-      l1,
-      l2,
-      l3,
-      escalated,
-    });
-    const markLastPhaseFailed = (): void => {
-      const phase = phases[phases.length - 1];
-      if (phase) {
-        phase.status = "failed";
-        phase.failureReason = "protocol_mismatch";
-      }
-    };
-
-    const l1Response = await requestPhase({
-      protocolVersion: YOLO_AUTO_PROTOCOL_VERSION,
-      requestId,
-      phase: "l1",
-      deadlineMs: this.l1RequestTimeoutMs,
-      payload,
-    });
-    if (l1Response.status === "unavailable") {
-      this.runtimeStatus = { state: "fallback", reason: l1Response.reason };
-      return unavailable(l1Response.reason, false);
-    }
-
-    const l1 = l1Response.response.l1;
-    if (!isL1Response(l1)) {
-      markLastPhaseFailed();
-      this.runtimeStatus = { state: "fallback", reason: "protocol_mismatch" };
-      return unavailable("protocol_mismatch", false);
-    }
-    if (!isSafeL1(l1) || maxLevel === "l1") {
-      this.runtimeStatus = { state: "warm" };
-      return complete(l1, undefined, undefined, false);
-    }
-
-    const l2Response = await requestPhase({
-      protocolVersion: YOLO_AUTO_PROTOCOL_VERSION,
-      requestId,
-      phase: "l2",
-      deadlineMs: this.l2RequestTimeoutMs,
-      payload,
-    });
-    if (l2Response.status === "unavailable") {
-      this.runtimeStatus = { state: "fallback", reason: l2Response.reason };
-      return unavailable(l2Response.reason, false);
-    }
-
-    const l2 = l2Response.response.l2;
-    if (!isL2Response(l2)) {
-      markLastPhaseFailed();
-      this.runtimeStatus = { state: "fallback", reason: "protocol_mismatch" };
-      return unavailable("protocol_mismatch", false);
-    }
-    if (!l2.escalated || maxLevel === "l2") {
-      this.runtimeStatus = { state: "warm" };
-      return complete(l1, l2, undefined, l2.escalated);
-    }
-
-    const l3Response = await requestPhase({
-      protocolVersion: YOLO_AUTO_PROTOCOL_VERSION,
-      requestId,
-      phase: "l3",
-      deadlineMs: this.l3EscalationTimeoutMs,
-      payload,
-    });
-    if (l3Response.status === "unavailable") {
-      this.runtimeStatus = { state: "fallback", reason: l3Response.reason };
-      return unavailable(l3Response.reason, true);
-    }
-    if (!isL3Response(l3Response.response.l3)) {
-      markLastPhaseFailed();
-      this.runtimeStatus = { state: "fallback", reason: "protocol_mismatch" };
-      return unavailable("protocol_mismatch", true);
-    }
-
-    this.runtimeStatus = { state: "warm" };
-    return complete(l1, l2, l3Response.response.l3, true);
-  }
-
-  close(): void {
-    this.transport.close?.();
-  }
-
-  getStatus(): YoloAutoRuntimeStatus {
-    return this.runtimeStatus;
-  }
-
-  private async request(request: YoloAutoWorkerRequest): Promise<
-    | { status: "complete"; response: YoloAutoWorkerResponse }
-    | { status: "unavailable"; reason: YoloAutoFailureReason; escalated: boolean }
-  > {
     let timer: ReturnType<typeof setTimeout> | undefined;
     try {
       const timeout = new Promise<never>((_, reject) => {
         timer = setTimeout(() => reject(new Error("request_timeout")), request.deadlineMs);
       });
       const response = await Promise.race([this.transport.request(request), timeout]);
-      if (
-        response.requestId !== request.requestId
-        || response.phase !== request.phase
-      ) {
-        return { status: "unavailable", reason: "protocol_mismatch", escalated: false };
+      if (!isWorkerResponse(response) || response.requestId !== request.requestId) {
+        this.runtimeStatus = { state: "fallback", reason: "protocol_mismatch" };
+        return this.unavailable(evaluationId, startedAt, "protocol_mismatch");
       }
-      if (response.completion === "failed") {
-        return { status: "unavailable", reason: "worker_failed", escalated: request.phase === "l3" };
+      if (response.status === "failed") {
+        this.runtimeStatus = { state: "fallback", reason: "worker_failed" };
+        return this.unavailable(evaluationId, startedAt, "worker_failed");
       }
-      if (response.completion !== "complete") {
-        return { status: "unavailable", reason: "protocol_mismatch", escalated: false };
+      if (!isHeads(response.heads)) {
+        this.runtimeStatus = { state: "fallback", reason: "protocol_mismatch" };
+        return this.unavailable(evaluationId, startedAt, "protocol_mismatch");
       }
-      return { status: "complete", response };
-    } catch {
+      this.runtimeStatus = { state: "warm" };
       return {
-        status: "unavailable",
-        reason: request.phase === "l1"
-          ? "l1_request_failed"
-          : request.phase === "l2"
-            ? "l2_request_failed"
-            : "l3_request_failed",
-        escalated: request.phase === "l3",
+        status: "complete",
+        evaluationId,
+        buildId,
+        totalLatencyMs: Math.max(0, Date.now() - startedAt),
+        heads: response.heads,
       };
+    } catch {
+      this.runtimeStatus = { state: "fallback", reason: "request_failed" };
+      return this.unavailable(evaluationId, startedAt, "request_failed");
     } finally {
       if (timer) clearTimeout(timer);
     }
   }
-}
 
-const MAX_FRAME_BYTES = 1024 * 1024;
+  async waitUntilReady(): Promise<string> {
+    const actualBuildId = await this.transport.waitUntilReady();
+    if (!isBuildId(actualBuildId)) throw new Error("Worker handshake has an invalid build ID.");
+    if (actualBuildId !== this.expectedBuildId) {
+      await this.transport.shutdownWorker();
+      throw new YoloAutoBuildMismatchError(actualBuildId, this.expectedBuildId);
+    }
+    return actualBuildId;
+  }
+
+  close(): void {
+    this.transport.close();
+  }
+
+  getStatus(): YoloAutoRuntimeStatus {
+    return this.runtimeStatus;
+  }
+
+  private unavailable(
+    evaluationId: string,
+    startedAt: number,
+    reason: YoloAutoFailureReason,
+  ): YoloAutoClientResult {
+    return {
+      status: "unavailable",
+      evaluationId,
+      totalLatencyMs: Math.max(0, Date.now() - startedAt),
+      reason,
+    };
+  }
+}
 
 export function createUnixSocketWorkerTransport(
   socketPath: string,
 ): YoloAutoWorkerTransport {
   let socket: net.Socket | undefined;
   let connecting: Promise<net.Socket> | undefined;
+  let connectingSocket: net.Socket | undefined;
+  let closed = false;
+  let buildId: string | undefined;
   let buffer = Buffer.alloc(0);
   const pending = new Map<string, {
     resolve: (response: YoloAutoWorkerResponse) => void;
     reject: (error: Error) => void;
     timer: ReturnType<typeof setTimeout>;
   }>();
-  let handshakeResolve: (() => void) | undefined;
+  let handshakeResolve: ((value: string) => void) | undefined;
   let handshakeReject: ((error: Error) => void) | undefined;
 
   const rejectPending = (error: Error) => {
@@ -382,40 +252,38 @@ export function createUnixSocketWorkerTransport(
       socket?.destroy(new Error("Invalid worker response JSON."));
       return;
     }
-    if (!parsed || typeof parsed !== "object") {
+    if (!isRecord(parsed)) {
       socket?.destroy(new Error("Invalid worker response frame."));
       return;
     }
-    if ((parsed as { type?: unknown }).type === "handshake") {
-      const handshake = parsed as Partial<YoloAutoWorkerHandshakeResponse>;
+    if (parsed.type === "handshake") {
       if (
-        handshake.protocolVersion !== YOLO_AUTO_PROTOCOL_VERSION
-        || handshake.status !== "ready"
-        || handshake.capabilities?.l1Ready !== true
-        || handshake.capabilities?.l2Ready !== true
+        parsed.protocolVersion !== YOLO_AUTO_PROTOCOL_VERSION
+        || parsed.status !== "ready"
+        || !isBuildId(parsed.buildId)
       ) {
-        handshakeReject?.(new Error(handshake.error ?? "Worker handshake failed."));
+        handshakeReject?.(new Error("Worker handshake failed."));
         socket?.destroy(new Error("Worker handshake failed."));
         return;
       }
-      handshakeResolve?.();
+      buildId = parsed.buildId;
+      handshakeResolve?.(parsed.buildId);
       handshakeResolve = undefined;
       handshakeReject = undefined;
       return;
     }
-    const response = parsed as Partial<YoloAutoWorkerResponse>;
-    if (typeof response.requestId !== "string") {
+    if (typeof parsed.requestId !== "string") {
       socket?.destroy(new Error("Worker response missing request ID."));
       return;
     }
-    const entry = pending.get(response.requestId);
+    const entry = pending.get(parsed.requestId);
     if (!entry) {
       socket?.destroy(new Error("Worker response has unknown request ID."));
       return;
     }
-    pending.delete(response.requestId);
+    pending.delete(parsed.requestId);
     clearTimeout(entry.timer);
-    entry.resolve(response as YoloAutoWorkerResponse);
+    entry.resolve(parsed as unknown as YoloAutoWorkerResponse);
   };
 
   const handleData = (chunk: Buffer) => {
@@ -446,70 +314,89 @@ export function createUnixSocketWorkerTransport(
   };
 
   const connect = (): Promise<net.Socket> => {
-    if (socket && !socket.destroyed) return Promise.resolve(socket);
     if (connecting) return connecting;
+    if (closed) return Promise.reject(new Error("Worker transport closed."));
+    if (socket && !socket.destroyed && buildId) return Promise.resolve(socket);
 
-    connecting = new Promise<net.Socket>((resolve, reject) => {
-      const candidate = net.createConnection(socketPath);
-      const fail = (error: Error) => {
-        candidate.removeAllListeners();
-        candidate.destroy();
-        socket = undefined;
-        connecting = undefined;
-        reject(error);
+    const candidate = net.createConnection(socketPath);
+    connectingSocket = candidate;
+    const controller = new AbortController();
+    connecting = Promise.race([
+      once(candidate, "connect", { signal: controller.signal }),
+      once(candidate, "close", { signal: controller.signal }).then(() => {
+        throw new Error("Worker socket closed.");
+      }),
+    ]).then(async () => {
+      controller.abort();
+      if (candidate.destroyed) throw new Error("Worker transport closed.");
+      socket = candidate;
+      candidate.on("data", handleData);
+      const handleDisconnect = (error: Error): void => {
+        if (socket === candidate) {
+          socket = undefined;
+          buildId = undefined;
+        }
+        handshakeReject?.(error);
+        rejectPending(error);
       };
-      candidate.once("connect", () => {
-        candidate.removeListener("error", fail);
-        socket = candidate;
-        candidate.on("data", handleData);
-        candidate.on("error", (error) => {
-          socket = undefined;
-          handshakeReject?.(error);
-          rejectPending(error);
-        });
-        candidate.on("close", () => {
-          socket = undefined;
-          handshakeReject?.(new Error("Worker socket closed."));
-          rejectPending(new Error("Worker socket closed."));
-        });
-        const handshakeTimer = setTimeout(() => {
-          handshakeReject?.(new Error("Worker handshake timed out."));
-          candidate.destroy();
-        }, L1_REQUEST_TIMEOUT_MS);
-        const handshake = new Promise<void>((handshakeDone, handshakeFailed) => {
-          handshakeResolve = () => {
-            clearTimeout(handshakeTimer);
-            handshakeDone();
-          };
-          handshakeReject = (error) => {
-            clearTimeout(handshakeTimer);
-            handshakeFailed(error);
-          };
-        });
-        void writeFrame(candidate, {
-          type: "handshake",
-          protocolVersion: YOLO_AUTO_PROTOCOL_VERSION,
-          client: "pi-sentinel",
-          capabilities: { l1: true, l2: true, l3Escalation: true },
-        }).then(() => handshake).then(
-          () => {
-            connecting = undefined;
-            resolve(candidate);
-          },
-          (error: unknown) => {
-            connecting = undefined;
-            if (socket === candidate) socket = undefined;
-            candidate.destroy();
-            reject(error instanceof Error ? error : new Error(String(error)));
-          },
-        );
+      candidate.on("error", handleDisconnect);
+      candidate.on("close", () => handleDisconnect(new Error("Worker socket closed.")));
+      const handshakeTimer = setTimeout(() => {
+        handshakeReject?.(new Error("Worker handshake timed out."));
+        candidate.destroy();
+      }, WORKER_HANDSHAKE_TIMEOUT_MS);
+      const handshake = new Promise<string>((handshakeDone, handshakeFailed) => {
+        handshakeResolve = (id) => {
+          clearTimeout(handshakeTimer);
+          handshakeResolve = undefined;
+          handshakeReject = undefined;
+          handshakeDone(id);
+        };
+        handshakeReject = (error) => {
+          clearTimeout(handshakeTimer);
+          handshakeResolve = undefined;
+          handshakeReject = undefined;
+          handshakeFailed(error);
+        };
       });
-      candidate.once("error", fail);
+      await Promise.all([
+        writeFrame(candidate, { type: "handshake", protocolVersion: YOLO_AUTO_PROTOCOL_VERSION }),
+        handshake,
+      ]);
+      if (closed || candidate.destroyed) throw new Error("Worker transport closed.");
+      return candidate;
+    }).catch((error: unknown) => {
+      if (socket === candidate) {
+        socket = undefined;
+        buildId = undefined;
+      }
+      candidate.destroy();
+      throw error instanceof Error ? error : new Error(String(error));
+    }).finally(() => {
+      controller.abort();
+      connectingSocket = undefined;
+      connecting = undefined;
     });
     return connecting;
   };
 
   return {
+    async waitUntilReady() {
+      const deadline = Date.now() + WORKER_STARTUP_TIMEOUT_MS;
+      while (true) {
+        try {
+          await connect();
+          if (!buildId) throw new Error("Worker handshake did not provide a build ID.");
+          return buildId;
+        } catch (error) {
+          const code = error instanceof Error ? (error as NodeJS.ErrnoException).code : undefined;
+          const remaining = deadline - Date.now();
+          if ((code !== "ECONNREFUSED" && code !== "ENOENT") || remaining <= 0) throw error;
+          await new Promise<void>((resolve) =>
+            setTimeout(resolve, Math.min(READINESS_RETRY_INTERVAL_MS, remaining)));
+        }
+      }
+    },
     async request(request) {
       const activeSocket = await connect();
       return new Promise<YoloAutoWorkerResponse>((resolve, reject) => {
@@ -526,11 +413,27 @@ export function createUnixSocketWorkerTransport(
         });
       });
     },
+    async shutdownWorker() {
+      const activeSocket = await connect();
+      const socketClosed = once(activeSocket, "close").then(() => undefined, () => undefined);
+      await writeFrame(activeSocket, {
+        type: "shutdown",
+        protocolVersion: YOLO_AUTO_PROTOCOL_VERSION,
+      });
+      await socketClosed;
+    },
     close() {
-      socket?.destroy();
+      closed = true;
+      const error = new Error("Worker transport closed.");
+      const pendingSocket = connectingSocket;
+      const activeSocket = socket;
       socket = undefined;
+      connectingSocket = undefined;
       connecting = undefined;
-      rejectPending(new Error("Worker transport closed."));
+      buildId = undefined;
+      pendingSocket?.destroy(error);
+      activeSocket?.destroy(error);
+      rejectPending(error);
     },
   };
 }

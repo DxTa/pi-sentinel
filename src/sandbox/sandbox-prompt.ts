@@ -105,12 +105,13 @@ export async function promptSandboxGrant(
       message = change.description;
     } else {
       title = "⚠ Sandbox: Path Access Requested";
-      message =
+      message = change.description || (
         `The command "${truncateCommand(command, 80)}" needs ` +
         (change.mode === "rw" ? "read-write" : "read") +
         ` access to ${change.values.join(", ")}` +
         `, which is not in the current sandbox profile.` +
-        `\n\nGrant path access?`;
+        `\n\nGrant path access?`
+      );
     }
   } else if (change.type === "auth-bypass") {
     title = "⚠ Sandbox: Unsandboxed Authentication Required";

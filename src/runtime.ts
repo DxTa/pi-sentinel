@@ -6,7 +6,7 @@ import {
   getAgentDir,
 } from "@earendil-works/pi-coding-agent";
 
-import { loadAndMergeConfigs } from "./config-loader";
+import { loadAndMergeConfigs, stripLegacyYoloAutoMaxLevel } from "./config-loader";
 import {
   DEBUG_LOG_FILENAME,
   getBundledConfigPath,
@@ -168,16 +168,39 @@ export function refreshExtensionConfig(
     debugLog: runtimeConfig.debugLog,
     permissionReviewLog: runtimeConfig.permissionReviewLog,
     mode: runtimeConfig.mode,
-    yoloAutoMaxLevel: runtimeConfig.yoloAutoMaxLevel,
     yoloAskBashPatterns: runtimeConfig.yoloAskBashPatterns,
   });
 }
 
 /**
  * Save updated runtime knobs (debugLog, permissionReviewLog, mode,
- * yoloAutoMaxLevel, yoloAskBashPatterns) to the global config file, then update runtime.config
+ * yoloAskBashPatterns) to the global config file, then update runtime.config
  * and sync UI status.
  */
+/** Persist global `sandbox.enabled`, keeping other sandbox keys. Returns false on failure. */
+export function saveSandboxEnabled(
+  runtime: ExtensionRuntime,
+  enabled: boolean,
+  ctx: ExtensionCommandContext,
+): boolean {
+  const globalPath = getGlobalConfigPath(runtime.agentDir);
+  try {
+    const existing = readConfigFile(globalPath);
+    const sandbox = typeof existing.sandbox === "object" && existing.sandbox !== null && !Array.isArray(existing.sandbox)
+      ? existing.sandbox
+      : {};
+    if (writeConfigFile(globalPath, { ...existing, sandbox: { ...sandbox, enabled } })) {
+      runtime.writeDebugLog("config.sandbox_toggled", { enabled });
+      return true;
+    }
+  } catch (error) {
+    ctx.ui.notify(`Failed to save sandbox setting at '${globalPath}': ${error instanceof Error ? error.message : String(error)}`, "error");
+    return false;
+  }
+  ctx.ui.notify(`Failed to save sandbox setting at '${globalPath}'.`, "error");
+  return false;
+}
+
 export function saveExtensionConfig(
   runtime: ExtensionRuntime,
   next: PermissionSystemExtensionConfig,
@@ -203,10 +226,10 @@ export function saveExtensionConfig(
     debugLog: normalized.debugLog,
     permissionReviewLog: normalized.permissionReviewLog,
     mode: normalized.mode,
-    yoloAutoMaxLevel: normalized.yoloAutoMaxLevel,
     yoloAskBashPatterns: normalized.yoloAskBashPatterns,
   };
 
+  stripLegacyYoloAutoMaxLevel(merged);
   delete merged.yoloMode;
   delete merged.yoloAutoMode;
 
@@ -226,7 +249,6 @@ export function saveExtensionConfig(
     debugLog: normalized.debugLog,
     permissionReviewLog: normalized.permissionReviewLog,
     mode: normalized.mode,
-    yoloAutoMaxLevel: normalized.yoloAutoMaxLevel,
     yoloAskBashPatterns: normalized.yoloAskBashPatterns,
   });
 }
@@ -257,7 +279,7 @@ export function resetExtensionConfig(
   delete next.mode;
   delete next.yoloMode;
   delete next.yoloAutoMode;
-  delete next.yoloAutoMaxLevel;
+  stripLegacyYoloAutoMaxLevel(next);
   delete next.yoloAskBashPatterns;
 
   if (!writeConfigFile(globalPath, next)) {

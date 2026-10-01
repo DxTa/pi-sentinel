@@ -1,4 +1,5 @@
 import { getNonEmptyString, toRecord } from "#src/common";
+import { isReadOnlyBashCommand } from "#src/bash-command-safety";
 import { isPathWithinDirectory, normalizePathForComparison } from "#src/path-utils";
 import type { Rule } from "#src/rule";
 import { deriveApprovalPattern } from "#src/session-rules";
@@ -7,26 +8,6 @@ import { extractExternalPathsFromBashCommand } from "./bash-path-extractor";
 import type { GateResult } from "./descriptor";
 import { formatBashExternalDirectoryAskPrompt } from "./external-directory-messages";
 import type { ToolCallContext } from "./types";
-
-const READ_ONLY_EXTERNAL_BASH_COMMANDS: ReadonlySet<string> = new Set([
-  "cat",
-  "head",
-  "tail",
-  "less",
-  "more",
-  "grep",
-  "rg",
-  "ag",
-  "wc",
-  "sort",
-  "uniq",
-  "diff",
-  "ls",
-  "find",
-  "stat",
-  "du",
-  "df",
-]);
 
 const COMMAND_WRAPPERS = new Set(["sudo", "command", "env", "exec"]);
 const HARD_BLOCKED_MUTATING_COMMANDS = new Set([
@@ -80,9 +61,6 @@ export function getHardBlockedBashMutationPaths(
   );
 }
 
-const COMPLEX_SHELL_PATTERN = /&&|\|\||[;`]/;
-const OUTPUT_REDIRECTION_PATTERN = />>?|&>|>\|/;
-
 /** Function type for checkPermission used by the descriptor factory. */
 type CheckPermissionFn = (
   surface: string,
@@ -92,23 +70,7 @@ type CheckPermissionFn = (
 ) => PermissionCheckResult;
 
 function shouldForcePromptBashExternalDirectoryInYolo(command: string): boolean {
-  const trimmed = command.trim();
-  if (!trimmed) {
-    return true;
-  }
-
-  if (
-    COMPLEX_SHELL_PATTERN.test(trimmed)
-    || trimmed.includes("\n")
-    || trimmed.includes("$(")
-    || trimmed.includes("|")
-    || OUTPUT_REDIRECTION_PATTERN.test(trimmed)
-  ) {
-    return true;
-  }
-
-  const commandName = trimmed.split(/\s+/, 1)[0] ?? "";
-  return !READ_ONLY_EXTERNAL_BASH_COMMANDS.has(commandName);
+  return !isReadOnlyBashCommand(command);
 }
 
 /**

@@ -1,0 +1,177 @@
+/**
+ * Local store of model evaluations joined to human decisions (D16).
+ * Holds structured features only: head probabilities, tool/operation,
+ * a coarse pattern key, and a hashed workspace scope. No raw request text.
+ */
+import { createHash } from "node:crypto";
+import { chmodSync, closeSync, mkdirSync, openSync } from "node:fs";
+import { dirname, extname } from "node:path";
+import { DatabaseSync } from "node:sqlite";
+
+import { suggestBashPattern } from "./pattern-suggest";
+import { YOLO_AUTO_LABEL_SCHEMA, type YoloAutoHeadName } from "./yolo-auto-label-schema";
+import type { YoloAutoHeads } from "./yolo-auto-policy";
+
+export type HumanAction = "allow_once" | "session" | "workspace" | "global" | "deny";
+export type HostBashDecisionAction = "allow" | "deny";
+
+export interface HostBashDecisionCounts {
+  approvals: number;
+  denials: number;
+}
+
+export interface EvaluationRow {
+  evaluationId: string;
+  ts: number;
+  scope: string;
+  toolName: string;
+  operation: string;
+  patternKey: string;
+  heads: YoloAutoHeads;
+  hardRuleHit: boolean;
+  modelAction: "allow" | "prompt";
+}
+
+export interface DecisionRecord extends Omit<EvaluationRow, "heads"> {
+  features: number[];
+  humanAction: HumanAction | null;
+  humanTs: number | null;
+}
+
+export interface DecisionStore {
+  recordEvaluation(row: EvaluationRow): void;
+  /** Returns false when the evaluation is unknown. */
+  recordHumanDecision(evaluationId: string, action: HumanAction, ts: number): boolean;
+  recordHostBashDecision(scope: string, patternKey: string, action: HostBashDecisionAction, ts: number): void;
+  getHostBashDecisionCounts(scope: string, patternKey: string, since: number): HostBashDecisionCounts;
+  listDecisions(scope: string): DecisionRecord[];
+  /** Labelled rows for one tool/operation across all scopes, decided at or after `since`. */
+  listLabelled(toolName: string, operation: string, since: number): DecisionRecord[];
+  columnNames(): string[];
+  close(): void;
+}
+
+const HEAD_ORDER = Object.keys(YOLO_AUTO_LABEL_SCHEMA) as YoloAutoHeadName[];
+
+export function featuresFromHeads(heads: YoloAutoHeads): number[] {
+  return HEAD_ORDER.flatMap((head) => {
+    const probs = (heads as Record<string, Record<string, number>>)[head] ?? {};
+    return YOLO_AUTO_LABEL_SCHEMA[head].map((label) => probs[label] ?? 0);
+  });
+}
+
+export function workspaceScope(workspacePath: string): string {
+  return "ws:" + createHash("sha256").update(workspacePath).digest("hex").slice(0, 16);
+}
+
+export const GLOBAL_SCOPE = "global";
+
+const LIST_TOOLS = new Set(["ls", "find", "grep"]);
+
+/** Coarse, low-leakage key: bash command prefix or tool + top-level dir + extension. */
+export function patternKeyFor(input: {
+  toolName: string;
+  command?: string;
+  workspaceRelativePath?: string;
+}): string {
+  if (input.toolName === "bash") return `bash:${suggestBashPattern(input.command ?? "") || "*"}`;
+  const path = input.workspaceRelativePath;
+  if (!path) return `${input.toolName}:*`;
+  const segments = path.split("/").filter(Boolean);
+  if (LIST_TOOLS.has(input.toolName)) return `${input.toolName}:${segments[0] ?? "."}/*`;
+  const top = segments.length > 1 ? segments[0] : ".";
+  return `${input.toolName}:${top}/*${extname(path)}`;
+}
+
+interface Row {
+  evaluation_id: string; ts: number; scope: string; tool: string; operation: string;
+  pattern_key: string; features: string; hard_rule: number; model_action: string;
+  human_action: string | null; human_ts: number | null;
+}
+
+export function openDecisionStore(dbPath: string): DecisionStore {
+  mkdirSync(dirname(dbPath), { recursive: true, mode: 0o700 });
+  chmodSync(dirname(dbPath), 0o700);
+  closeSync(openSync(dbPath, "a", 0o600));
+  chmodSync(dbPath, 0o600);
+  const db = new DatabaseSync(dbPath);
+  // Several Pi sessions share one store; wait briefly instead of failing on lock.
+  db.exec("PRAGMA busy_timeout = 2000;");
+  db.exec(`CREATE TABLE IF NOT EXISTS decisions (
+    evaluation_id TEXT PRIMARY KEY,
+    ts INTEGER NOT NULL,
+    scope TEXT NOT NULL,
+    tool TEXT NOT NULL,
+    operation TEXT NOT NULL,
+    pattern_key TEXT NOT NULL,
+    features TEXT NOT NULL,
+    hard_rule INTEGER NOT NULL,
+    model_action TEXT NOT NULL,
+    human_action TEXT,
+    human_ts INTEGER
+  );
+  CREATE INDEX IF NOT EXISTS decisions_scope_key ON decisions(scope, tool, operation, pattern_key);
+  CREATE TABLE IF NOT EXISTS host_bash_decisions (
+    scope TEXT NOT NULL, pattern_key TEXT NOT NULL,
+    action TEXT NOT NULL CHECK(action IN ('allow', 'deny')), ts INTEGER NOT NULL
+  );
+  CREATE INDEX IF NOT EXISTS host_bash_decisions_lookup ON host_bash_decisions(scope, pattern_key, ts);`);
+
+  const insert = db.prepare(`INSERT OR REPLACE INTO decisions
+    (evaluation_id, ts, scope, tool, operation, pattern_key, features, hard_rule, model_action)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`);
+  const label = db.prepare("UPDATE decisions SET human_action = ?, human_ts = ? WHERE evaluation_id = ?");
+  const hostBashInsert = db.prepare("INSERT INTO host_bash_decisions(scope, pattern_key, action, ts) VALUES (?, ?, ?, ?)");
+  const hostBashCounts = db.prepare(`SELECT
+    COUNT(CASE WHEN action = 'allow' THEN 1 END) AS approvals,
+    COUNT(CASE WHEN action = 'deny' THEN 1 END) AS denials
+    FROM host_bash_decisions WHERE scope = ? AND pattern_key = ? AND ts >= ?`);
+  const list = db.prepare("SELECT * FROM decisions WHERE scope = ? ORDER BY ts");
+  const labelled = db.prepare(`SELECT * FROM decisions
+    WHERE tool = ? AND operation = ? AND human_action IS NOT NULL AND COALESCE(human_ts, ts) >= ?`);
+
+  return {
+    recordEvaluation(row) {
+      insert.run(row.evaluationId, row.ts, row.scope, row.toolName, row.operation, row.patternKey,
+        JSON.stringify(featuresFromHeads(row.heads)), row.hardRuleHit ? 1 : 0, row.modelAction);
+    },
+    recordHumanDecision(evaluationId, action, ts) {
+      return Number(label.run(action, ts, evaluationId).changes) > 0;
+    },
+    recordHostBashDecision(scope, patternKey, action, ts) {
+      hostBashInsert.run(scope, patternKey, action, ts);
+    },
+    getHostBashDecisionCounts(scope, patternKey, since) {
+      const row = hostBashCounts.get(scope, patternKey, since) as unknown as HostBashDecisionCounts | undefined;
+      return { approvals: row?.approvals ?? 0, denials: row?.denials ?? 0 };
+    },
+    listDecisions(scope) {
+      return (list.all(scope) as unknown as Row[]).map(toRecord);
+    },
+    listLabelled(toolName, operation, since) {
+      return (labelled.all(toolName, operation, since) as unknown as Row[]).map(toRecord);
+    },
+    columnNames() {
+      return (db.prepare("PRAGMA table_info(decisions)").all() as { name: string }[]).map((c) => c.name);
+    },
+    close() {
+      db.close();
+    },
+  };
+}
+
+function toRecord(r: Row): DecisionRecord {
+  return {
+        evaluationId: r.evaluation_id,
+        ts: r.ts,
+        scope: r.scope,
+        toolName: r.tool,
+        operation: r.operation,
+        patternKey: r.pattern_key,
+        features: JSON.parse(r.features) as number[],
+        hardRuleHit: r.hard_rule === 1,
+        modelAction: r.model_action as "allow" | "prompt",
+        humanAction: r.human_action as HumanAction | null,
+        humanTs: r.human_ts,
+  };
+}

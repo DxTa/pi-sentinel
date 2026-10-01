@@ -135,9 +135,49 @@ function getAbsoluteMaskedPatternPrefix(pattern: string): string | null {
   return canonicalPath(prefix);
 }
 
+/** Absolute `dir/**` masks: denied as one directory instead of enumerating every file inside. */
+function wholeDirMask(pattern: string): string | null {
+  const expanded = pattern.startsWith("~" + sep) ? join(homedir(), pattern.slice(2)) : pattern;
+  const suffix = `${sep}**`;
+  if (!expanded.startsWith(sep) || !expanded.endsWith(suffix)) return null;
+  const dir = expanded.slice(0, -suffix.length);
+  return /[?*[\]]/.test(dir) ? null : canonicalPath(dir);
+}
+
+function getWholeDirMasks(profile: SandboxProfile): string[] {
+  return getMaskedPatterns(profile).flatMap((pattern) => wholeDirMask(pattern) ?? []);
+}
+
+function isWithinWholeDirMask(path: string, masks: string[]): boolean {
+  const normalized = normalizeMacPrivatePath(resolve(path));
+  return masks.some((mask) => {
+    const normalizedMask = normalizeMacPrivatePath(mask);
+    return normalized === normalizedMask || normalized.startsWith(`${normalizedMask}${sep}`);
+  });
+}
+
+/** Whole-dir masks strictly inside root, expressed with root's own prefix for `find -path`. */
+function getPrunePaths(profile: SandboxProfile, root: string): string[] {
+  const normalizedRoot = normalizeMacPrivatePath(resolve(root));
+  return getWholeDirMasks(profile).flatMap((mask) => {
+    const normalizedMask = normalizeMacPrivatePath(mask);
+    if (!normalizedMask.startsWith(`${normalizedRoot}${sep}`)) return [];
+    return [join(root, relative(normalizedRoot, normalizedMask)).replace(/[?*[\]\\]/g, "\\$&")];
+  });
+}
+
+/** Existing whole-dir masks visible from any scan root. */
+function existingWholeDirDenyPaths(profile: SandboxProfile, scanRoots: string[]): string[] {
+  return getWholeDirMasks(profile).filter((mask) =>
+    scanRoots.some((root) => rootsOverlap(normalizeMacPrivatePath(resolve(root)), normalizeMacPrivatePath(mask)))
+    && statSync(mask, { throwIfNoEntry: false })?.isDirectory() === true,
+  );
+}
+
 function getFindNamePatterns(profile: SandboxProfile, root: string): string[] {
   const names = new Set<string>();
   for (const pattern of getMaskedPatterns(profile)) {
+    if (wholeDirMask(pattern) !== null) continue;
     const expanded = pattern.startsWith("~" + sep)
       ? join(homedir(), pattern.slice(2))
       : pattern;
@@ -153,10 +193,17 @@ function getFindNamePatterns(profile: SandboxProfile, root: string): string[] {
   return [...names];
 }
 
-function buildFindArgs(root: string, namePatterns: string[], maxDepth: number): string[] {
-  const args = process.platform === "linux"
-    ? [root, "-maxdepth", String(maxDepth), "(", "-type", "f", "-o", "-type", "l", ")"]
-    : [root, "(", "-type", "f", "-o", "-type", "l", ")"];
+function buildFindArgs(root: string, namePatterns: string[], maxDepth: number, prunePaths: string[] = []): string[] {
+  const args = process.platform === "linux" ? [root, "-maxdepth", String(maxDepth)] : [root];
+  if (prunePaths.length > 0) {
+    args.push("(");
+    prunePaths.forEach((prunePath, index) => {
+      if (index > 0) args.push("-o");
+      args.push("-path", prunePath);
+    });
+    args.push(")", "-prune", "-o");
+  }
+  args.push("(", "-type", "f", "-o", "-type", "l", ")");
   if (namePatterns.length > 0) {
     args.push("(");
     namePatterns.forEach((pattern, index) => {
@@ -199,6 +246,15 @@ function parseFindOutput(
   return results;
 }
 
+export function isPermissionDeniedOnly(
+  error: { code?: unknown; killed?: boolean; signal?: unknown },
+  stderr: string | Buffer,
+): boolean {
+  if (error.code !== 1 || error.killed || error.signal) return false;
+  const lines = String(stderr).split("\n").filter((line) => line.trim());
+  return lines.length > 0 && lines.every((line) => line.startsWith("find: ") && line.endsWith(": Permission denied"));
+}
+
 function runFindSync(
   root: string,
   profile: SandboxProfile,
@@ -208,7 +264,7 @@ function runFindSync(
   maxScanDurationMs: number,
 ): string[] {
   assertScanWithinBudget(scanDeadline, maxScanDurationMs, root);
-  const output = execFileSync(FIND_BINARY, buildFindArgs(root, getFindNamePatterns(profile, root), maxDepth), {
+  const output = execFileSync(FIND_BINARY, buildFindArgs(root, getFindNamePatterns(profile, root), maxDepth, getPrunePaths(profile, root)), {
     encoding: "buffer",
     maxBuffer: MAX_FIND_OUTPUT_BYTES,
     stdio: ["ignore", "pipe", "ignore"],
@@ -222,13 +278,17 @@ function expandMaskedScanRoots(scanRoots: string[], profile: SandboxProfile): st
   const roots = normalizeScanRoots(scanRoots);
   const additions: string[] = [];
   for (const pattern of getMaskedPatterns(profile)) {
+    if (wholeDirMask(pattern) !== null) continue;
     const fixedPrefix = getAbsoluteMaskedPatternPrefix(pattern);
     if (fixedPrefix === null) continue;
     if (roots.some((root) => fixedPrefix.startsWith(`${resolve(root)}${sep}`))) {
       additions.push(fixedPrefix);
     }
   }
-  return dedupe([...roots, ...additions]).filter(shouldScanRoot);
+  const masks = getWholeDirMasks(profile);
+  return dedupe([...roots, ...additions])
+    .filter(shouldScanRoot)
+    .filter((root) => !isWithinWholeDirMask(root, masks));
 }
 
 function shouldScanRoot(root: string): boolean {
@@ -305,7 +365,10 @@ export function buildMaskedCommandShimPlan(
     }
   }
 
-  const maskedDenyPaths = dedupeMaskedPaths([
+  const wholeDirDenyPaths = options.skipWorkspaceScan
+    ? []
+    : existingWholeDirDenyPaths(profile, [cwd, ...(options.scanRoots ?? [])]);
+  const maskedDenyPaths = [...dedupeMaskedPaths([
     ...scannedMaskedFiles,
     ...maskedFilePaths,
   ]).filter((path) => {
@@ -314,7 +377,7 @@ export function buildMaskedCommandShimPlan(
     } catch {
       return false;
     }
-  });
+  }), ...wholeDirDenyPaths];
 
   if (maskedFilePaths.length === 0) {
     return { maskedFilePaths: [], maskedDenyPaths, shimCommands: [] };
@@ -369,6 +432,9 @@ export async function buildMaskedCommandShimPlanAsync(
     }
   }
 
+  const wholeDirDenyPaths = options.skipWorkspaceScan
+    ? []
+    : existingWholeDirDenyPaths(profile, [cwd, ...(options.scanRoots ?? [])]);
   const maskedDenyPaths = dedupeMaskedPaths([...scannedMaskedFiles, ...maskedFilePaths]);
   const existingMaskedDenyPaths: string[] = [];
   for (const filePath of maskedDenyPaths) {
@@ -398,6 +464,8 @@ export async function buildMaskedCommandShimPlanAsync(
       if (isScanBudgetExceeded(error)) throw error;
     }
   }
+
+  existingMaskedDenyPaths.push(...wholeDirDenyPaths);
 
   if (maskedFilePaths.length === 0) {
     return { maskedFilePaths: [], maskedDenyPaths: existingMaskedDenyPaths, shimCommands: [] };
@@ -431,14 +499,14 @@ async function runFindAsync(
   const output = await new Promise<Buffer>((resolveOutput, reject) => {
     execFile(
       FIND_BINARY,
-      buildFindArgs(root, getFindNamePatterns(profile, root), maxDepth),
+      buildFindArgs(root, getFindNamePatterns(profile, root), maxDepth, getPrunePaths(profile, root)),
       {
         encoding: "buffer",
         maxBuffer: MAX_FIND_OUTPUT_BYTES,
         timeout: Math.max(1, scanDeadline - Date.now()),
       },
-      (error, stdout) => {
-        if (error) {
+      (error, stdout, stderr) => {
+        if (error && !isPermissionDeniedOnly(error, stderr)) {
           reject(error);
           return;
         }

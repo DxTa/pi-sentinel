@@ -15,6 +15,7 @@ import {
 interface TSNode {
   readonly type: string;
   readonly text: string;
+  readonly hasError?: boolean;
   readonly childCount: number;
   child(index: number): TSNode | null;
 }
@@ -433,6 +434,45 @@ function collectPathCandidateTokens(node: TSNode, tokens: string[]): void {
     const child = node.child(i);
     if (!child) continue;
     collectPathCandidateTokens(child, tokens);
+  }
+}
+
+const WRITE_REDIRECT_TYPES = new Set([">", ">>", ">|", ">&", "&>", "&>>", "&>|"]);
+const REDIRECT_TARGET_TYPES = new Set(["word", "concatenation", "string", "raw_string"]);
+const UNSUPPORTED_REDIRECT_TARGET_TYPES = new Set(["ansi_c_string", "translated_string"]);
+
+class UnsupportedWriteRedirectError extends Error {
+  constructor() {
+    super("Unsupported Bash output redirect target quoting.");
+  }
+}
+
+function collectWriteRedirectTokens(node: TSNode, tokens: string[]): void {
+  if (SKIP_SUBTREE_TYPES.has(node.type)) return;
+
+  if (node.type === "file_redirect") {
+    let afterWriteOperator = false;
+    for (let index = 0; index < node.childCount; index += 1) {
+      const child = node.child(index);
+      if (!child) continue;
+      if (WRITE_REDIRECT_TYPES.has(child.type)) {
+        afterWriteOperator = true;
+        continue;
+      }
+      if (afterWriteOperator && UNSUPPORTED_REDIRECT_TARGET_TYPES.has(child.type)) {
+        throw new UnsupportedWriteRedirectError();
+      }
+      if (afterWriteOperator && REDIRECT_TARGET_TYPES.has(child.type)) {
+        tokens.push(resolveNodeText(child));
+        break;
+      }
+    }
+    return;
+  }
+
+  for (let index = 0; index < node.childCount; index += 1) {
+    const child = node.child(index);
+    if (child) collectWriteRedirectTokens(child, tokens);
   }
 }
 
@@ -1005,4 +1045,36 @@ export async function extractTokensForPathRules(
   }
 
   return result;
+}
+
+
+/** Extract literal external file targets from parsed output redirections only. */
+export async function extractExternalWritePathsFromBashCommand(
+  command: string,
+  cwd: string,
+): Promise<string[]> {
+  if (shouldForceTokenizerFallback()) return [];
+
+  let tree: ReturnType<TSParser["parse"]> | null = null;
+  try {
+    const parser = await getParser();
+    tree = parser.parse(command);
+    if (!tree || tree.rootNode.hasError !== false) return [];
+
+    const tokens: string[] = [];
+    collectWriteRedirectTokens(tree.rootNode, tokens);
+    const paths = new Set<string>();
+    for (const token of tokens) {
+      const candidate = classifyTokenAsPathCandidate(token);
+      if (!candidate || !isPathOutsideWorkingDirectory(candidate, cwd)) continue;
+      const normalized = normalizePathForComparison(candidate, cwd);
+      if (normalized) paths.add(normalized);
+    }
+    return [...paths];
+  } catch (error) {
+    if (error instanceof UnsupportedWriteRedirectError) throw error;
+    return [];
+  } finally {
+    tree?.delete();
+  }
 }

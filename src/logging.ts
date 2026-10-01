@@ -1,11 +1,19 @@
-import { appendFileSync } from "node:fs";
+import { closeSync, fchmodSync, openSync, writeFileSync } from "node:fs";
+
+import { redactSecrets } from "./sentinel-creds/scanner";
 
 import {
   EXTENSION_ID,
   type PermissionSystemExtensionConfig,
 } from "./extension-config";
 
-export function safeJsonStringify(value: unknown): string | undefined {
+const SENSITIVE_ASSIGNMENT = /\b([A-Z_][A-Z0-9_]*(?:PASSWORD|PASSWD|SECRET|TOKEN|CREDENTIALS?|AUTH(?:ORIZATION)?|API[_-]?KEY|PRIVATE[_-]?KEY)[A-Z0-9_]*)\s*=\s*(?:"(?:\\.|[^"\\])*"|'(?:\\.|[^'\\])*'|[^\s;&|]+)/gi;
+
+function redactLogString(value: string): string {
+  return redactSecrets(value).replace(SENSITIVE_ASSIGNMENT, "$1=[REDACTED]");
+}
+
+export function safeJsonStringify(value: unknown, redactStrings = false): string | undefined {
   const seen = new WeakSet<object>();
   return JSON.stringify(value, (_key, currentValue) => {
     if (currentValue instanceof Error) {
@@ -18,6 +26,10 @@ export function safeJsonStringify(value: unknown): string | undefined {
 
     if (typeof currentValue === "bigint") {
       return currentValue.toString();
+    }
+
+    if (typeof currentValue === "string" && redactStrings) {
+      return redactLogString(currentValue);
     }
 
     if (typeof currentValue === "object" && currentValue !== null) {
@@ -75,11 +87,17 @@ export function createPermissionSystemLogger(
         stream,
         event,
         ...details,
-      });
+      }, true);
       if (!line) {
         return `Failed to write pi-sentinel ${stream} log '${path}': event could not be serialized.`;
       }
-      appendFileSync(path, `${line}\n`, "utf-8");
+      const fd = openSync(path, "a", 0o600);
+      try {
+        fchmodSync(fd, 0o600);
+        writeFileSync(fd, `${line}\n`, "utf-8");
+      } finally {
+        closeSync(fd);
+      }
       return undefined;
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
@@ -99,7 +117,6 @@ export function createPermissionSystemLogger(
     return writeLine("debug", debugLogPath, event, {
       ...details,
       mode: config.mode,
-      yoloAutoMaxLevel: config.yoloAutoMaxLevel,
     });
   };
 

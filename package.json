@@ -11,7 +11,7 @@
   },
   "files": [
     "src",
-    "bin/patronus-yolo-auto-worker.py",
+    "scripts/calibration-report.mjs",
     "bin/sandbox-run.mjs",
     "config.json",
     "profiles",
@@ -72,6 +72,8 @@
   },
   "dependencies": {
     "@anthropic-ai/sandbox-runtime": "0.0.75",
+    "@huggingface/transformers": "^4.3.0",
+    "onnxruntime-node": "^1.30.0",
     "tree-sitter-bash": "0.25.1",
     "web-tree-sitter": "0.26.9"
   },

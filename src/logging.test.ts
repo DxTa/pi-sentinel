@@ -1,4 +1,4 @@
-import { existsSync, mkdtempSync, readFileSync } from "node:fs";
+import { chmodSync, existsSync, mkdtempSync, readFileSync, statSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 
 import { describe, expect, it } from "vitest";
@@ -13,12 +13,12 @@ function loggerFixture(debugLog: boolean) {
     debugLog,
     permissionReviewLog: true,
     mode: "manual" as const,
-    yoloAutoMaxLevel: "l2" as const,
     yoloAskBashPatterns: [],
   };
   return {
     config,
     debugLogPath,
+    reviewLogPath,
     logger: createPermissionSystemLogger({
       getConfig: () => config,
       debugLogPath,
@@ -51,10 +51,38 @@ describe("createPermissionSystemLogger", () => {
       stream: "debug",
       event: "tool_call.received",
       mode: "manual",
-      yoloAutoMaxLevel: "l2",
       toolCallId: "tool-1",
       toolName: "write",
     });
     expect(JSON.stringify(record)).not.toContain("secret-value");
+  });
+
+  it("redacts sensitive assignments and known credentials in debug and review logs", () => {
+    const { logger, debugLogPath, reviewLogPath } = loggerFixture(true);
+    const token = "ghp_" + "a".repeat(36);
+    const command = "BRIDGE_POSTGRES_PASSWORD=admin " + token + " docker ps";
+
+    logger.debug("permission_request.waiting", { command });
+    logger.review("permission_request.waiting", { command });
+
+    for (const path of [debugLogPath, reviewLogPath]) {
+      const log = readFileSync(path, "utf8");
+      expect(log).toContain("BRIDGE_POSTGRES_PASSWORD=[REDACTED]");
+      expect(log).toContain("[REDACTED: GitHub Token]");
+      expect(log).not.toContain("=admin");
+      expect(log).not.toContain(token);
+    }
+  });
+
+  it("creates logs with mode 0600 and tightens existing log permissions", () => {
+    const { logger, debugLogPath, reviewLogPath } = loggerFixture(true);
+    writeFileSync(reviewLogPath, "old record\n", "utf8");
+    chmodSync(reviewLogPath, 0o644);
+
+    logger.debug("debug", { ok: true });
+    logger.review("review", { ok: true });
+
+    expect(statSync(debugLogPath).mode & 0o777).toBe(0o600);
+    expect(statSync(reviewLogPath).mode & 0o777).toBe(0o600);
   });
 });

@@ -20,13 +20,13 @@ import { normalizeSandboxConfig } from "./sandbox/settings";
 describe("permission mode config", () => {
   it("normalizes one explicit mode", () => {
     expect(normalizeUnifiedConfig({ mode: "manual" }).config).toEqual({ mode: "manual" });
-    expect(normalizeUnifiedConfig({
-      mode: "yolo-auto",
-      yoloAutoMaxLevel: "l2",
-    }).config).toMatchObject({
+    const legacy = normalizeUnifiedConfig({
       mode: "yolo-auto",
       yoloAutoMaxLevel: "l2",
     });
+    expect(legacy.config).toEqual({ mode: "yolo-auto" });
+    expect(legacy.issues).toHaveLength(1);
+    expect(legacy.issues[0]).toContain("yoloAutoMaxLevel");
     expect(normalizeUnifiedConfig({ mode: "invalid" }).config).toEqual({});
     expect(normalizeUnifiedConfig({ mode: "manual", yoloAutoMode: true }).config).toEqual({ mode: "manual" });
   });
@@ -56,21 +56,29 @@ describe("permission mode config", () => {
 
   it("lets project mode replace global mode", () => {
     expect(mergeUnifiedConfigs(
-      { mode: "yolo-auto", yoloAutoMaxLevel: "l2" },
+      { mode: "yolo-auto" },
       { mode: "manual" },
-    )).toMatchObject({
-      mode: "manual",
-      yoloAutoMaxLevel: "l2",
-    });
+    )).toEqual({ mode: "manual" });
   });
 
-  it("accepts L3 as yolo-auto ceiling", () => {
-    const normalized = normalizeUnifiedConfig({
-      mode: "yolo-auto",
-      yoloAutoMaxLevel: "l3",
-    }).config;
+  it("warns once and drops the removed setting across config layers", async () => {
+    const root = await mkdtemp(path.join(tmpdir(), "pi-removed-yolo-level-"));
+    tempPaths.push(root);
+    const agentDir = path.join(root, "agent");
+    const projectDir = path.join(root, "project");
+    const extensionRoot = path.join(root, "extension");
+    await Promise.all([agentDir, projectDir, extensionRoot].map((dir) => mkdir(dir, { recursive: true })));
+    await writeFile(path.join(extensionRoot, "config.json"), JSON.stringify({ yoloAutoMaxLevel: "l3" }), "utf8");
+    const globalPath = getGlobalConfigPath(agentDir);
+    await mkdir(path.dirname(globalPath), { recursive: true });
+    await writeFile(globalPath, JSON.stringify({ yoloAutoMaxLevel: "l2" }), "utf8");
+    const projectPath = getProjectConfigPath(projectDir);
+    await mkdir(path.dirname(projectPath), { recursive: true });
+    await writeFile(projectPath, JSON.stringify({ yoloAutoMaxLevel: "l1" }), "utf8");
 
-    expect(normalized).toMatchObject({ mode: "yolo-auto", yoloAutoMaxLevel: "l3" });
+    const loaded = loadAndMergeConfigs(agentDir, projectDir, extensionRoot);
+    expect(loaded.merged).not.toHaveProperty("yoloAutoMaxLevel");
+    expect(loaded.issues.filter((issue) => issue.includes("yoloAutoMaxLevel"))).toHaveLength(1);
   });
 
   it("parses string arrays from unified config", () => {
@@ -111,12 +119,14 @@ describe("permission mode config", () => {
   it("defaults extension runtime config to empty list", () => {
     expect(DEFAULT_EXTENSION_CONFIG).toMatchObject({
       mode: "yolo-auto",
-      yoloAutoMaxLevel: "l3",
       yoloAskBashPatterns: [],
     });
+    expect(DEFAULT_EXTENSION_CONFIG).not.toHaveProperty("yoloAutoMaxLevel");
     expect(normalizePermissionSystemConfig({})).toMatchObject({
       yoloAskBashPatterns: [],
     });
+    expect(normalizePermissionSystemConfig({ yoloAutoMaxLevel: "l1" }))
+      .not.toHaveProperty("yoloAutoMaxLevel");
   });
 
   it("ships enabled SRT sandbox with online-dev network mode", async () => {

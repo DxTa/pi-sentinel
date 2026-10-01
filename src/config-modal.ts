@@ -24,6 +24,9 @@ interface PermissionSystemConfigController {
   getComposedRules?(): Ruleset;
   /** Optional runtime state for model-backed yolo-auto worker diagnostics. */
   getYoloAutoStatus?(): string;
+  /** Optional: effective sandbox state and global toggle. */
+  getSandboxEnabled?(): boolean;
+  setSandboxEnabled?(enabled: boolean, ctx: ExtensionCommandContext): void;
 }
 
 const ON_OFF = ["on", "off"];
@@ -58,7 +61,6 @@ function cloneDefaultConfig(): PermissionSystemExtensionConfig {
     debugLog: DEFAULT_EXTENSION_CONFIG.debugLog,
     permissionReviewLog: DEFAULT_EXTENSION_CONFIG.permissionReviewLog,
     mode: DEFAULT_EXTENSION_CONFIG.mode,
-    yoloAutoMaxLevel: DEFAULT_EXTENSION_CONFIG.yoloAutoMaxLevel,
     yoloAskBashPatterns: [...DEFAULT_EXTENSION_CONFIG.yoloAskBashPatterns],
   };
 }
@@ -87,7 +89,7 @@ function summarizeConfig(
   yoloAutoStatus?: string,
 ): string {
   const knobs = [
-    `mode=${config.mode} (max=${config.yoloAutoMaxLevel})`,
+    `mode=${config.mode}`,
     `permissionReviewLog=${toOnOff(config.permissionReviewLog)}`,
     `debugLog=${toOnOff(config.debugLog)}`,
   ].join(", ");
@@ -98,8 +100,17 @@ function summarizeConfig(
 
 export function buildSettingItems(
   config: PermissionSystemExtensionConfig,
+  sandboxEnabled?: boolean,
 ): SettingItem[] {
+  const sandboxItem: SettingItem[] = sandboxEnabled === undefined ? [] : [{
+    id: "sandbox",
+    label: "Bash sandbox",
+    description: "Run Bash inside the SRT sandbox. Off keeps permission prompts but drops OS-level isolation",
+    currentValue: toOnOff(sandboxEnabled),
+    values: ON_OFF,
+  }];
   return [
+    ...sandboxItem,
     {
       id: "mode",
       label: "Mode",
@@ -107,13 +118,6 @@ export function buildSettingItems(
         "Manual prompts; yolo auto-approves safe checks; yolo-auto uses model-backed workspace read/list approval with classic yolo elsewhere",
       currentValue: config.mode,
       values: MODES,
-    },
-    {
-      id: "yoloAutoMaxLevel",
-      label: "YOLO auto level",
-      description: "Maximum model level; L3 remains advisory escalation only",
-      currentValue: config.yoloAutoMaxLevel,
-      values: ["l1", "l2", "l3"],
     },
     {
       id: "permissionReviewLog",
@@ -144,10 +148,6 @@ export function applySetting(
       return MODES.includes(value as PermissionMode)
         ? { ...config, mode: value as PermissionMode }
         : config;
-    case "yoloAutoMaxLevel":
-      return value === "l1" || value === "l2" || value === "l3"
-        ? { ...config, yoloAutoMaxLevel: value }
-        : config;
     case "permissionReviewLog":
       return { ...config, permissionReviewLog: value === "on" };
     case "debugLog":
@@ -162,7 +162,6 @@ function syncSettingValues(
   config: PermissionSystemExtensionConfig,
 ): void {
   settingsList.updateValue("mode", config.mode);
-  settingsList.updateValue("yoloAutoMaxLevel", config.yoloAutoMaxLevel);
   settingsList.updateValue(
     "permissionReviewLog",
     toOnOff(config.permissionReviewLog),
@@ -200,10 +199,16 @@ async function openSettingsModal(
     (_tui, _theme, _keybindings, done) => {
       let current = controller.getConfig();
       const settingsList = new SettingsList(
-        buildSettingItems(current),
+        buildSettingItems(current, controller.getSandboxEnabled?.()),
         10,
         getSettingsListTheme(),
         (id, newValue) => {
+          if (id === "sandbox") {
+            controller.setSandboxEnabled?.(newValue === "on", ctx);
+            const enabled = controller.getSandboxEnabled?.();
+            if (enabled !== undefined) settingsList.updateValue("sandbox", toOnOff(enabled));
+            return;
+          }
           current = applySetting(current, id, newValue);
           controller.setConfig(current, ctx);
           current = controller.getConfig();

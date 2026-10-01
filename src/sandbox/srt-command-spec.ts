@@ -9,6 +9,7 @@ import {
   buildSandboxVisiblePathsWithinScanBudget,
   canonicalPath,
   canonicalPathWithinScanBudget,
+  uvHomeRoots,
 } from "./sandbox-visible-paths.js";
 import {
   buildMaskedCommandShimPlan,
@@ -66,8 +67,10 @@ export function buildSrtExecShimPlan(
 
 function filterMaskedScanRoots(scanRoots: string[], infrastructureRoots: string[]): string[] {
   const roots = infrastructureRoots.map(canonicalPath);
+  const uvRoots = uvHomeRoots();
   return scanRoots.filter((scanRoot) =>
-    !roots.some((root) =>
+    !uvRoots.some((uvRoot) => scanRoot === uvRoot || scanRoot.startsWith(`${uvRoot}/`))
+    && !roots.some((root) =>
       scanRoot === root ||
       scanRoot.startsWith(`${root}/`) ||
       root.startsWith(`${scanRoot}/`),

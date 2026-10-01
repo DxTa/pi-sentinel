@@ -1,92 +1,124 @@
 import { describe, expect, it } from "vitest";
+import { decideYoloAuto, type YoloAutoHeads, type YoloAutoPolicyInput } from "./yolo-auto-policy";
+import { YOLO_AUTO_LABEL_SCHEMA as MODEL_LABELS } from "./yolo-auto-label-schema";
 
-import { decideYoloAuto, type YoloAutoClassifierResult, type YoloAutoL1Response } from "./yolo-auto-policy";
 
-const safeL1: YoloAutoL1Response = {
-  verdict: "safe",
-  accepted: true,
-  complete: true,
-  degraded: false,
-};
+function oneHot(labels: readonly string[], winner: string, p = 0.95): Record<string, number> {
+  const rest = (1 - p) / (labels.length - 1);
+  return Object.fromEntries(labels.map((label) => [label, label === winner ? p : rest]));
+}
 
-const safeResults: YoloAutoClassifierResult[] = [
-  { category: "injection", className: "safe", complete: true, degraded: false, accepted: true },
-  { category: "tool_class", className: "file", complete: true, degraded: false, accepted: true },
-  { category: "tool_action", className: "read", complete: true, degraded: false, accepted: true },
-  { category: "tool_tags", className: "absent", pipeline: "source_sensitive", complete: true, degraded: false, accepted: true },
-  { category: "tool_tags", className: "absent", pipeline: "source_untrusted", complete: true, degraded: false, accepted: true },
-  { category: "tool_tags", className: "absent", pipeline: "sink_external", complete: true, degraded: false, accepted: true },
-];
+function distribution(labels: readonly string[], scores: Record<string, number>): Record<string, number> {
+  return Object.fromEntries(labels.map((label) => [label, scores[label] ?? 0]));
+}
 
-function policy(overrides: Partial<Parameters<typeof decideYoloAuto>[0]> = {}) {
+function heads(overrides: Partial<YoloAutoHeads> = {}, action = "read"): YoloAutoHeads {
+  return {
+    injection: oneHot(MODEL_LABELS.injection, "benign", 0.98),
+    threat: oneHot(MODEL_LABELS.threat, "benign"),
+    tool_class: oneHot(MODEL_LABELS.tool_class, "file"),
+    tool_action: oneHot(MODEL_LABELS.tool_action, action),
+    tool_tags: { "source:sensitive": 0.1, "source:untrusted": 0.9, "sink:external": 0.1 },
+    sensitive_document: oneHot(MODEL_LABELS.sensitive_document, "source_code"),
+    routing: oneHot(MODEL_LABELS.routing, "tool_operation_request"),
+    ...overrides,
+  };
+}
+
+function input(overrides: Partial<YoloAutoPolicyInput> = {}): YoloAutoPolicyInput {
   return {
     enabled: true,
-    maxLevel: "l2" as const,
-    permissionState: "ask" as const,
-    source: "tool_call" as const,
+    permissionState: "ask",
+    source: "tool_call",
     eligible: true,
     forcedPrompt: false,
     workspaceLocal: true,
+    hardRuleHit: false,
+    sandboxed: false,
     operation: "read",
-    l1: safeL1,
-    results: safeResults,
-    escalated: false,
+    toolName: "read",
+    heads: heads(),
     ...overrides,
   };
 }
 
 describe("decideYoloAuto", () => {
-  it("allows safe L1 workspace-local reads", () => {
-    expect(decideYoloAuto(policy({ maxLevel: "l1" }))).toEqual({ action: "allow", reason: "safe_workspace_read" });
+  it.each([
+    ["read", "read"],
+    ["list", "list"],
+    ["write", "write"],
+    ["edit", "write"],
+    ["exec", "exec"],
+  ])("allows benign %s when tool_action is %s", (operation, action) => {
+    expect(decideYoloAuto(input({ operation, toolName: operation === "exec" ? "bash" : "read", sandboxed: operation === "exec", heads: heads({}, action) }))).toEqual({
+      action: "allow",
+      reason: "model_allow",
+    });
   });
 
-  it("requires safe L1 before L2 approval", () => {
-    expect(decideYoloAuto(policy({ l1: { ...safeL1, verdict: "unsafe" } }))).toMatchObject({ action: "prompt", reason: "l1_not_safe" });
-    expect(decideYoloAuto(policy({ l1: undefined }))).toMatchObject({ action: "prompt", reason: "l1_not_safe" });
+  it.each<[string, Partial<YoloAutoPolicyInput>]>([
+    ["invalid_model_output", { heads: heads({ threat: { benign: Number.NaN } }) }],
+    ["disabled", { enabled: false }],
+    ["permission_state_not_ask", { permissionState: "deny" }],
+    ["source_not_tool_call", { source: "bash" }],
+    ["request_not_eligible", { eligible: false }],
+    ["forced_prompt", { forcedPrompt: true }],
+    ["path_not_workspace_local", { workspaceLocal: false }],
+    ["sensitive_path", { hardRuleHit: true }],
+    ["unsupported_operation", { operation: "network" }],
+    ["model_unavailable", { heads: undefined }],
+    ["threat_not_benign", { heads: heads({ threat: oneHot(MODEL_LABELS.threat, "secrets_access") }) }],
+    ["threat_benign_low_confidence", { heads: heads({ threat: distribution(MODEL_LABELS.threat, { benign: 0.85, secrets_access: 0.15 }) }) }],
+    ["injection_detected", { heads: heads({ injection: { benign: 0.85, injection: 0.15 } }) }],
+    ["source_sensitive", { heads: heads({ tool_tags: { "source:sensitive": 0.6, "source:untrusted": 0, "sink:external": 0 } }) }],
+    ["sink_external", { heads: heads({ tool_tags: { "source:sensitive": 0, "source:untrusted": 0, "sink:external": 0.6 } }) }],
+    ["tool_action_mismatch", { heads: heads({}, "network") }],
+    ["tool_class_restricted", { heads: heads({ tool_class: oneHot(MODEL_LABELS.tool_class, "secrets") }) }],
+  ])("prompts with %s", (reason, overrides) => {
+    expect(decideYoloAuto(input(overrides))).toEqual({ action: "prompt", reason });
   });
 
-  it("allows complete safe workspace-local reads at L2", () => {
-    expect(decideYoloAuto(policy())).toEqual({ action: "allow", reason: "safe_workspace_read" });
+  it.each<[string, Partial<YoloAutoHeads>]>([
+    ["incomplete source tags", { tool_tags: { "source:sensitive": 0.1, "sink:external": 0.1 } }],
+    ["injection head replacing benign", { injection: { unexpected: 0.98, injection: 0.02 } }],
+  ])("prompts for malformed head schema: %s", (_name, override) => {
+    expect(decideYoloAuto(input({ heads: heads(override) }))).toMatchObject({
+      action: "prompt",
+      reason: "invalid_model_output",
+    });
   });
 
-  it("allows complete safe workspace-local lists at L2", () => {
-    expect(decideYoloAuto(policy({ operation: "list", results: safeResults.map((result) =>
-      result.category === "tool_action" ? { ...result, className: "list" } : result,
-    ) }))).toEqual({ action: "allow", reason: "safe_workspace_list" });
+  it("allows the unknown tool class when all D10 gates pass", () => {
+    const unknownClass = heads({ tool_class: oneHot(MODEL_LABELS.tool_class, "unknown") });
+    expect(decideYoloAuto(input({ heads: unknownClass }))).toEqual({
+      action: "allow",
+      reason: "model_allow",
+    });
+  });
+
+  it("prompts for exec unless already sandboxed", () => {
+    expect(decideYoloAuto(input({ operation: "exec", toolName: "bash", sandboxed: false })).reason).toBe("not_sandboxed");
+  });
+
+  it("prompts when exec is not from Bash", () => {
+    expect(decideYoloAuto(input({
+      operation: "exec",
+      toolName: "shell",
+      sandboxed: true,
+      heads: heads({}, "exec"),
+    }))).toEqual({ action: "prompt", reason: "exec_not_bash" });
   });
 
   it.each([
-    ["disabled mode", { enabled: false }],
-    ["non-ask state", { permissionState: "allow" }],
-    ["non-tool source", { source: "skill_input" }],
-    ["ineligible request", { eligible: false }],
-    ["forced prompt", { forcedPrompt: true }],
-    ["external path", { workspaceLocal: false }],
-    ["write operation", { operation: "write" }],
-    ["L3 escalation", { escalated: true }],
-  ] as const)("prompts for %s", (_name, overrides) => {
-    expect(decideYoloAuto(policy(overrides))).toMatchObject({ action: "prompt" });
+    ["over-summed threat", distribution(MODEL_LABELS.threat, { benign: 0.95, secrets_access: 0.95 }), "invalid_model_output"],
+    ["tied threat", distribution(MODEL_LABELS.threat, { benign: 0.5, secrets_access: 0.5 }), "threat_not_benign"],
+    ["tied tool action", distribution(MODEL_LABELS.tool_action, { read: 0.5, write: 0.5 }), "tool_action_mismatch"],
+  ])("fails closed for %s", (_name, override, reason) => {
+    const key = _name === "tied threat" || _name === "over-summed threat" ? "threat" : "tool_action";
+    expect(decideYoloAuto(input({ heads: heads({ [key]: override }) }))).toMatchObject({ action: "prompt", reason });
   });
 
-  it("prompts when any required L2 classifier result is missing or degraded", () => {
-    expect(decideYoloAuto(policy({ results: safeResults.slice(0, -1) }))).toMatchObject({ action: "prompt" });
-    expect(decideYoloAuto(policy({ results: safeResults.map((result, index) =>
-      index === 0 ? { ...result, degraded: true } : result,
-    ) }))).toMatchObject({ action: "prompt" });
-  });
-
-  it.each([
-    ["unsafe injection", { category: "injection", className: "instruction_override" }],
-    ["wrong class", { category: "tool_class", className: "shell" }],
-    ["unsafe tag", { category: "tool_tags", pipeline: "source_untrusted", className: "present" }],
-    ["unknown action", { category: "tool_action", className: "unknown" }],
-  ] as const)("prompts for %s", (_name, result) => {
-    const results = safeResults.map((candidate) =>
-      candidate.category === result.category &&
-      (result.pipeline === undefined || candidate.pipeline === result.pipeline)
-        ? { ...candidate, ...result }
-        : candidate,
-    );
-    expect(decideYoloAuto(policy({ results }))).toMatchObject({ action: "prompt" });
+  it("prompts when read is classified as exec", () => {
+    expect(decideYoloAuto(input({ heads: heads({}, "exec") })).reason).toBe("tool_action_mismatch");
   });
 });

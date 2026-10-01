@@ -38,22 +38,32 @@ export function getPromptPath(input: Record<string, unknown>): string | null {
   return getNonEmptyString(input.path) ?? getNonEmptyString(input.file_path);
 }
 
-export function formatEditInputForPrompt(
+function getEditEntries(
   input: Record<string, unknown>,
-): string {
-  const path = getPromptPath(input);
+): Array<{ oldText: string; newText: string }> {
   const rawEdits = Array.isArray(input.edits)
     ? input.edits
     : typeof input.oldText === "string" && typeof input.newText === "string"
       ? [{ oldText: input.oldText, newText: input.newText }]
       : [];
 
-  const edits = rawEdits
-    .map((edit) => toRecord(edit))
-    .filter(
-      (edit) =>
-        typeof edit.oldText === "string" && typeof edit.newText === "string",
-    );
+  return rawEdits.flatMap((rawEdit) => {
+    const edit = toRecord(rawEdit);
+    return typeof edit.oldText === "string" && typeof edit.newText === "string"
+      ? [{ oldText: edit.oldText, newText: edit.newText }]
+      : [];
+  });
+}
+
+export function getEditReplacementText(input: unknown): string {
+  return getEditEntries(toRecord(input))[0]?.newText ?? "";
+}
+
+export function formatEditInputForPrompt(
+  input: Record<string, unknown>,
+): string {
+  const path = getPromptPath(input);
+  const edits = getEditEntries(input);
 
   const pathPart = path ? `for '${path}'` : "";
   if (edits.length === 0) {

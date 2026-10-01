@@ -4,7 +4,7 @@ import path from "node:path";
 
 import { afterEach, describe, expect, it, vi } from "vitest";
 
-import { resetExtensionConfig, saveExtensionConfig } from "./runtime";
+import { resetExtensionConfig, saveExtensionConfig, saveSandboxEnabled } from "./runtime";
 
 const tempPaths: string[] = [];
 
@@ -23,6 +23,7 @@ describe("saveExtensionConfig", () => {
         sandbox: { enabled: true },
         permission: { write: "deny" },
         mode: "manual",
+        yoloAutoMaxLevel: "l2",
       }),
       "utf8",
     );
@@ -56,6 +57,7 @@ describe("saveExtensionConfig", () => {
       debugLog: true,
       mode: "yolo",
     });
+    expect(saved).not.toHaveProperty("yoloAutoMaxLevel");
   });
 
   it("keeps project runtime overrides after global reset", async () => {
@@ -124,5 +126,19 @@ describe("saveExtensionConfig", () => {
       mode: "yolo-auto",
       yoloAskBashPatterns: [],
     });
+  });
+});
+
+describe("saveSandboxEnabled", () => {
+  it("toggles sandbox.enabled and keeps other sandbox keys", async () => {
+    const agentDir = await mkdtemp(path.join(tmpdir(), "pi-sandbox-toggle-"));
+    tempPaths.push(agentDir);
+    const file = path.join(agentDir, "permissions.json");
+    await writeFile(file, JSON.stringify({ mode: "yolo", sandbox: { enabled: true, network: true, roBinds: ["a"] } }), "utf8");
+    const ctx = { ui: { setStatus: vi.fn(), notify: vi.fn() } };
+
+    expect(saveSandboxEnabled({ agentDir, writeDebugLog: vi.fn() } as never, false, ctx as never)).toBe(true);
+
+    expect(JSON.parse(await readFile(file, "utf8"))).toEqual({ mode: "yolo", sandbox: { enabled: false, network: true, roBinds: ["a"] } });
   });
 });

@@ -8,6 +8,10 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 
 import piPermissionSystemExtension from "./index.ts";
 import { resolveDockerSocketPaths } from "./sandbox/docker-socket.js";
+import { YOLO_AUTO_BUILD_ID } from "./yolo-auto-build";
+import { YOLO_AUTO_LABEL_SCHEMA } from "./yolo-auto-label-schema";
+import type { YoloAutoHeads } from "./yolo-auto-policy";
+import { YoloAutoWorkerServer } from "./yolo-auto-worker";
 
 const tempPaths: string[] = [];
 const canSimulateReadOnlyDirectory = process.platform !== "win32" && process.getuid?.() !== 0;
@@ -20,6 +24,7 @@ async function makeTempDir(prefix: string): Promise<string> {
 
 afterEach(async () => {
   delete process.env.PI_CODING_AGENT_DIR;
+  delete process.env.PI_SENTINEL_YOLO_AUTO_SOCKET;
   await Promise.all(tempPaths.splice(0).map((dir) => rm(dir, { recursive: true, force: true })));
 });
 
@@ -109,6 +114,31 @@ async function writeExtensionConfig(agentDir: string, overrides: Record<string, 
     JSON.stringify({ ...baseConfig, ...overrides, sandbox }),
     "utf8",
   );
+}
+
+function safeYoloAutoHeads(action: string): YoloAutoHeads {
+  const winners: Record<string, string> = {
+    injection: "benign",
+    routing: "tool_operation_request",
+    sensitive_document: "source_code",
+    threat: "benign",
+    tool_action: action,
+    tool_class: "file",
+  };
+  return {
+    ...Object.fromEntries(
+      Object.entries(YOLO_AUTO_LABEL_SCHEMA)
+        .filter(([head]) => head !== "tool_tags")
+        .map(([head, labels]) => [
+          head,
+          Object.fromEntries(labels.map((label) => [
+            label,
+            label === winners[head] ? 0.99 : 0.01 / (labels.length - 1),
+          ])),
+        ]),
+    ),
+    tool_tags: { "source:sensitive": 0.1, "source:untrusted": 0.1, "sink:external": 0.1 },
+  } as YoloAutoHeads;
 }
 
 function extractHelperInput(command: string) {
@@ -297,6 +327,63 @@ describe("piPermissionSystemExtension SRT default smoke", () => {
     expect(writeResult).toEqual({});
   });
 
+  it("auto-allows curated diagnostics for unsandboxed host Bash", async () => {
+    const agentDir = await makeTempDir("pi-permission-agent-");
+    const projectDir = await makeTempDir("pi-permission-project-");
+    process.env.PI_CODING_AGENT_DIR = agentDir;
+    await writeExtensionConfig(agentDir, {
+      mode: "yolo-auto",
+      yoloAskBashPatterns: [],
+      permission: { "*": "ask", bash: { "*": "ask" }, path: { "*": "allow" }, external_directory: { "*": "allow" } },
+      sandbox: { enabled: false, backend: "srt", defaultProfile: "online-dev" },
+    });
+
+    const pi = createFakePi();
+    piPermissionSystemExtension(pi as never);
+    const context = createContext(projectDir, { hasUI: true, choices: ["Yes"] });
+    const result = await pi.handlers.get("tool_call")?.(
+      { toolName: "bash", toolCallId: "host-diagnostic", input: { command: "docker ps" } },
+      context as never,
+    );
+
+    expect(result).toBeUndefined();
+    expect(context.ui.select).not.toHaveBeenCalled();
+  });
+
+  it("learns repeated safe approvals for unsandboxed host Bash", async () => {
+    const agentDir = await makeTempDir("pi-permission-agent-");
+    const projectDir = await makeTempDir("pi-permission-project-");
+    process.env.PI_CODING_AGENT_DIR = agentDir;
+    await writeExtensionConfig(agentDir, {
+      mode: "yolo-auto",
+      yoloAskBashPatterns: [],
+      permission: { "*": "ask", bash: { "*": "ask" }, path: { "*": "allow" }, external_directory: { "*": "allow" } },
+      sandbox: { enabled: false, backend: "srt", defaultProfile: "online-dev" },
+    });
+
+    const pi = createFakePi();
+    piPermissionSystemExtension(pi as never);
+    const context = createContext(projectDir, {
+      hasUI: true,
+      choices: ["Yes", "Yes", "Yes"],
+    });
+    const call = pi.handlers.get("tool_call")!;
+
+    for (let index = 0; index < 3; index++) {
+      await expect(call(
+        { toolName: "bash", toolCallId: "host-read-" + index, input: { command: "ls" } },
+        context as never,
+      )).resolves.toBeUndefined();
+    }
+    expect(context.ui.select).toHaveBeenCalledTimes(3);
+
+    await expect(call(
+      { toolName: "bash", toolCallId: "host-read-4", input: { command: "ls" } },
+      context as never,
+    )).resolves.toBeUndefined();
+    expect(context.ui.select).toHaveBeenCalledTimes(3);
+  });
+
   it.each(["manual", "yolo", "yolo-auto"] as const)(
     "auto-approves normal workspace file tools in %s mode",
     async (mode) => {
@@ -339,6 +426,72 @@ describe("piPermissionSystemExtension SRT default smoke", () => {
       }
     },
   );
+
+  it("routes eligible workspace operations through YoloAuto before auto-allow", async () => {
+    const agentDir = await makeTempDir("pi-permission-agent-");
+    const projectDir = await makeTempDir("pi-permission-project-");
+    process.env.PI_CODING_AGENT_DIR = agentDir;
+    const existingPath = path.join(projectDir, "notes.txt");
+    await writeFile(existingPath, "before\n", "utf8");
+    await writeExtensionConfig(agentDir, {
+      mode: "yolo-auto",
+      permission: {
+        "*": "ask",
+        read: "ask",
+        write: "ask",
+        edit: "ask",
+        path: { "*": "allow" },
+      },
+      sandbox: { enabled: true, backend: "srt", defaultProfile: "online-dev", bypassCommands: [] },
+    });
+
+    const socketPath = path.join(agentDir, "yolo-auto-test.sock");
+    process.env.PI_SENTINEL_YOLO_AUTO_SOCKET = socketPath;
+    const classificationTexts: string[] = [];
+    const worker = new YoloAutoWorkerServer({
+      socketPath,
+      buildId: YOLO_AUTO_BUILD_ID,
+      provider: {
+        ready: async () => undefined,
+        classify: async (text) => {
+          classificationTexts.push(text);
+          const action = text.startsWith("tool=bash ")
+            ? "exec"
+            : text.startsWith("tool=write ") || text.startsWith("tool=edit ")
+              ? "write"
+              : text.startsWith("tool=ls ")
+                ? "list"
+                : "read";
+          return safeYoloAutoHeads(action);
+        },
+      },
+    });
+    await worker.start();
+    const random = vi.spyOn(Math, "random").mockReturnValue(1);
+    const pi = createFakePi(["bash", "read", "write", "edit", "ls"]);
+    piPermissionSystemExtension(pi as never);
+    const toolCall = pi.handlers.get("tool_call")!;
+    const context = createContext(projectDir);
+
+    try {
+      const events = [
+        { toolName: "read", input: { path: existingPath } },
+        { toolName: "ls", input: {} },
+        { toolName: "write", input: { path: path.join(projectDir, "new.txt"), content: "new" } },
+        { toolName: "edit", input: { path: existingPath, oldText: "before", newText: "after" } },
+        { toolName: "bash", input: { command: "printf 'safe'" } },
+      ];
+      for (const event of events) await toolCall(event, context as never);
+      expect(classificationTexts).toHaveLength(events.length);
+      expect(classificationTexts.map((text) => text.split(" ", 1)[0])).toEqual([
+        "tool=read", "tool=ls", "tool=write", "tool=edit", "tool=bash",
+      ]);
+    } finally {
+      random.mockRestore();
+      await pi.handlers.get("session_shutdown")?.(undefined, context as never);
+      await worker.close();
+    }
+  });
 
   it("keeps external paths gated", async () => {
     const agentDir = await makeTempDir("pi-permission-agent-");
@@ -587,6 +740,41 @@ describe("piPermissionSystemExtension SRT default smoke", () => {
         path.join(homedir(), ".docker/config.json"),
       );
     }
+  });
+
+  it.each(["manual", "yolo-auto"] as const)("auto-allows trusted Pi skill/extension reads and scripts in %s mode", async (mode) => {
+    const agentDir = await makeTempDir("pi-permission-agent-");
+    const projectDir = await makeTempDir("pi-permission-project-");
+    const skillDir = path.join(agentDir, "skills", "demo");
+    await mkdir(skillDir, { recursive: true });
+    await writeFile(path.join(skillDir, "SKILL.md"), "# demo\n", "utf8");
+    await writeFile(path.join(skillDir, "run.sh"), "echo hi\n", "utf8");
+    process.env.PI_CODING_AGENT_DIR = agentDir;
+    await writeExtensionConfig(agentDir, {
+      mode,
+      permission: {
+        "*": "ask",
+        bash: { "*": "ask" },
+        external_directory: { "*": "ask" },
+      },
+    });
+
+    const pi = createFakePi(["bash", "read", "write"]);
+    piPermissionSystemExtension(pi as never);
+    const context = createContext(projectDir, { hasUI: true });
+    const handler = pi.handlers.get("tool_call")!;
+
+    const read = await handler({ toolName: "read", toolCallId: "t-read", input: { path: path.join(skillDir, "SKILL.md") } }, context as never);
+    const scriptCommand = `bash ${path.join(skillDir, "run.sh")}`;
+    const scriptEvent = { toolName: "bash", toolCallId: "t-bash", input: { command: scriptCommand } };
+    const script = await handler(scriptEvent, context as never);
+    expect(scriptEvent.input.command).toBe(scriptCommand);
+    expect(JSON.stringify(read ?? {})).not.toContain('"block":true');
+    expect(JSON.stringify(script ?? {})).not.toContain('"block":true');
+    expect(context.ui.select).not.toHaveBeenCalled();
+
+    await handler({ toolName: "write", toolCallId: "t-write", input: { path: path.join(skillDir, "new.sh"), content: "x" } }, context as never);
+    expect(context.ui.select).toHaveBeenCalled();
   });
 
   it("includes Pi infrastructure directories in SRT read paths", async () => {
@@ -1148,6 +1336,219 @@ describe("piPermissionSystemExtension SRT default smoke", () => {
 
     expect(result).toHaveProperty("operations");
     expect(context.ui.select).toHaveBeenCalledTimes(1);
+  });
+
+  it("grants one-shot write access only to external output targets", async () => {
+    const agentDir = await makeTempDir("pi-permission-agent-");
+    const projectDir = await makeTempDir("pi-permission-project-");
+    const outsideDir = await mkdtemp(path.join(homedir(), ".pi-permission-outside-write-"));
+    tempPaths.push(outsideDir);
+    const inputFile = path.join(outsideDir, "input.txt");
+    const outputFile = path.join(outsideDir, "output.txt");
+    await writeFile(inputFile, "source", "utf8");
+    await writeFile(outputFile, "before", "utf8");
+    process.env.PI_CODING_AGENT_DIR = agentDir;
+    await writeExtensionConfig(agentDir, {
+      permission: {
+        "*": "allow",
+        bash: { "*": "allow" },
+        external_directory: { "*": "allow" },
+      },
+      sandbox: {
+        enabled: true,
+        backend: "srt",
+        defaultProfile: "offline-dev",
+        profiles: {
+          "offline-dev": {
+            network: false,
+            env: { allow: [], deny: [] },
+            maskedPaths: [],
+          },
+        },
+      },
+    });
+
+    const pi = createFakePi();
+    piPermissionSystemExtension(pi as never);
+    const context = createContext(projectDir, { hasUI: true, choices: ["Allow once", "Allow once"] });
+    const command = "cat " + inputFile + " > " + outputFile;
+    const event = { toolName: "bash", input: { command } };
+    const result = await pi.handlers.get("tool_call")?.(event, context as never);
+
+    expect(result).toBeUndefined();
+    const helper = extractHelperInput(event.input.command);
+    expect(helper.runtimeConfig.filesystem.allowWrite).toContain(outputFile);
+    expect(helper.runtimeConfig.filesystem.allowWrite).not.toContain(inputFile);
+    const inputIsReadable = helper.runtimeConfig.filesystem.allowRead.some((allowedPath: string) => {
+      const relative = path.relative(allowedPath, inputFile);
+      return relative === "" || (
+        relative !== ".." &&
+        !relative.startsWith(".." + path.sep) &&
+        !path.isAbsolute(relative)
+      );
+    });
+    expect(inputIsReadable).toBe(true);
+    expect(await readFile(path.join(agentDir, "permissions.json"), "utf8")).not.toContain(outputFile);
+  });
+
+  it("grants parent read-write access for a missing external output target", async () => {
+    const agentDir = await makeTempDir("pi-permission-agent-");
+    const projectDir = await makeTempDir("pi-permission-project-");
+    const outsideDir = await mkdtemp(path.join(homedir(), ".pi-permission-outside-write-"));
+    tempPaths.push(outsideDir);
+    const inputFile = path.join(outsideDir, "input.txt");
+    const outputFile = path.join(outsideDir, "new", "output.txt");
+    await writeFile(inputFile, "source", "utf8");
+    process.env.PI_CODING_AGENT_DIR = agentDir;
+    await writeExtensionConfig(agentDir, {
+      permission: {
+        "*": "allow",
+        bash: { "*": "allow" },
+        external_directory: { "*": "allow" },
+      },
+      sandbox: {
+        enabled: true,
+        backend: "srt",
+        defaultProfile: "offline-dev",
+        profiles: {
+          "offline-dev": {
+            network: false,
+            env: { allow: [], deny: [] },
+            maskedPaths: [],
+          },
+        },
+      },
+    });
+
+    const pi = createFakePi();
+    piPermissionSystemExtension(pi as never);
+    const context = createContext(projectDir, { hasUI: true, choices: ["Allow once"] });
+    const event = { toolName: "bash", input: { command: "cat " + inputFile + " > " + outputFile } };
+    const result = await pi.handlers.get("tool_call")?.(event, context as never);
+
+    expect(result).toBeUndefined();
+    expect(context.ui.select).toHaveBeenCalledTimes(1);
+    expect(context.ui.select.mock.calls[0]?.[0]).toContain(outsideDir + " (directory)");
+    expect(context.ui.select.mock.calls[0]?.[0]).toContain("read-write access");
+    expect(extractHelperInput(event.input.command).runtimeConfig.filesystem.allowWrite).toContain(outsideDir);
+  });
+
+  it("requests read-write approval for user bash output targets", async () => {
+    const agentDir = await makeTempDir("pi-permission-agent-");
+    const projectDir = await makeTempDir("pi-permission-project-");
+    const outsideDir = await mkdtemp(path.join(homedir(), ".pi-permission-outside-write-"));
+    tempPaths.push(outsideDir);
+    const outsideFile = path.join(outsideDir, "existing.txt");
+    await writeFile(outsideFile, "before", "utf8");
+    process.env.PI_CODING_AGENT_DIR = agentDir;
+    await writeExtensionConfig(agentDir, {
+      sandbox: {
+        enabled: true,
+        backend: "srt",
+        defaultProfile: "offline-dev",
+        profiles: {
+          "offline-dev": {
+            network: false,
+            env: { allow: [], deny: [] },
+            maskedPaths: [],
+          },
+        },
+      },
+    });
+
+    const pi = createFakePi();
+    piPermissionSystemExtension(pi as never);
+    const context = createContext(projectDir, { hasUI: true, choices: ["Allow once"] });
+    const result = await pi.handlers.get("user_bash")?.(
+      { command: "echo updated > " + outsideFile, cwd: projectDir },
+      context as never,
+    );
+
+    expect(result).toHaveProperty("operations");
+    expect(context.ui.select).toHaveBeenCalledTimes(1);
+    expect(context.ui.select.mock.calls[0]?.[0]).toContain("read-write access");
+    expect(context.ui.select.mock.calls[0]?.[0]).toContain(outsideFile);
+  });
+
+  it("grants parent read-write access for a missing user bash output target", async () => {
+    const agentDir = await makeTempDir("pi-permission-agent-");
+    const projectDir = await makeTempDir("pi-permission-project-");
+    const outsideDir = await mkdtemp(path.join(homedir(), ".pi-permission-outside-write-"));
+    tempPaths.push(outsideDir);
+    const inputFile = path.join(outsideDir, "input.txt");
+    const outputFile = path.join(outsideDir, "new", "output.txt");
+    await writeFile(inputFile, "source", "utf8");
+    process.env.PI_CODING_AGENT_DIR = agentDir;
+    await writeExtensionConfig(agentDir, {
+      sandbox: {
+        enabled: true,
+        backend: "srt",
+        defaultProfile: "offline-dev",
+        profiles: {
+          "offline-dev": {
+            network: false,
+            env: { allow: [], deny: [] },
+            maskedPaths: [],
+          },
+        },
+      },
+    });
+
+    const pi = createFakePi();
+    piPermissionSystemExtension(pi as never);
+    const context = createContext(projectDir, { hasUI: true, choices: ["Allow once"] });
+    const result = await pi.handlers.get("user_bash")?.(
+      { command: "cat " + inputFile + " > " + outputFile, cwd: projectDir },
+      context as never,
+    );
+
+    expect(result).toHaveProperty("operations");
+    expect(context.ui.select).toHaveBeenCalledTimes(1);
+    expect(context.ui.select.mock.calls[0]?.[0]).toContain(outsideDir + " (directory)");
+    expect(context.ui.select.mock.calls[0]?.[0]).toContain("read-write access");
+  });
+
+  it.each(["tool_call", "user_bash"])("rejects unsupported output redirect quoting through %s", async (surface) => {
+    const agentDir = await makeTempDir("pi-permission-agent-");
+    const projectDir = await makeTempDir("pi-permission-project-");
+    process.env.PI_CODING_AGENT_DIR = agentDir;
+    await writeExtensionConfig(agentDir, {
+      permission: {
+        "*": "allow",
+        bash: { "*": "allow" },
+        external_directory: { "*": "allow" },
+      },
+      sandbox: {
+        enabled: true,
+        backend: "srt",
+        defaultProfile: "offline-dev",
+        profiles: {
+          "offline-dev": {
+            network: false,
+            env: { allow: [], deny: [] },
+            maskedPaths: [],
+          },
+        },
+      },
+    });
+
+    const pi = createFakePi();
+    piPermissionSystemExtension(pi as never);
+    const context = createContext(projectDir, { hasUI: true });
+    const outputFile = path.join(homedir(), ".pi-unsupported-output.txt");
+    const command = "echo value > $'" + outputFile + "'";
+    const result = surface === "tool_call"
+      ? await pi.handlers.get("tool_call")?.(
+          { toolName: "bash", input: { command } },
+          context as never,
+        )
+      : await pi.handlers.get("user_bash")?.(
+          { command, cwd: projectDir },
+          context as never,
+        );
+
+    expect(JSON.stringify(result)).toContain("Unsupported Bash output redirect target quoting.");
+    expect(context.ui.select).not.toHaveBeenCalled();
   });
 
   it("blocks user bash when requested path approval is invalid", async () => {

@@ -1,12 +1,16 @@
+import { createHash } from "node:crypto";
+
 import { describe, expect, it, vi } from "vitest";
 
 import { YoloAutoEvaluator } from "./yolo-auto-evaluator";
+import type { YoloAutoHeads } from "./yolo-auto-policy";
+import { YOLO_AUTO_LABEL_SCHEMA } from "./yolo-auto-label-schema";
+import { MODEL_REVISION } from "./yolo-auto-build";
 
 const request = {
   flow: "permission" as const,
   candidate: true,
   enabled: true,
-  maxLevel: "l2" as const,
   permissionState: "ask" as const,
   source: "tool_call",
   eligible: true,
@@ -15,60 +19,55 @@ const request = {
   operation: "read" as const,
   toolName: "read",
   workspaceRelativePath: "src/index.ts",
+  hardRuleHit: false,
+  sandboxed: false,
   toolCallIdPresent: true,
 };
+
+function oneHot(labels: readonly string[], winner: string): Record<string, number> {
+  const rest = 0.01 / (labels.length - 1);
+  return Object.fromEntries(labels.map((label) => [label, label === winner ? 0.99 : rest]));
+}
+
+const heads: YoloAutoHeads = {
+  injection: oneHot(YOLO_AUTO_LABEL_SCHEMA.injection, "benign"),
+  threat: oneHot(YOLO_AUTO_LABEL_SCHEMA.threat, "benign"),
+  tool_class: oneHot(YOLO_AUTO_LABEL_SCHEMA.tool_class, "file"),
+  tool_action: oneHot(YOLO_AUTO_LABEL_SCHEMA.tool_action, "read"),
+  tool_tags: { "source:sensitive": 0.1, "source:untrusted": 0.9, "sink:external": 0.1 },
+  sensitive_document: oneHot(YOLO_AUTO_LABEL_SCHEMA.sensitive_document, "source_code"),
+  routing: oneHot(YOLO_AUTO_LABEL_SCHEMA.routing, "tool_operation_request"),
+}
 
 const safeResult = {
   status: "complete" as const,
   evaluationId: "opaque-eval-1",
-  phases: [
-    { phase: "l1" as const, status: "complete" as const, latencyMs: 2 },
-    { phase: "l2" as const, status: "complete" as const, latencyMs: 3 },
-  ],
+  buildId: "pi-sentinel-test:model-r1",
   totalLatencyMs: 5,
-  escalated: false,
-  l1: { verdict: "safe" as const, accepted: true, complete: true, degraded: false, provenance: "model-l1" },
-  l2: {
-    escalated: false,
-    results: [
-      { category: "injection", className: "safe", accepted: true, complete: true, degraded: false },
-      { category: "tool_class", className: "file", accepted: true, complete: true, degraded: false, provenance: "model-l2" },
-      { category: "tool_action", className: "read", accepted: true, complete: true, degraded: false },
-      ...["source_sensitive", "source_untrusted", "sink_external"].map((pipeline) => ({
-        category: "tool_tags",
-        pipeline,
-        className: "absent",
-        accepted: true,
-        complete: true,
-        degraded: false,
-      })),
-    ],
-  },
-  l3: undefined,
+  heads,
 };
 
 describe("YoloAutoEvaluator", () => {
-  it("evaluates policy and emits privacy-safe telemetry once", async () => {
+  it("evaluates returned heads and emits privacy-safe telemetry once", async () => {
     const evaluate = vi.fn(async () => safeResult);
     const writeReviewLog = vi.fn();
+    const writeCalibrationLog = vi.fn();
+    let randomCalls = 0;
     const evaluator = new YoloAutoEvaluator({
       client: { evaluate },
       waitForStartup: async () => undefined,
       writeReviewLog,
+      writeCalibrationLog,
+      random: () => { randomCalls += 1; return 0.05; },
     });
 
     await expect(evaluator.evaluate(request)).resolves.toMatchObject({
       action: "allow",
-      reason: "safe_workspace_read",
+      reason: "model_allow",
       candidate: true,
       evaluationId: "opaque-eval-1",
     });
-    expect(evaluate).toHaveBeenCalledWith({
-      toolName: "read",
-      operation: "read",
-      workspaceRelativePath: "src/index.ts",
-      metadata: { input_has_path: true, tool_call_id_present: true },
-    }, "l2");
+    expect(evaluate).toHaveBeenCalledWith("tool=read path=src/index.ts");
     expect(writeReviewLog).toHaveBeenCalledOnce();
     expect(writeReviewLog).toHaveBeenCalledWith(
       "yolo_auto.evaluation",
@@ -78,33 +77,223 @@ describe("YoloAutoEvaluator", () => {
         disposition: "attempted",
         outcome: "allowed",
         policyAction: "allow",
-        policyReason: "safe_workspace_read",
-        phases: safeResult.phases,
-        modelProvenance: { l1: "model-l1", l2: ["model-l2"], l3: null },
+        policyReason: "model_allow",
+        modelBuildId: safeResult.buildId,
+        classificationLatencyMs: 5,
         totalLatencyMs: expect.any(Number),
       }),
     );
     expect(JSON.stringify(writeReviewLog.mock.calls[0])).not.toContain("src/index.ts");
+    expect(randomCalls).toBe(1);
+    expect(writeCalibrationLog).toHaveBeenCalledOnce();
+    const modelText = "tool=read path=src/index.ts";
+    const record = writeCalibrationLog.mock.calls[0]?.[0];
+    expect(record).toMatchObject({
+      evaluationId: "opaque-eval-1",
+      ts: expect.any(String),
+      modelRev: MODEL_REVISION,
+      toolName: "read",
+      operation: "read",
+      textLength: modelText.length,
+      textSha256: createHash("sha256").update(modelText).digest("hex"),
+      truncated: false,
+      heads,
+      decision: "allow",
+      reason: "model_allow",
+      hardRuleHit: false,
+      audit: false,
+      latencyMs: expect.any(Number),
+    });
+    expect(JSON.stringify(record)).not.toContain("src/index.ts");
   });
 
-  it("mirrors evaluation telemetry into the debug stream", async () => {
-    const writeDebugLog = vi.fn();
+  it("records toolCallId on evaluation telemetry for decision joins", async () => {
+    const writeReviewLog = vi.fn();
     const evaluator = new YoloAutoEvaluator({
       client: { evaluate: vi.fn(async () => safeResult) },
-      writeDebugLog,
-    } as never);
+      writeReviewLog,
+    });
 
+    await evaluator.evaluate({ ...request, toolCallId: "tc-join-1" });
+
+    expect(writeReviewLog).toHaveBeenCalledWith(
+      "yolo_auto.evaluation",
+      expect.objectContaining({ toolCallId: "tc-join-1" }),
+    );
+  });
+
+  it("records evaluations for the decision store only when scope and key are known", async () => {
+    const recordEvaluation = vi.fn();
+    const evaluator = new YoloAutoEvaluator({
+      client: { evaluate: vi.fn(async () => safeResult) },
+      recordEvaluation,
+      random: () => 0.99,
+    });
+
+    const decision = await evaluator.evaluate({ ...request, scope: "ws:abc", patternKey: "read:src/*.ts" });
     await evaluator.evaluate(request);
 
-    expect(writeDebugLog).toHaveBeenCalledWith(
-      "yolo_auto.evaluation",
-      expect.objectContaining({
-        evaluationId: "opaque-eval-1",
-        phases: safeResult.phases,
-        totalLatencyMs: expect.any(Number),
-      }),
-    );
-    expect(JSON.stringify(writeDebugLog.mock.calls[0])).not.toContain("src/index.ts");
+    expect(recordEvaluation).toHaveBeenCalledOnce();
+    expect(recordEvaluation).toHaveBeenCalledWith(expect.objectContaining({
+      evaluationId: decision.evaluationId,
+      scope: "ws:abc",
+      patternKey: "read:src/*.ts",
+      toolName: "read",
+      operation: "read",
+      heads: safeResult.heads,
+      hardRuleHit: false,
+      modelAction: decision.action,
+    }));
+  });
+
+  it("fuses past decisions: denials force a prompt, approvals can allow a model prompt", async () => {
+    const riskyHeads = { ...safeResult.heads, threat: Object.fromEntries(
+      Object.keys(safeResult.heads.threat).map((k) => [k, k === "tool_abuse" ? 0.9 : 0.1 / 6]),
+    ) };
+    const summarize = vi.fn();
+    const writeReviewLog = vi.fn();
+    const evaluator = new YoloAutoEvaluator({
+      client: { evaluate: vi.fn(async () => ({ ...safeResult, heads: riskyHeads })) },
+      summarizeNeighbours: summarize,
+      writeReviewLog,
+      random: () => 0.99,
+    });
+    const scoped = { ...request, scope: "ws:abc", patternKey: "read:src/*.ts" };
+
+    summarize.mockReturnValueOnce({ workspace: { approvals: 3, denials: 0 }, global: { approvals: 0, denials: 0, workspaces: 0 } });
+    await expect(evaluator.evaluate(scoped)).resolves.toMatchObject({ action: "allow", reason: "neighbour_workspace_approved" });
+    expect(summarize).toHaveBeenCalledWith(expect.objectContaining({
+      scope: "ws:abc", toolName: "read", operation: "read", patternKey: "read:src/*.ts", now: expect.any(Number),
+    }));
+    expect(writeReviewLog).toHaveBeenLastCalledWith("yolo_auto.evaluation", expect.objectContaining({
+      policyReason: "neighbour_workspace_approved",
+      modelPolicyReason: expect.any(String),
+      neighbourWorkspaceApprovals: 3,
+      neighbourDenials: 0,
+    }));
+
+    const benign = new YoloAutoEvaluator({
+      client: { evaluate: vi.fn(async () => safeResult) },
+      summarizeNeighbours: () => ({ workspace: { approvals: 0, denials: 1 }, global: { approvals: 0, denials: 0, workspaces: 0 } }),
+      random: () => 0.99,
+    });
+    await expect(benign.evaluate(scoped)).resolves.toMatchObject({ action: "prompt", reason: "neighbour_denied" });
+  });
+
+  it("passes a workspace scorer result into fusion and telemetry", async () => {
+    const riskyHeads = { ...safeResult.heads, threat: Object.fromEntries(
+      Object.keys(safeResult.heads.threat).map((k) => [k, k === "tool_abuse" ? 0.9 : 0.1 / 6]),
+    ) };
+    const scoreRequest = vi.fn(() => ({ probability: 0.99, samples: 24, positives: 20, negatives: 4 }));
+    const writeReviewLog = vi.fn();
+    const evaluator = new YoloAutoEvaluator({
+      client: { evaluate: vi.fn(async () => ({ ...safeResult, heads: riskyHeads })) },
+      summarizeNeighbours: () => ({ workspace: { approvals: 0, denials: 0 }, global: { approvals: 0, denials: 0, workspaces: 0 } }),
+      scoreRequest,
+      writeReviewLog,
+      random: () => 0.99,
+    });
+
+    await expect(evaluator.evaluate({ ...request, scope: "ws:abc", patternKey: "read:src/*.ts" }))
+      .resolves.toMatchObject({ action: "allow", reason: "scorer_approved" });
+    expect(scoreRequest).toHaveBeenCalledWith(expect.objectContaining({ scope: "ws:abc", features: expect.any(Array) }));
+    expect(writeReviewLog).toHaveBeenLastCalledWith("yolo_auto.evaluation", expect.objectContaining({
+      scorerProbability: 0.99,
+      scorerSamples: 24,
+    }));
+  });
+
+  it("does not store hard-rule evaluations for learning", async () => {
+    const recordEvaluation = vi.fn();
+    const evaluator = new YoloAutoEvaluator({
+      client: { evaluate: vi.fn(async () => safeResult) },
+      recordEvaluation,
+      random: () => 0.99,
+    });
+    await evaluator.evaluate({ ...request, hardRuleHit: true, scope: "ws:abc", patternKey: "ls:etc/*" });
+    expect(recordEvaluation).not.toHaveBeenCalled();
+  });
+
+  it("stores the pre-fusion model action so fused allows never self-label", async () => {
+    const recordEvaluation = vi.fn();
+    const evaluator = new YoloAutoEvaluator({
+      client: { evaluate: vi.fn(async () => safeResult) },
+      summarizeNeighbours: () => ({ workspace: { approvals: 0, denials: 1 }, global: { approvals: 0, denials: 0, workspaces: 0 } }),
+      recordEvaluation,
+      random: () => 0.99,
+    });
+    await evaluator.evaluate({ ...request, scope: "ws:abc", patternKey: "read:src/*.ts" });
+    expect(recordEvaluation).toHaveBeenCalledWith(expect.objectContaining({ modelAction: "allow" }));
+  });
+
+  it("uses caller-provided text and records truncation metadata", async () => {
+    const evaluate = vi.fn(async () => safeResult);
+    const writeCalibrationLog = vi.fn();
+    const text = "tool=write path=notes.txt content=preview";
+    const evaluator = new YoloAutoEvaluator({ client: { evaluate }, writeCalibrationLog });
+
+    await evaluator.evaluate({
+      ...request,
+      operation: "write" as const,
+      toolName: "write",
+      workspaceRelativePath: "notes.txt",
+      text,
+      truncated: true,
+    });
+
+    expect(evaluate).toHaveBeenCalledWith(text);
+    expect(writeCalibrationLog.mock.calls[0]?.[0]).toMatchObject({
+      textLength: text.length,
+      textSha256: createHash("sha256").update(text).digest("hex"),
+      truncated: true,
+    });
+  });
+
+  it("returns the policy decision without waiting for calibration logging", async () => {
+    const writeCalibrationLog = vi.fn(() => new Promise<void>(() => {}));
+    const evaluator = new YoloAutoEvaluator({
+      client: { evaluate: async () => safeResult },
+      writeCalibrationLog,
+    });
+
+    const outcome = await Promise.race([
+      evaluator.evaluate(request).then(() => "returned" as const),
+      new Promise<"blocked">((resolve) => setImmediate(() => resolve("blocked"))),
+    ]);
+
+    expect(outcome).toBe("returned");
+    expect(writeCalibrationLog).toHaveBeenCalledOnce();
+  });
+
+  it("turns five percent of would-allow results into audit prompts", async () => {
+    const writeCalibrationLog = vi.fn();
+    const evaluator = new YoloAutoEvaluator({
+      client: { evaluate: async () => safeResult },
+      writeCalibrationLog,
+      random: () => 0.049,
+    });
+
+    await expect(evaluator.evaluate(request)).resolves.toMatchObject({
+      action: "prompt",
+      reason: "audit_sample",
+      audit: true,
+      evaluationId: "opaque-eval-1",
+    });
+    expect(writeCalibrationLog.mock.calls[0]?.[0]).toMatchObject({
+      decision: "prompt",
+      reason: "audit_sample",
+      audit: true,
+    });
+  });
+
+  it("prompts when the caller marks a protected path", async () => {
+    const evaluator = new YoloAutoEvaluator({ client: { evaluate: vi.fn(async () => safeResult) } });
+
+    await expect(evaluator.evaluate({ ...request, hardRuleHit: true })).resolves.toMatchObject({
+      action: "prompt",
+      reason: "sensitive_path",
+      evaluationId: "opaque-eval-1",
+    });
   });
 
   it("fails closed and records one startup failure", async () => {
@@ -133,10 +322,8 @@ describe("YoloAutoEvaluator", () => {
   it("records candidate skips without contacting worker", async () => {
     const evaluate = vi.fn();
     const writeReviewLog = vi.fn();
-    const evaluator = new YoloAutoEvaluator({
-      client: { evaluate },
-      writeReviewLog,
-    });
+    const writeCalibrationLog = vi.fn();
+    const evaluator = new YoloAutoEvaluator({ client: { evaluate }, writeReviewLog, writeCalibrationLog });
 
     await expect(evaluator.evaluate({ ...request, candidate: false, skipReason: "result_scanning_disabled" })).resolves.toEqual({
       action: "prompt",
@@ -144,8 +331,12 @@ describe("YoloAutoEvaluator", () => {
       candidate: false,
       attempted: false,
       evaluationId: expect.any(String),
+      audit: false,
     });
     expect(evaluate).not.toHaveBeenCalled();
+    expect(writeCalibrationLog.mock.calls[0]?.[0]).toMatchObject({
+      heads: null, decision: "prompt", reason: "result_scanning_disabled", audit: false,
+    });
     expect(writeReviewLog).toHaveBeenCalledWith(
       "yolo_auto.evaluation",
       expect.objectContaining({

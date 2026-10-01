@@ -17,12 +17,18 @@ import type { FlatPermissionConfig } from "./types";
  * Unified config shape combining runtime knobs and flat permission policy.
  * All fields are optional so partial configs (project-only, global-only) work.
  */
+const REMOVED_YOLO_AUTO_MAX_LEVEL_WARNING =
+  "'yoloAutoMaxLevel' is no longer supported; yolo-auto uses fixed model thresholds.";
+
+export function stripLegacyYoloAutoMaxLevel(config: Record<string, unknown>): void {
+  delete config.yoloAutoMaxLevel;
+}
+
 export interface UnifiedPermissionConfig {
   // Runtime knobs
   debugLog?: boolean;
   permissionReviewLog?: boolean;
   mode?: PermissionMode;
-  yoloAutoMaxLevel?: "l1" | "l2" | "l3";
   yoloAskBashPatterns?: string[];
 
   // Flat permission policy
@@ -179,6 +185,9 @@ export function normalizeUnifiedConfig(raw: unknown): UnifiedConfigLoadResult {
   const record = toRecord(raw);
   const issues: string[] = [];
   const config: UnifiedPermissionConfig = {};
+  if (Object.hasOwn(record, "yoloAutoMaxLevel")) {
+    issues.push(REMOVED_YOLO_AUTO_MAX_LEVEL_WARNING);
+  }
 
   // Runtime knobs
   const debugLog = normalizeOptionalBoolean(record.debugLog);
@@ -206,14 +215,6 @@ export function normalizeUnifiedConfig(raw: unknown): UnifiedConfigLoadResult {
     config.mode = "yolo";
   } else if (yoloAutoMode !== undefined || yoloMode !== undefined) {
     config.mode = "manual";
-  }
-
-  if (
-    record.yoloAutoMaxLevel === "l1"
-    || record.yoloAutoMaxLevel === "l2"
-    || record.yoloAutoMaxLevel === "l3"
-  ) {
-    config.yoloAutoMaxLevel = record.yoloAutoMaxLevel;
   }
 
   const yoloAskBashPatterns = normalizeOptionalStringArray(
@@ -287,9 +288,6 @@ export function mergeUnifiedConfigs(
   }
   if (override.mode !== undefined || base.mode !== undefined) {
     merged.mode = override.mode ?? base.mode;
-  }
-  if (override.yoloAutoMaxLevel !== undefined || base.yoloAutoMaxLevel !== undefined) {
-    merged.yoloAutoMaxLevel = override.yoloAutoMaxLevel ?? base.yoloAutoMaxLevel;
   }
   if (
     override.yoloAskBashPatterns !== undefined
@@ -410,7 +408,7 @@ export function loadAndMergeConfigs(
     global: globalConfig,
     project: projectConfig,
     merged,
-    issues: allIssues,
+    issues: [...new Set(allIssues)],
   };
 }
 

@@ -1,9 +1,11 @@
+
+import { matchTrustedPiRequest } from "./gates/trusted-pi-dirs";
 import type {
   ExtensionContext,
   InputEventResult,
 } from "@earendil-works/pi-coding-agent";
 
-import { toRecord } from "#src/common";
+import { getNonEmptyString, toRecord } from "#src/common";
 import {
   getPathBearingToolPath,
   isPathOutsideWorkingDirectory,
@@ -29,10 +31,12 @@ import {
   getToolNameFromValue,
   type ToolRegistry,
 } from "#src/tool-registry";
+import { buildYoloAutoBashContext } from "#src/yolo-auto-bash-context";
 import { shouldRelaxBundledToolDenyInYolo } from "#src/yolo-mode";
 import { describeBashExternalDirectoryGate } from "./gates/bash-external-directory";
 
 import { describeBashPathGate } from "./gates/bash-path";
+import { extractTokensForPathRules } from "./gates/bash-path-extractor";
 import type { GateRunnerDeps } from "./gates/descriptor";
 import { isGateBypass } from "./gates/descriptor";
 import { describeExternalDirectoryGate } from "./gates/external-directory";
@@ -71,6 +75,7 @@ export class PermissionGateHandler {
   async handleToolCall(
     event: unknown,
     ctx: ExtensionContext,
+    sandboxedForYoloAuto = false,
   ): Promise<{ block?: true; reason?: string }> {
     const { session } = this;
     session.activate(ctx);
@@ -112,6 +117,7 @@ export class PermissionGateHandler {
       input,
       toolCallId,
       cwd: ctx.cwd,
+      sandboxed: sandboxedForYoloAuto,
     };
 
     session.logger.debug("tool_call.received", {
@@ -158,6 +164,34 @@ export class PermissionGateHandler {
       canConfirm,
       promptPermission,
     };
+
+    // ── Trusted Pi dirs: reads + single-script runs, in every mode ──────────
+    const trusted = tcc.cwd
+      ? matchTrustedPiRequest(tcc.toolName, tcc.input, tcc.cwd, session.getTrustedPiDirs())
+      : null;
+    if (
+      trusted
+      && checkPermission(tcc.toolName, tcc.input, tcc.agentName ?? undefined, getSessionRuleset()).state !== "deny"
+    ) {
+      writeReviewLog("permission_request.trusted_pi_auto_allowed", {
+        source: "tool_call",
+        toolCallId: tcc.toolCallId,
+        toolName: tcc.toolName,
+        agentName: tcc.agentName,
+        kind: trusted.kind,
+        path: trusted.path,
+      });
+      emitDecision({
+        surface: tcc.toolName,
+        value: trusted.path,
+        result: "allow",
+        resolution: "infrastructure_auto_allowed",
+        origin: null,
+        agentName: tcc.agentName ?? null,
+        matchedPattern: null,
+      });
+      return {};
+    }
 
     // ── Skill-read gate (descriptor + runner) ───────────────────────────────
     const skillDescriptor = describeSkillReadGate(tcc, () =>
@@ -231,25 +265,13 @@ export class PermissionGateHandler {
       }
     }
 
-    // ── Deterministic workspace file allow ──────────────────────────────────
-    if (
+    const workspaceLocalFileOperation = Boolean(
       tcc.cwd
       && isWorkspaceLocalFileOperation(tcc.toolName, tcc.input, tcc.cwd, {
         allowWorkspaceEnvRead:
           this.options.isWorkspaceEnvReadRedactionEnabled?.(tcc.cwd) === true,
       })
-    ) {
-      session.logger.debug("permission_gate.resolved", {
-        source: "tool_call",
-        toolCallId,
-        toolName,
-        agentName,
-        action: "allow",
-        resolution: "workspace_auto_allowed",
-        workspaceLocal: true,
-      });
-      return {};
-    }
+    );
 
     // ── Bash external-directory gate (descriptor + runner) ───────────────────
     const bashExtDesc = await describeBashExternalDirectoryGate(
@@ -276,11 +298,30 @@ export class PermissionGateHandler {
     }
 
     // ── Bash path gate (descriptor + runner) ────────────────────────────────
+    const bashCommand = tcc.toolName === "bash"
+      ? getNonEmptyString(toRecord(tcc.input).command)
+      : null;
+    const bashPathTokens = bashCommand !== null
+      ? await extractTokensForPathRules(bashCommand)
+      : undefined;
+    const yoloAutoBashContext = bashPathTokens !== undefined && bashCommand !== null
+      ? buildYoloAutoBashContext(bashCommand, bashPathTokens, tcc.cwd)
+      : undefined;
+    const toolTcc = yoloAutoBashContext === undefined
+      ? tcc
+      : {
+          ...tcc,
+          yoloAutoHardRuleHit: yoloAutoBashContext.hardRuleHit,
+          yoloAutoWorkspaceLocal: yoloAutoBashContext.workspaceLocal,
+          yoloAutoCommand: yoloAutoBashContext.command,
+        };
     const bashPathDesc = await describeBashPathGate(
-      tcc,
+      toolTcc,
       checkPermission,
       getSessionRuleset,
+      bashPathTokens,
     );
+
     if (bashPathDesc) {
       if (isGateBypass(bashPathDesc)) {
         if (bashPathDesc.log) {
@@ -330,7 +371,25 @@ export class PermissionGateHandler {
     })
       ? { ...baseToolCheck, state: "ask" as const }
       : baseToolCheck;
-    const toolDescriptor = describeToolGate(tcc, toolCheck);
+
+    // Let YoloAuto classify workspace operations only when normal policy asks.
+    if (
+      workspaceLocalFileOperation
+      && (session.config.mode !== "yolo-auto" || toolCheck.state !== "ask")
+    ) {
+      session.logger.debug("permission_gate.resolved", {
+        source: "tool_call",
+        toolCallId,
+        toolName,
+        agentName,
+        action: "allow",
+        resolution: "workspace_auto_allowed",
+        workspaceLocal: true,
+      });
+      return {};
+    }
+
+    const toolDescriptor = describeToolGate(toolTcc, toolCheck);
     toolDescriptor.preCheck = toolCheck;
 
     const toolResult = await runGateCheck(

@@ -2,63 +2,53 @@ import { chmod, mkdir, rm, stat } from "node:fs/promises";
 import { dirname } from "node:path";
 import * as net from "node:net";
 
-import {
-  type YoloAutoL2Response,
-  type YoloAutoL3Response,
-  type YoloAutoPayload,
-  type YoloAutoWorkerRequest,
-  type YoloAutoWorkerResponse,
-  YOLO_AUTO_PROTOCOL_VERSION,
-  L1_REQUEST_TIMEOUT_MS,
-  WORKER_IDLE_EVICTION_MS,
-} from "./yolo-auto-client";
-import type { YoloAutoL1Response } from "./yolo-auto-policy";
+import { WORKER_HANDSHAKE_TIMEOUT_MS, WORKER_IDLE_EVICTION_MS } from "./yolo-auto-client.ts";
+import { withFileLock } from "./yolo-auto-file-lock.ts";
+import type { YoloAutoHeads } from "./yolo-auto-policy";
 
+const YOLO_AUTO_PROTOCOL_VERSION = 2;
 const MAX_FRAME_BYTES = 1024 * 1024;
 const DEFAULT_QUEUE_LIMIT = 32;
 
 export type WorkerProvider = {
-  warmL1(): Promise<void>;
-  evaluateL1(payload: YoloAutoPayload): Promise<YoloAutoL1Response>;
-  warmL2(): Promise<void>;
-  evaluateL2(payload: YoloAutoPayload): Promise<YoloAutoL2Response>;
-  warmL3?(): Promise<void>;
-  evaluateL3(payload: YoloAutoPayload): Promise<YoloAutoL3Response>;
+  ready(): Promise<void>;
+  classify(text: string): Promise<YoloAutoHeads>;
   close?(): Promise<void> | void;
 };
 
 export interface YoloAutoWorkerServerOptions {
   socketPath: string;
+  buildId: string;
   provider: WorkerProvider;
   queueLimit?: number;
   idleEvictionMs?: number;
 }
 
-interface QueuedRequest {
-  socket: net.Socket;
-  request: YoloAutoWorkerRequest;
+interface ClassifyRequest {
+  type: "classify";
+  protocolVersion: typeof YOLO_AUTO_PROTOCOL_VERSION;
+  requestId: string;
+  deadlineMs: number;
+  text: string;
 }
 
-function isWorkerPayload(value: unknown): value is YoloAutoPayload {
-  if (!value || typeof value !== "object") return false;
-  const payload = value as Record<string, unknown>;
-  return typeof payload.toolName === "string"
-    && payload.toolName.length > 0
-    && payload.toolName.length <= 256
-    && typeof payload.operation === "string"
-    && payload.operation.length > 0
-    && payload.operation.length <= 32
-    && (payload.workspaceRelativePath === undefined
-      || (typeof payload.workspaceRelativePath === "string"
-        && payload.workspaceRelativePath.length <= 4096
-        && !payload.workspaceRelativePath.startsWith("/")))
-    && (payload.metadata === undefined || (
-      typeof payload.metadata === "object"
-      && payload.metadata !== null
-      && Object.values(payload.metadata as Record<string, unknown>).every(
-        (entry) => ["string", "number", "boolean"].includes(typeof entry),
-      )
-    ));
+interface QueuedRequest {
+  socket: net.Socket;
+  request: ClassifyRequest;
+  deadlineAt: number;
+}
+
+function isClassifyRequest(value: unknown): value is ClassifyRequest {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return false;
+  const request = value as Record<string, unknown>;
+  return request.type === "classify"
+    && request.protocolVersion === YOLO_AUTO_PROTOCOL_VERSION
+    && typeof request.requestId === "string"
+    && typeof request.deadlineMs === "number"
+    && Number.isFinite(request.deadlineMs)
+    && request.deadlineMs > 0
+    && request.deadlineMs <= 10_000
+    && typeof request.text === "string";
 }
 
 function encodeFrame(value: unknown): Buffer {
@@ -108,14 +98,19 @@ export class YoloAutoWorkerServer {
   private readonly sockets = new Set<net.Socket>();
   private readonly queueLimit: number;
   private readonly idleEvictionMs: number;
+  private readonly options: YoloAutoWorkerServerOptions;
+  private readonly socketLockPath: string;
   private busy = false;
-  private l3Ready = false;
-  private l3Warmup: Promise<void> | undefined;
+  private closing = false;
+  private ownsSocket = false;
+  private activeClassification: Promise<void> | undefined;
   private lastActivity = Date.now();
   private idleTimer: ReturnType<typeof setInterval> | undefined;
   private closePromise: Promise<void> | undefined;
 
-  constructor(private readonly options: YoloAutoWorkerServerOptions) {
+  constructor(options: YoloAutoWorkerServerOptions) {
+    this.options = options;
+    this.socketLockPath = options.socketPath + ".lock";
     this.queueLimit = options.queueLimit ?? DEFAULT_QUEUE_LIMIT;
     this.idleEvictionMs = options.idleEvictionMs ?? WORKER_IDLE_EVICTION_MS;
   }
@@ -123,24 +118,26 @@ export class YoloAutoWorkerServer {
   async start(): Promise<void> {
     await mkdir(dirname(this.options.socketPath), { recursive: true, mode: 0o700 });
     await chmod(dirname(this.options.socketPath), 0o700);
-    await removeStaleSocket(this.options.socketPath);
-    await this.options.provider.warmL1();
-    await this.options.provider.warmL2();
-    await new Promise<void>((resolve, reject) => {
-      const onError = (error: Error) => {
-        this.server.removeListener("listening", onListening);
-        reject(error);
-      };
-      const onListening = () => {
-        this.server.removeListener("error", onError);
-        resolve();
-      };
-      this.server.once("error", onError);
-      this.server.once("listening", onListening);
-      this.server.listen(this.options.socketPath);
+    await this.options.provider.ready();
+    await withFileLock(this.socketLockPath, async () => {
+      await removeStaleSocket(this.options.socketPath);
+      await new Promise<void>((resolve, reject) => {
+        const onError = (error: Error) => {
+          this.server.removeListener("listening", onListening);
+          reject(error);
+        };
+        const onListening = () => {
+          this.server.removeListener("error", onError);
+          resolve();
+        };
+        this.server.once("error", onError);
+        this.server.once("listening", onListening);
+        this.server.listen(this.options.socketPath);
+      });
+      this.ownsSocket = true;
+      await chmod(this.options.socketPath, 0o600);
+      this.idleTimer = setInterval(() => this.evictIfIdle(), 1000);
     });
-    await chmod(this.options.socketPath, 0o600);
-    this.idleTimer = setInterval(() => this.evictIfIdle(), 1000);
   }
 
   close(): Promise<void> {
@@ -149,19 +146,33 @@ export class YoloAutoWorkerServer {
   }
 
   private async closeInternal(): Promise<void> {
+    this.closing = true;
     if (this.idleTimer) clearInterval(this.idleTimer);
     this.idleTimer = undefined;
     for (const socket of this.sockets) socket.destroy();
     this.sockets.clear();
-    await new Promise<void>((resolve) => {
+    await this.activeClassification;
+    const closeListener = () => new Promise<void>((resolve) => {
       if (!this.server.listening) {
         resolve();
         return;
       }
       this.server.close(() => resolve());
     });
-    await rm(this.options.socketPath, { force: true });
-    await this.options.provider.close?.();
+    try {
+      if (this.ownsSocket) {
+        await withFileLock(this.socketLockPath, async () => {
+          await closeListener();
+          await rm(this.options.socketPath, { force: true });
+          this.ownsSocket = false;
+        });
+      } else {
+        await closeListener();
+      }
+    } finally {
+      if (this.server.listening) await closeListener();
+      await this.options.provider.close?.();
+    }
   }
 
   private send(socket: net.Socket, value: unknown): void {
@@ -173,19 +184,16 @@ export class YoloAutoWorkerServer {
   }
 
   private accept(socket: net.Socket): void {
+    if (this.closing) {
+      socket.destroy();
+      return;
+    }
     this.sockets.add(socket);
     let buffer = Buffer.alloc(0);
     let handshaken = false;
-    const handshakeTimer = setTimeout(() => socket.destroy(), L1_REQUEST_TIMEOUT_MS);
-    const send = (value: unknown): void => {
-      try {
-        socket.write(encodeFrame(value));
-      } catch {
-        socket.destroy();
-      }
-    };
+    const handshakeTimer = setTimeout(() => socket.destroy(), WORKER_HANDSHAKE_TIMEOUT_MS);
     const failHandshake = (error: string): void => {
-      send({
+      this.send(socket, {
         type: "handshake",
         protocolVersion: YOLO_AUTO_PROTOCOL_VERSION,
         status: "failed",
@@ -201,54 +209,48 @@ export class YoloAutoWorkerServer {
         socket.destroy();
         return;
       }
-      if (!parsed || typeof parsed !== "object") {
+      if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
         socket.destroy();
         return;
       }
+      const message = parsed as Record<string, unknown>;
       if (!handshaken) {
-        const handshake = parsed as Record<string, unknown>;
         if (
-          handshake.type !== "handshake"
-          || handshake.protocolVersion !== YOLO_AUTO_PROTOCOL_VERSION
+          message.type !== "handshake"
+          || message.protocolVersion !== YOLO_AUTO_PROTOCOL_VERSION
         ) {
           failHandshake("unsupported_protocol");
           return;
         }
         handshaken = true;
         clearTimeout(handshakeTimer);
-        send({
+        this.send(socket, {
           type: "handshake",
           protocolVersion: YOLO_AUTO_PROTOCOL_VERSION,
           status: "ready",
-          capabilities: {
-            l1Ready: true,
-            l2Ready: true,
-            l3Available: typeof this.options.provider.evaluateL3 === "function",
-            l3Strategy: "multi",
-          },
+          buildId: this.options.buildId,
         });
         return;
       }
-      const request = parsed as Partial<YoloAutoWorkerRequest>;
-      if (
-        request.protocolVersion !== YOLO_AUTO_PROTOCOL_VERSION
-        || typeof request.requestId !== "string"
-        || (request.phase !== "l1" && request.phase !== "l2" && request.phase !== "l3")
-        || typeof request.deadlineMs !== "number"
-        || !Number.isFinite(request.deadlineMs)
-        || request.deadlineMs <= 0
-        || request.deadlineMs > 10_000
-        || !isWorkerPayload(request.payload)
-      ) {
+      if (message.type === "shutdown") {
+        if (message.protocolVersion !== YOLO_AUTO_PROTOCOL_VERSION) {
+          socket.destroy();
+          return;
+        }
+        socket.end();
+        void this.close();
+        return;
+      }
+      if (!isClassifyRequest(message)) {
         socket.destroy();
         return;
       }
       this.lastActivity = Date.now();
       if (this.queue.length >= this.queueLimit) {
-        send(this.failedResponse(request, "queue_overflow"));
+        this.send(socket, this.failedResponse(message, "queue_overflow"));
         return;
       }
-      this.queue.push({ socket, request: request as YoloAutoWorkerRequest });
+      this.queue.push({ socket, request: message, deadlineAt: Date.now() + message.deadlineMs });
       void this.drain();
     };
     const handleData = (chunk: Buffer): void => {
@@ -283,24 +285,36 @@ export class YoloAutoWorkerServer {
         const entry = this.queue.shift();
         if (!entry || entry.socket.destroyed) continue;
         this.lastActivity = Date.now();
+        const remainingMs = entry.deadlineAt - this.lastActivity;
+        if (remainingMs <= 0) {
+          this.send(entry.socket, this.failedResponse(entry.request, "deadline_exceeded"));
+          continue;
+        }
         try {
-          const result = await this.evaluate(entry.request);
+          const heads = await this.evaluate(entry.request, remainingMs);
+          if (Date.now() >= entry.deadlineAt) {
+            this.send(entry.socket, this.failedResponse(entry.request, "deadline_exceeded"));
+            continue;
+          }
           if (!entry.socket.destroyed) {
             this.send(entry.socket, {
+              type: "classify",
+              protocolVersion: YOLO_AUTO_PROTOCOL_VERSION,
               requestId: entry.request.requestId,
-              phase: entry.request.phase,
-              completion: "complete",
-              ...(entry.request.phase === "l1"
-                ? { l1: result }
-                : entry.request.phase === "l2"
-                  ? { l2: result }
-                  : { l3: result }),
+              status: "complete",
+              heads,
             });
           }
         } catch (error) {
           if (!entry.socket.destroyed) {
-            this.send(entry.socket, this.failedResponse(entry.request, error instanceof Error ? error.message : String(error)));
+            this.send(entry.socket, this.failedResponse(
+              entry.request,
+              Date.now() >= entry.deadlineAt
+                ? "deadline_exceeded"
+                : error instanceof Error ? error.message : String(error),
+            ));
           }
+          await this.activeClassification;
         }
       }
     } finally {
@@ -308,19 +322,17 @@ export class YoloAutoWorkerServer {
     }
   }
 
-
-  private async evaluate(
-    request: YoloAutoWorkerRequest,
-  ): Promise<YoloAutoL1Response | YoloAutoL2Response | YoloAutoL3Response> {
+  private async evaluate(request: ClassifyRequest, deadlineMs: number): Promise<YoloAutoHeads> {
     let timer: ReturnType<typeof setTimeout> | undefined;
-    const timeout = new Promise<never>((_, reject) => {
-      timer = setTimeout(() => reject(new Error("deadline_exceeded")), request.deadlineMs);
+    const evaluation = Promise.resolve().then(() => this.options.provider.classify(request.text));
+    const active = evaluation.then(() => undefined, () => undefined);
+    this.activeClassification = active;
+    void active.then(() => {
+      if (this.activeClassification === active) this.activeClassification = undefined;
     });
-    const evaluation = request.phase === "l1"
-      ? this.options.provider.evaluateL1(request.payload)
-      : request.phase === "l2"
-        ? this.options.provider.evaluateL2(request.payload)
-        : this.evaluateL3(request.payload);
+    const timeout = new Promise<never>((_, reject) => {
+      timer = setTimeout(() => reject(new Error("deadline_exceeded")), deadlineMs);
+    });
     try {
       return await Promise.race([evaluation, timeout]);
     } finally {
@@ -328,25 +340,12 @@ export class YoloAutoWorkerServer {
     }
   }
 
-  private async evaluateL3(payload: YoloAutoPayload): Promise<YoloAutoL3Response> {
-    if (!this.l3Ready) {
-      this.l3Warmup ??= Promise.resolve(this.options.provider.warmL3?.()).then(
-        () => { this.l3Ready = true; },
-        (error: unknown) => {
-          this.l3Warmup = undefined;
-          throw error;
-        },
-      );
-      await this.l3Warmup;
-    }
-    return this.options.provider.evaluateL3(payload);
-  }
-
-  private failedResponse(request: Partial<YoloAutoWorkerRequest>, error: string): YoloAutoWorkerResponse {
+  private failedResponse(request: Pick<ClassifyRequest, "requestId">, error: string) {
     return {
-      requestId: request.requestId ?? "",
-      phase: request.phase === "l1" ? "l1" : request.phase === "l3" ? "l3" : "l2",
-      completion: "failed",
+      type: "classify" as const,
+      protocolVersion: YOLO_AUTO_PROTOCOL_VERSION,
+      requestId: request.requestId,
+      status: "failed" as const,
       error,
     };
   }

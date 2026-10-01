@@ -10,4 +10,8 @@ export interface ToolCallContext {
   input: unknown;
   toolCallId: string;
   cwd: string | undefined;
+  sandboxed?: boolean;
+  yoloAutoHardRuleHit?: boolean;
+  yoloAutoWorkspaceLocal?: boolean;
+  yoloAutoCommand?: string;
 }

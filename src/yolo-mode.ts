@@ -96,6 +96,16 @@ export function shouldAutoApprovePermissionState(
   );
 }
 
+export function shouldAutoApproveForwardedPermissionRequest(
+  config: PermissionSystemExtensionConfig,
+  context: YoloApprovalContext,
+): boolean {
+  return (
+    config.mode === "yolo"
+    && shouldAutoApprovePermissionState("ask", config, context)
+  );
+}
+
 export function shouldRelaxBundledToolDenyInYolo(
   options: BundledToolDenyRelaxationOptions,
 ): boolean {

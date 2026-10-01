@@ -4,6 +4,7 @@ import * as yoloModeModule from "./yolo-mode";
 import {
   canResolveAskPermissionRequest,
   matchesYoloAskBashPattern,
+  shouldAutoApproveForwardedPermissionRequest,
   shouldAutoApprovePermissionState,
 } from "./yolo-mode";
 
@@ -69,6 +70,20 @@ describe("matchesYoloAskBashPattern", () => {
       ...yoloConfig,
       mode: "yolo-auto",
     }, { toolName: "read" })).toBe(true);
+  });
+
+  it("does not auto-approve forwarded requests in yolo-auto mode", () => {
+    expect(shouldAutoApproveForwardedPermissionRequest(
+      { ...yoloConfig, mode: "yolo-auto" },
+      { toolName: "read" },
+    )).toBe(false);
+  });
+
+  it("keeps classic yolo auto-approval for forwarded requests", () => {
+    expect(shouldAutoApproveForwardedPermissionRequest(
+      yoloConfig,
+      { toolName: "read" },
+    )).toBe(true);
   });
 
   it("does not apply bash-only protection to non-bash requests", () => {

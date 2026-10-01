@@ -1,43 +1,21 @@
 import type { PermissionState } from "./types";
+import { YOLO_AUTO_LABEL_SCHEMA } from "./yolo-auto-label-schema.ts";
 
-const REQUIRED_CATEGORIES = ["injection", "tool_class", "tool_action", "tool_tags"] as const;
-const REQUIRED_TAG_PIPELINES = ["source_sensitive", "source_untrusted", "sink_external"] as const;
-
-type RequiredCategory = (typeof REQUIRED_CATEGORIES)[number];
-type RequiredTagPipeline = (typeof REQUIRED_TAG_PIPELINES)[number];
-
-export type YoloAutoL1Verdict = "safe" | "unsafe" | "unknown";
-
-export interface YoloAutoL1Response {
-  verdict: YoloAutoL1Verdict;
-  accepted: boolean;
-  complete: boolean;
-  degraded: boolean;
-  provenance?: string;
-}
-
-export interface YoloAutoClassifierResult {
-  category: string;
-  className: string;
-  pipeline?: string;
-  accepted: boolean;
-  complete: boolean;
-  degraded: boolean;
-  provenance?: string;
-}
+/** Per-head label probabilities from the Lion Warden classifier. */
+export type YoloAutoHeads = Record<keyof typeof YOLO_AUTO_LABEL_SCHEMA, Record<string, number>>;
 
 export interface YoloAutoPolicyInput {
   enabled: boolean;
-  maxLevel: "l1" | "l2" | "l3";
   permissionState: PermissionState;
   source: string;
   eligible: boolean;
   forcedPrompt: boolean;
   workspaceLocal: boolean;
+  hardRuleHit: boolean;
+  sandboxed: boolean;
   operation: string;
-  l1: YoloAutoL1Response | undefined;
-  results: readonly YoloAutoClassifierResult[];
-  escalated: boolean;
+  toolName: string;
+  heads: YoloAutoHeads | undefined;
 }
 
 export interface YoloAutoPolicyDecision {
@@ -45,36 +23,74 @@ export interface YoloAutoPolicyDecision {
   reason: string;
 }
 
+// ponytail: fixed uncalibrated thresholds; tune from calibration log.
+const MIN_BENIGN_THREAT = 0.9;
+const MAX_INJECTION = 0.1;
+const MAX_TOOL_TAG = 0.5;
+const RESTRICTED_TOOL_CLASSES = new Set(["secrets", "infra", "system"]);
+const EXPECTED_TOOL_ACTION: Record<string, string> = {
+  read: "read",
+  list: "list",
+  write: "write",
+  edit: "write",
+  exec: "exec",
+};
+
 function prompt(reason: string): YoloAutoPolicyDecision {
   return { action: "prompt", reason };
 }
 
-function normalizeTagPipeline(pipeline: string | undefined): RequiredTagPipeline | undefined {
-  if (!pipeline) return undefined;
-  const normalized = pipeline.toLowerCase().replaceAll("-", "_");
-  return REQUIRED_TAG_PIPELINES.find((name) =>
-    normalized === name || normalized.endsWith(`_${name}`),
+const PROBABILITY_SUM_TOLERANCE = 1e-3;
+
+function isProbabilityVector(value: unknown): value is Record<string, number> {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return false;
+  const entries = Object.entries(value);
+  return entries.length > 0 && entries.every(([, score]) =>
+    typeof score === "number" && Number.isFinite(score) && score >= 0 && score <= 1,
   );
 }
 
-function hasAcceptedCompleteResult(
-  results: readonly YoloAutoClassifierResult[],
-  category: RequiredCategory,
-  className: string,
-): boolean {
-  const matches = results.filter((result) => result.category === category);
-  return matches.length === 1
-    && matches[0].className === className
-    && matches[0].accepted
-    && matches[0].complete
-    && !matches[0].degraded;
+function isNormalizedProbabilityVector(value: unknown): value is Record<string, number> {
+  if (!isProbabilityVector(value)) return false;
+  const total = Object.values(value).reduce((sum, score) => sum + score, 0);
+  return Math.abs(total - 1) <= PROBABILITY_SUM_TOLERANCE;
 }
 
-function isSafeL1(l1: YoloAutoL1Response | undefined): boolean {
-  return l1?.verdict === "safe"
-    && l1.accepted
-    && l1.complete
-    && !l1.degraded;
+function argmax(probs: Record<string, number>): string | undefined {
+  let best: string | undefined;
+  let highest = -Infinity;
+  let tied = false;
+  for (const [label, score] of Object.entries(probs)) {
+    if (!Number.isFinite(score)) return undefined;
+    if (score > highest) {
+      best = label;
+      highest = score;
+      tied = false;
+    } else if (score === highest) {
+      tied = true;
+    }
+  }
+  return tied ? undefined : best;
+}
+
+function isValidModelOutput(value: unknown): value is YoloAutoHeads {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return false;
+  const heads = value as Record<string, unknown>;
+  const expectedHeads = Object.keys(YOLO_AUTO_LABEL_SCHEMA) as (keyof YoloAutoHeads)[];
+  if (Object.keys(heads).length !== expectedHeads.length
+    || expectedHeads.some((head) => !Object.prototype.hasOwnProperty.call(heads, head))) {
+    return false;
+  }
+  return expectedHeads.every((head) => {
+    const labels = YOLO_AUTO_LABEL_SCHEMA[head];
+    const scores = heads[head];
+    if (!isProbabilityVector(scores)) return false;
+    if (Object.keys(scores).length !== labels.length
+      || !labels.every((label) => Object.prototype.hasOwnProperty.call(scores, label))) {
+      return false;
+    }
+    return head === "tool_tags" || isNormalizedProbabilityVector(scores);
+  });
 }
 
 export function decideYoloAuto(input: YoloAutoPolicyInput): YoloAutoPolicyDecision {
@@ -84,43 +100,21 @@ export function decideYoloAuto(input: YoloAutoPolicyInput): YoloAutoPolicyDecisi
   if (!input.eligible) return prompt("request_not_eligible");
   if (input.forcedPrompt) return prompt("forced_prompt");
   if (!input.workspaceLocal) return prompt("path_not_workspace_local");
-  if (input.operation !== "read" && input.operation !== "list") {
-    return prompt("operation_not_read_or_list");
-  }
-  if (!isSafeL1(input.l1)) return prompt("l1_not_safe");
-  if (input.maxLevel === "l1") {
-    return {
-      action: "allow",
-      reason: input.operation === "read" ? "safe_workspace_read" : "safe_workspace_list",
-    };
-  }
-  if (input.escalated) return prompt("l3_escalation_requires_review");
-  if (input.results.some((result) => !REQUIRED_CATEGORIES.includes(result.category as RequiredCategory))) {
-    return prompt("unknown_classifier_category");
-  }
-  if (!hasAcceptedCompleteResult(input.results, "injection", "safe")) {
-    return prompt("injection_not_safe");
-  }
-  if (!hasAcceptedCompleteResult(input.results, "tool_class", "file")) {
-    return prompt("tool_class_not_file");
-  }
-  if (!hasAcceptedCompleteResult(input.results, "tool_action", input.operation)) {
-    return prompt("tool_action_mismatch");
-  }
-
-  for (const pipeline of REQUIRED_TAG_PIPELINES) {
-    const matches = input.results.filter((result) =>
-      result.category === "tool_tags" && normalizeTagPipeline(result.pipeline) === pipeline,
-    );
-    if (matches.length !== 1) return prompt("tool_tags_incomplete");
-    const result = matches[0];
-    if (result.className !== "absent" || !result.accepted || !result.complete || result.degraded) {
-      return prompt("unsafe_tool_tag");
-    }
-  }
-
-  return {
-    action: "allow",
-    reason: input.operation === "read" ? "safe_workspace_read" : "safe_workspace_list",
-  };
+  if (input.hardRuleHit) return prompt("sensitive_path");
+  const expectedAction = EXPECTED_TOOL_ACTION[input.operation];
+  if (!expectedAction) return prompt("unsupported_operation");
+  if (expectedAction === "exec" && input.toolName !== "bash") return prompt("exec_not_bash");
+  if (expectedAction === "exec" && !input.sandboxed) return prompt("not_sandboxed");
+  const heads = input.heads;
+  if (!heads || typeof heads !== "object") return prompt("model_unavailable");
+  if (!isValidModelOutput(heads)) return prompt("invalid_model_output");
+  if (argmax(heads.threat) !== "benign") return prompt("threat_not_benign");
+  if (!(heads.threat.benign >= MIN_BENIGN_THREAT)) return prompt("threat_benign_low_confidence");
+  if (!(heads.injection.injection < MAX_INJECTION)) return prompt("injection_detected");
+  if (!(heads.tool_tags["source:sensitive"] < MAX_TOOL_TAG)) return prompt("source_sensitive");
+  if (!(heads.tool_tags["sink:external"] < MAX_TOOL_TAG)) return prompt("sink_external");
+  if (argmax(heads.tool_action) !== expectedAction) return prompt("tool_action_mismatch");
+  const toolClass = argmax(heads.tool_class);
+  if (!toolClass || RESTRICTED_TOOL_CLASSES.has(toolClass)) return prompt("tool_class_restricted");
+  return { action: "allow", reason: "model_allow" };
 }

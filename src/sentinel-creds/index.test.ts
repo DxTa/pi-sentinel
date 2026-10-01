@@ -109,7 +109,7 @@ describe("sentinel-creds structured prompt integration", () => {
   it("allows eligible secret reads through shared yolo-auto without raw-read allowance", async () => {
     const root = mkdtempSync(join(tmpdir(), "sentinel-yolo-secret-"));
     const secretPath = join(root, "secret.env");
-    writeFileSync(secretPath, `AWS_ACCESS_KEY_ID=${["AKIA", "1234567890ABCDEF"].join("")}\n`, "utf8");
+    writeFileSync(secretPath, `SERVICE_TOKEN="${["Zq8vLr2m", "Np4tWx7yK3"].join("")}"\n`, "utf8");
     const evaluate = vi.fn(async () => ({
       action: "allow" as const,
       reason: "safe_workspace_read",
@@ -121,7 +121,7 @@ describe("sentinel-creds structured prompt integration", () => {
       { envShield: false, scanBashReads: false, resultScanning: true },
       () => ({ sentinelCreds: { enabled: true, envShield: false, scanBashReads: false, resultScanning: true } }),
       {
-        getPermissionConfig: () => ({ mode: "yolo-auto", yoloAutoMaxLevel: "l1" }),
+        getPermissionConfig: () => ({ mode: "yolo-auto" }),
         yoloAutoEvaluator: { evaluate },
       },
     );
@@ -147,7 +147,7 @@ describe("sentinel-creds structured prompt integration", () => {
   it("blocks headless eligible secret reads when model does not allow", async () => {
     const root = mkdtempSync(join(tmpdir(), "sentinel-yolo-secret-"));
     const secretPath = join(root, "secret.env");
-    writeFileSync(secretPath, `AWS_ACCESS_KEY_ID=${["AKIA", "1234567890ABCDEF"].join("")}\n`, "utf8");
+    writeFileSync(secretPath, `SERVICE_TOKEN="${["Zq8vLr2m", "Np4tWx7yK3"].join("")}"\n`, "utf8");
     const evaluate = vi.fn(async () => ({
       action: "prompt" as const,
       reason: "l1_request_failed",
@@ -159,7 +159,7 @@ describe("sentinel-creds structured prompt integration", () => {
       { envShield: false, scanBashReads: false, resultScanning: true },
       () => ({ sentinelCreds: { enabled: true, envShield: false, scanBashReads: false, resultScanning: true } }),
       {
-        getPermissionConfig: () => ({ mode: "yolo-auto", yoloAutoMaxLevel: "l1" }),
+        getPermissionConfig: () => ({ mode: "yolo-auto" }),
         yoloAutoEvaluator: { evaluate },
       },
     );
@@ -172,6 +172,153 @@ describe("sentinel-creds structured prompt integration", () => {
 
     expect(result).toMatchObject({ block: true });
     expect(evaluate).toHaveBeenCalledOnce();
+  });
+
+  it("prompts for high-tier secret reads without consulting the model", async () => {
+    const root = mkdtempSync(join(tmpdir(), "sentinel-yolo-secret-"));
+    const secretPath = join(root, "secret.env");
+    writeFileSync(secretPath, `AWS_ACCESS_KEY_ID=${["AKIA", "1234567890ABCDEF"].join("")}\n`, "utf8");
+    const evaluate = vi.fn(async () => ({
+      action: "allow" as const,
+      reason: "safe_workspace_read",
+      candidate: true,
+      attempted: true,
+      evaluationId: "secret-eval-high",
+    }));
+    const select = vi.fn(async () => "Deny");
+    const harness = createHarness(
+      { envShield: false, scanBashReads: false, resultScanning: true },
+      () => ({ sentinelCreds: { enabled: true, envShield: false, scanBashReads: false, resultScanning: true } }),
+      {
+        getPermissionConfig: () => ({ mode: "yolo-auto" }),
+        yoloAutoEvaluator: { evaluate },
+      },
+    );
+
+    const result = await runToolCall(
+      harness,
+      { toolCallId: "secret-high-tier", toolName: "read", input: { path: secretPath } },
+      { hasUI: true, cwd: root, ui: { select, setStatus() {} } },
+    );
+
+    expect(evaluate).not.toHaveBeenCalled();
+    expect(select).toHaveBeenCalledOnce();
+    expect(result).toMatchObject({ block: true });
+    const title = String(select.mock.calls[0]?.[0]);
+    expect(title).toContain("Auto-approval skipped: high-sensitivity credential type present.");
+    expect(title).toContain("output is redacted");
+    expect(title).not.toContain("result-scanning policy");
+  });
+
+  it("says output is NOT redacted when result scanning is off", async () => {
+    const root = mkdtempSync(join(tmpdir(), "sentinel-noscan-"));
+    const secretPath = join(root, "secret.env");
+    writeFileSync(secretPath, `AWS_ACCESS_KEY_ID=${["AKIA", "1234567890ABCDEF"].join("")}\n`, "utf8");
+    const select = vi.fn(async () => "Deny");
+    const harness = createHarness(
+      { envShield: false, scanBashReads: false, resultScanning: false },
+      () => ({ sentinelCreds: { enabled: true, envShield: false, scanBashReads: false, resultScanning: false } }),
+    );
+
+    await runToolCall(
+      harness,
+      { toolCallId: "noscan-read", toolName: "read", input: { path: secretPath } },
+      { hasUI: true, cwd: root, ui: { select, setStatus() {} } },
+    );
+
+    const title = String(select.mock.calls[0]?.[0]);
+    expect(title).toContain("output is NOT redacted");
+    expect(title).not.toContain("Auto-approval");
+  });
+
+  it.each([
+    ["low-tier single file", "low", true],
+    ["high-tier single file", "high", false],
+    ["directory target", "dir", false],
+  ] as const)("gates yolo-auto secret grep on %s", async (_name, target, modelConsulted) => {
+    const root = mkdtempSync(join(tmpdir(), "sentinel-yolo-grep-"));
+    const secretPath = join(root, "secret.env");
+    const content = target === "high"
+      ? `AWS_ACCESS_KEY_ID=${["AKIA", "1234567890ABCDEF"].join("")}\n`
+      : `SERVICE_TOKEN="${["Zq8vLr2m", "Np4tWx7yK3"].join("")}"\n`;
+    writeFileSync(secretPath, content, "utf8");
+    const evaluate = vi.fn(async () => ({
+      action: "allow" as const,
+      reason: "safe_workspace_read",
+      candidate: true,
+      attempted: true,
+      evaluationId: "grep-eval",
+    }));
+    const select = vi.fn(async () => "Deny");
+    const harness = createHarness(
+      { envShield: false, scanBashReads: false, resultScanning: true },
+      () => ({ sentinelCreds: { enabled: true, envShield: false, scanBashReads: false, resultScanning: true } }),
+      {
+        getPermissionConfig: () => ({ mode: "yolo-auto" }),
+        yoloAutoEvaluator: { evaluate },
+      },
+    );
+
+    const result = await runToolCall(
+      harness,
+      {
+        toolCallId: "grep-" + target,
+        toolName: "grep",
+        input: { pattern: "token", path: target === "dir" ? root : secretPath },
+      },
+      { hasUI: true, cwd: root, ui: { select, setStatus() {} } },
+    );
+
+    if (modelConsulted) {
+      expect(evaluate).toHaveBeenCalledWith(expect.objectContaining({
+        flow: "secret_read",
+        operation: "read",
+        toolName: "grep",
+        workspaceLocal: true,
+      }));
+      expect(JSON.stringify(evaluate.mock.calls[0])).not.toContain(root);
+      expect(select).not.toHaveBeenCalled();
+      expect(result).toBeUndefined();
+    } else {
+      expect(evaluate).not.toHaveBeenCalled();
+      expect(select).toHaveBeenCalledOnce();
+      expect(result).toMatchObject({ block: true });
+      const title = String(select.mock.calls[0]?.[0]);
+      expect(title).toContain(target === "dir" ? root : secretPath);
+      expect(title).toContain("output is redacted");
+    }
+  });
+
+  it("blocks headless secret grep after the model declines, even when headlessMode allows", async () => {
+    const root = mkdtempSync(join(tmpdir(), "sentinel-yolo-grep-"));
+    const secretPath = join(root, "secret.env");
+    writeFileSync(secretPath, `SERVICE_TOKEN="${["Zq8vLr2m", "Np4tWx7yK3"].join("")}"\n`, "utf8");
+    const evaluate = vi.fn(async () => ({
+      action: "prompt" as const,
+      reason: "threat_not_benign",
+      candidate: true,
+      attempted: true,
+      evaluationId: "grep-eval-decline",
+    }));
+    const sentinel = { envShield: false, scanBashReads: false, resultScanning: true, headlessMode: "allow" as const };
+    const harness = createHarness(
+      sentinel,
+      () => ({ sentinelCreds: { enabled: true, ...sentinel } }),
+      {
+        getPermissionConfig: () => ({ mode: "yolo-auto" }),
+        yoloAutoEvaluator: { evaluate },
+      },
+    );
+
+    const result = await runToolCall(
+      harness,
+      { toolCallId: "grep-decline", toolName: "grep", input: { pattern: "token", path: secretPath } },
+      { hasUI: false, cwd: root, ui: { select: vi.fn(), setStatus() {} } },
+    );
+
+    expect(evaluate).toHaveBeenCalledOnce();
+    expect(result).toMatchObject({ block: true });
+    expect(JSON.stringify(result)).toContain("threat_not_benign");
   });
 
   it("uses structured prompt metadata for credential paste", async () => {
@@ -428,7 +575,7 @@ describe("sentinel-creds structured prompt integration", () => {
         };
       },
       {
-        getPermissionConfig: () => ({ mode: "yolo-auto", yoloAutoMaxLevel: "l1" }),
+        getPermissionConfig: () => ({ mode: "yolo-auto" }),
         yoloAutoEvaluator: { evaluate },
       },
     );

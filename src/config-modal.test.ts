@@ -29,4 +29,17 @@ describe("permission mode settings", () => {
     expect(next).not.toHaveProperty("yoloMode");
     expect(next).not.toHaveProperty("yoloAutoMode");
   });
+
+  it("removes classifier-level setting from settings list", async () => {
+    const { buildSettingItems } = await import("./config-modal");
+    expect(buildSettingItems(DEFAULT_EXTENSION_CONFIG).map((item) => item.id))
+      .not.toContain("yoloAutoMaxLevel");
+  });
+
+  it("shows sandbox toggle only when sandbox state is provided", async () => {
+    const { buildSettingItems } = await import("./config-modal");
+    expect(buildSettingItems(DEFAULT_EXTENSION_CONFIG).map((item) => item.id)).not.toContain("sandbox");
+    const sandbox = buildSettingItems(DEFAULT_EXTENSION_CONFIG, false).find((item) => item.id === "sandbox");
+    expect(sandbox).toMatchObject({ currentValue: "off", values: ["on", "off"] });
+  });
 });

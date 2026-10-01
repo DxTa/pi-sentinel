@@ -29,12 +29,6 @@
       "enum": ["manual", "yolo", "yolo-auto"],
       "default": "yolo-auto"
     },
-    "yoloAutoMaxLevel": {
-      "description": "Maximum classifier level allowed to produce automatic approval after Patronus native L1.",
-      "markdownDescription": "Maximum automatic-approval level. `l1` runs Patronus native injection_l1 only; `l2` continues to the calibrated local classifier; `l3` permits advisory escalation after L2. L3 never independently authorizes a request; escalated requests still prompt.",
-      "enum": ["l1", "l2", "l3"],
-      "default": "l3"
-    },
     "yoloAskBashPatterns": {
       "description": "Bash command wildcard patterns that still prompt in yolo and yolo-auto modes.",
       "markdownDescription": "Bash command wildcard patterns that still prompt in `yolo` and `yolo-auto` modes.\n\nPatterns use the same wildcard matching as `permission.bash` and are matched against the raw bash command string. Example: `git push *` or `git commit *`.",

@@ -17,7 +17,7 @@ Git is the supported distribution path. No build step is required. The npm name 
 - Normal workspace-local `read`, `write`, `edit`, `grep`, `find`, and `ls` operations are auto-approved after canonical workspace checks. `.env*` direct reads proceed only with result scanning and masked output; `.env*` writes and edits remain protected. External paths and symlink escapes still use the existing gates.
 - Bash asks by default, except `git status` and `git diff`.
 - Recognized literal network destinations not on the allowlist require approval. Domain preflight uses static command extraction; dynamic or obfuscated destinations may not be identified. Host-bypassed commands have normal host network access after Bash approval.
-- `yolo-auto` is available for eligible workspace-local reads and listings, but it is not required for normal workspace file approval. Deterministic path, credential, network, sandbox, and destructive-action gates remain authoritative.
+- `yolo-auto` evaluates eligible workspace-local reads, listings, writes, and edits, plus already-sandboxed Bash after normal gates. Deterministic path, credential, network, sandbox, and destructive-action gates remain authoritative.
 - Pi clipboard images may be read directly in `manual`, `yolo`, and `yolo-auto` only when they come from an interactive input event and match the current OS temp-root `pi-clipboard-<UUID>.<extension>` shape. Writes, Bash, compound commands, and untracked temp files remain protected.
 - SRT is enabled with the network-capable `online-dev` profile.
 - **Approved Bash runs on the host by default** because bundled `sandbox.bypassCommands` is `['*']`. Set it to `[]` to require SRT wrapping and fail closed when SRT is unavailable.
@@ -32,7 +32,7 @@ Git is the supported distribution path. No build step is required. The npm name 
 
 **Enforcement boundary:** deterministic gates run before execution and before `yolo-auto`. Credential files and secret environment variables are masked or denied. Non-bypassed Bash is wrapped by SRT; bypassed Bash has normal host filesystem and network access after permission and network preflight. A bypass is not a sandbox.
 
-**Model safety:** deterministic workspace approval covers only canonical local `read`, `write`, `edit`, `grep`, `find`, and `ls` operations, excluding protected writes/edits and symlink escapes. `yolo-auto` considers only eligible ask-state workspace-local reads/lists and secret reads with active result scanning; deterministic scanning remains authoritative and output stays redacted. The worker receives bounded metadata, not file contents, secret labels, paths, prompts, commands, or tool output; it cannot detect prompt injection inside a file before reading it. At maximum level `l1`, an accepted, complete, non-degraded safe L1 result can authorize. Levels `l2` and `l3` require exact accepted L2 results. Missing, stale, malformed, degraded, uncertain, or timed-out results prompt. L3 is advisory only and never authorizes an escalated request.
+**Model safety:** `yolo-auto` evaluates eligible ask-state workspace-local read/list/write/edit requests and already-sandboxed Bash; secret reads require active result scanning. The evaluator sends path/tool metadata for reads and listings, up to 800 characters of write/edit content, or a redacted Bash command. Read output is not sent, so prompt injection inside a file cannot be detected before reading. Sensitive paths, external targets, network operations, unsandboxed Bash, and model failures prompt. Fixed thresholds and deterministic credential gates remain authoritative; 5% of would-allow decisions prompt for audit.
 
 **Worker trust:** the configured worker and model cache are trusted components. The socket uses owner-only filesystem permissions, but the protocol does not authenticate the peer or prove response honesty.
 
@@ -44,7 +44,7 @@ See [`SECURITY.md`](SECURITY.md) for reporting instructions.
 
 ```text
 request -> canonical workspace file check or permission/path/network/credential gates
-        -> yolo-auto only for eligible local reads/lists
+        -> yolo-auto for eligible local reads/lists/writes/edits and sandboxed Bash
         -> SRT wrapper or approved host bypass
         -> execute or prompt/deny
 ```
@@ -53,23 +53,20 @@ SRT is the only sandbox backend. SRT-wrapped commands can read the repository an
 
 ## `yolo-auto` worker
 
-The external worker provides Patronus native L1, L2, and advisory L3. The MIT package does not include Patronus Ark, model assets, or commercial/GPL assets.
+In `yolo-auto` mode, pi-sentinel starts or reuses one shared, detached Node worker. The worker uses the Apache-2.0 Lion Warden classifier, pinned to revision `77888f617584758f904faefd6f38d4cf926f6d5d`. The model and tokenizer are not bundled; first startup downloads about 130 MB into `~/.pi/agent/runtime/pi-sentinel/yolo-auto/models`, verifies SHA-256 hashes, and resumes interrupted downloads. The worker fails closed: unavailable or invalid model assets mean permission requests prompt.
 
-The adapter requests downloads only during startup, checks pinned revision markers and manifest SHA-256 values for the required L2 packages, warms required models, holds a startup lock, and listens on a user-owned Unix socket. It does not independently hash every model/tokenizer artifact or authenticate socket peers. Permission decisions never download assets. A shared active socket can serve multiple Pi sessions; worker failure falls back to prompting.
+The pi-sentinel package is MIT; classifier weights are Apache-2.0. The implementation uses no Python worker and never fetches `l2/` assets.
 
-When `mode` is `yolo-auto`, pi-sentinel starts the adapter with `python3` unless the configured socket is already active. Override these when needed:
+Override the model directory or Unix socket when needed:
 
 ```sh
-export PI_SENTINEL_PYTHON=/path/to/python
-export PI_SENTINEL_PATRONUS_SITE_PACKAGES=/path/to/patronus/site-packages
+export PI_SENTINEL_YOLO_AUTO_MODEL_DIR=/path/to/models
 export PI_SENTINEL_YOLO_AUTO_SOCKET=/path/to/yolo-auto.sock
-
-python3 bin/patronus-yolo-auto-worker.py \
-  --site-packages /path/to/patronus/site-packages \
-  --model-dir /path/to/patronus/models
 ```
 
-Use `--no-download-files` for offline startup. Missing assets then stop the worker instead of falling back to downloads during a permission decision. `/sentinel show` reports worker state and fallback reason.
+Each evaluation writes a calibration record to `~/.pi/agent/logs/yolo-auto-calibration.jsonl`. Records contain a hash of classifier input, not raw request text. The owner-only file is mode `0600`, rotates at 50 MB, and retains one `.1` file. A shared active worker can serve multiple Pi sessions; worker failure falls back to prompting.
+
+Run `node scripts/calibration-report.mjs [calibration.jsonl] [review.jsonl]` to join human approval/denial labels by `evaluationId` and print precision/recall by gate and threshold. It includes the rotated calibration file when present; automatic model approvals are not treated as human labels.
 
 ## Commands
 
@@ -82,7 +79,7 @@ Use `--no-download-files` for offline startup. Missing assets then stop the work
 | `/sandbox-grant network --domain <domain> [--ttl <duration>]` | Grant a sandbox network domain. |
 | `/sandbox-revoke <grant-id>` | Revoke a sandbox grant. |
 
-`mode` selects one behavior: `manual` prompts ordinary gated requests, `yolo` enables classic eligible auto-approval, and `yolo-auto` adds model-backed approval for eligible reads/lists while retaining classic yolo bypass elsewhere. The deterministic canonical workspace file rule applies in every mode. Protected Bash patterns, `.env*` writes/edits, and external paths still use their safety gates.
+`mode` selects one behavior: `manual` prompts ordinary gated requests, `yolo` enables classic eligible auto-approval, and `yolo-auto` adds model-backed approval for eligible read/list/write/edit and already-sandboxed Bash requests while retaining classic yolo bypass elsewhere. The deterministic canonical workspace file rule applies in every mode. Protected Bash patterns, `.env*` writes/edits, and external paths still use their safety gates.
 
 ## Logs
 
