@@ -47,8 +47,30 @@ function canonicalWithin(path: string, dirs: readonly string[]): string | null {
   return null;
 }
 
+/**
+ * Replace quoted arguments with a placeholder so punctuation inside quotes is not
+ * mistaken for shell syntax. Double quotes still expand `$`, backticks, and `\`, so
+ * those reject; unbalanced quotes reject.
+ */
+function maskQuotedArguments(command: string): string | null {
+  let out = "";
+  for (let i = 0; i < command.length; i++) {
+    const char = command[i]!;
+    if (char !== "'" && char !== '"') {
+      out += char;
+      continue;
+    }
+    const end = command.indexOf(char, i + 1);
+    if (end === -1) return null;
+    if (char === '"' && /[$`\\]/.test(command.slice(i + 1, end))) return null;
+    out += "Q";
+    i = end;
+  }
+  return out;
+}
+
 function matchScript(command: string, cwd: string, dirs: readonly string[]): TrustedPiMatch | null {
-  const trimmed = command.trim();
+  const trimmed = maskQuotedArguments(command.trim());
   if (!trimmed || SHELL_SYNTAX.test(trimmed)) return null;
   const tokens = trimmed.split(/\s+/);
   const script = INTERPRETERS.has(basename(tokens[0]!)) ? tokens[1] : tokens[0];

