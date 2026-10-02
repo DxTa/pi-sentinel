@@ -74,6 +74,8 @@ export function describeToolGate(
     deriveSuggestionValue(tcc, check),
   );
 
+  const sessionApproval = sessionApprovalFor(tcc, check, suggestion);
+
   const askMessage = formatAskPrompt(
     check,
     tcc.agentName ?? undefined,
@@ -145,14 +147,16 @@ export function describeToolGate(
       agentName: tcc.agentName ?? undefined,
       input: tcc.input,
     },
-    sessionApproval: sessionApprovalFor(tcc, check, suggestion),
+    sessionApproval,
     promptDetails: {
       source: "tool_call",
       agentName: tcc.agentName,
       message: askMessage,
       toolCallId: tcc.toolCallId,
       toolName: tcc.toolName,
-      sessionLabel: suggestion.label,
+      sessionLabel: 'patterns' in sessionApproval
+        ? 'Yes, allow bash ' + sessionApproval.patterns.map((p) => JSON.stringify(p)).join(', ') + ' for this session'
+        : suggestion.label,
       ...permissionLogContext,
       ...(yoloAutoOperation
         ? {

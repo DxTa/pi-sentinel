@@ -33,6 +33,7 @@ describe("describeToolGate bash session approval", () => {
       { ...check("bash"), command: "cd src && pytest -q && cd .." },
     );
     expect(descriptor.sessionApproval).toEqual({ surface: "bash", patterns: ["cd *", "pytest *"] });
+    expect(descriptor.promptDetails.sessionLabel).toBe('Yes, allow bash "cd *", "pytest *" for this session');
   });
 
   it("keeps a single pattern for simple commands", () => {
