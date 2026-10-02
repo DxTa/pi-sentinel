@@ -31,6 +31,19 @@ describe("matchTrustedPiRequest", () => {
     expect(matchTrustedPiRequest("grep", { pattern: "x", path: join(s.agentDir, "skills") }, s.workspace, s.dirs)?.kind).toBe("read");
   });
 
+  it("trusts top-level symlinked agent dirs but not links to home-level ancestors", () => {
+    const s = setup();
+    const shared = join(s.root, "shared-skills", "demo");
+    mkdirSync(shared, { recursive: true });
+    writeFileSync(join(shared, "SKILL.md"), "# shared\n");
+    symlinkSync(join(s.root, "shared-skills"), join(s.agentDir, "linked-skills"));
+    symlinkSync(s.root, join(s.agentDir, "root-link"));
+    const dirs = trustedPiDirs(s.agentDir);
+
+    expect(matchTrustedPiRequest("read", { path: join(s.agentDir, "linked-skills", "demo", "SKILL.md") }, s.workspace, dirs)?.kind).toBe("read");
+    expect(matchTrustedPiRequest("read", { path: join(s.root, "outside.sh") }, s.workspace, dirs)).toBeNull();
+  });
+
   it("rejects writes, other agent dirs, and symlinks that escape", () => {
     const s = setup();
     expect(matchTrustedPiRequest("write", { path: join(s.skill, "new.md"), content: "x" }, s.workspace, s.dirs)).toBeNull();

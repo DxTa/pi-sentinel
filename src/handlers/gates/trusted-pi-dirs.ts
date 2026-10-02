@@ -4,7 +4,7 @@
  * script stored in them, are auto-allowed in every permission mode.
  * Writes are never trusted here, so a new script still needs approval first.
  */
-import { realpathSync, statSync } from "node:fs";
+import { readdirSync, realpathSync, statSync } from "node:fs";
 import { homedir } from "node:os";
 import { basename, dirname, join, resolve } from "node:path";
 
@@ -25,7 +25,24 @@ const SHELL_SYNTAX = /[<>&|;`$(){}\n]/;
 
 export function trustedPiDirs(agentDir: string): string[] {
   // Exact subagent delegation helper (~/.pi/scripts/delegate-prompt.sh); siblings stay gated.
-  return [agentDir, join(dirname(agentDir), "scripts", "delegate-prompt.sh")];
+  const dirs = [agentDir, join(dirname(agentDir), "scripts", "delegate-prompt.sh")];
+  // Top-level symlinked dirs (e.g. linked skill dirs) are part of the agent tree, but a
+  // link to an ancestor of the agent dir (home or filesystem root) would trust far too much.
+  try {
+    const realAgentDir = realpathSync.native(agentDir);
+    for (const entry of readdirSync(agentDir, { withFileTypes: true })) {
+      if (!entry.isSymbolicLink()) continue;
+      try {
+        const target = realpathSync.native(join(agentDir, entry.name));
+        if (statSync(target).isDirectory() && !isPathWithinDirectory(realAgentDir, target)) dirs.push(target);
+      } catch {
+        // Broken link: nothing to trust.
+      }
+    }
+  } catch {
+    // Missing agent dir: only the static entries apply.
+  }
+  return dirs;
 }
 
 function expandHome(path: string): string {

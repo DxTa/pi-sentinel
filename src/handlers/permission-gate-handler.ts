@@ -1,5 +1,6 @@
 
 import { matchTrustedPiRequest } from "./gates/trusted-pi-dirs";
+import { READ_ONLY_PATH_BEARING_TOOLS } from "#src/path-utils";
 import type {
   ExtensionContext,
   InputEventResult,
@@ -373,9 +374,13 @@ export class PermissionGateHandler {
       : baseToolCheck;
 
     // Let YoloAuto classify workspace operations only when normal policy asks.
+    // Workspace reads never need the model; writes still go through YoloAuto when policy asks.
     if (
       workspaceLocalFileOperation
-      && (session.config.mode !== "yolo-auto" || toolCheck.state !== "ask")
+      && (session.config.mode !== "yolo-auto"
+        || toolCheck.state !== "ask"
+        || READ_ONLY_PATH_BEARING_TOOLS.has(tcc.toolName)
+        || tcc.toolName === "ls")
     ) {
       session.logger.debug("permission_gate.resolved", {
         source: "tool_call",

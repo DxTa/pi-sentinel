@@ -472,9 +472,8 @@ describe("piPermissionSystemExtension SRT default smoke", () => {
         { toolName: "bash", input: { command: "printf 'safe'" } },
       ];
       for (const event of events) await toolCall(event, context as never);
-      expect(classificationTexts).toHaveLength(events.length);
       expect(classificationTexts.map((text) => text.split(" ", 1)[0])).toEqual([
-        "tool=read", "tool=ls", "tool=write", "tool=edit", "tool=bash",
+        "tool=write", "tool=edit", "tool=bash",
       ]);
     } finally {
       random.mockRestore();
