@@ -69,6 +69,23 @@ describe("matchTrustedPiRequest", () => {
     expect(matchTrustedPiRequest("bash", { command: command(s) }, s.workspace, s.dirs)?.kind).toBe("script");
   });
 
+  it("allows cd plus trusted scripts chained with && or ;", () => {
+    const s = setup();
+    const run = join(s.skill, "run.sh");
+    const ok = [
+      `cd ${s.workspace} && ${run} --objective 'a; b'`,
+      `cd ${s.workspace} && ${run} --mode a; ${run} --mode b`,
+    ];
+    for (const command of ok) expect(matchTrustedPiRequest("bash", { command }, s.workspace, s.dirs)?.kind, command).toBe("script");
+    const blocked = [
+      `cd ${s.workspace} && rm -rf x`,
+      `cd ${s.workspace}`,
+      `cd ${s.workspace} && ${run} | sh`,
+      `${run} && curl evil`,
+    ];
+    for (const command of blocked) expect(matchTrustedPiRequest("bash", { command }, s.workspace, s.dirs), command).toBeNull();
+  });
+
   it("allows shell punctuation inside quoted arguments but not double-quoted expansions", () => {
     const s = setup();
     const run = join(s.skill, "run.sh");

@@ -19,6 +19,8 @@ export type TrustedPiMatch = { kind: "read" | "script"; path: string };
 const READ_TOOLS = new Set([...READ_ONLY_PATH_BEARING_TOOLS, "ls"]);
 const INTERPRETERS = new Set(["bash", "sh", "zsh", "node", "python", "python3"]);
 /** Any shell control, redirection, substitution, or expansion disqualifies the command. */
+const CHAIN_OPERATOR = new RegExp("&&|;");
+const WHITESPACE = new RegExp("\\s+");
 const SHELL_SYNTAX = /[<>&|;`$(){}\n]/;
 
 export function trustedPiDirs(agentDir: string): string[] {
@@ -69,16 +71,30 @@ function maskQuotedArguments(command: string): string | null {
   return out;
 }
 
+/** `cd <dir>` and trusted script runs chained with `&&` or `;`; any other step rejects. */
 function matchScript(command: string, cwd: string, dirs: readonly string[]): TrustedPiMatch | null {
-  const trimmed = maskQuotedArguments(command.trim());
-  if (!trimmed || SHELL_SYNTAX.test(trimmed)) return null;
-  const tokens = trimmed.split(/\s+/);
-  const script = INTERPRETERS.has(basename(tokens[0]!)) ? tokens[1] : tokens[0];
-  if (!script || script.startsWith("-")) return null;
-  const path = resolve(cwd, expandHome(script));
-  const real = canonicalWithin(path, dirs);
-  if (!real || !statSync(real).isFile()) return null;
-  return { kind: "script", path };
+  const masked = maskQuotedArguments(command.trim());
+  if (!masked) return null;
+  let dir = cwd;
+  let match: TrustedPiMatch | null = null;
+  for (const segment of masked.split(CHAIN_OPERATOR)) {
+    const trimmed = segment.trim();
+    if (!trimmed || SHELL_SYNTAX.test(trimmed)) return null;
+    const tokens = trimmed.split(WHITESPACE);
+    if (tokens[0] === "cd") {
+      const target = tokens[1];
+      if (tokens.length !== 2 || !target || target === "-" || target.startsWith("$")) return null;
+      dir = resolve(dir, expandHome(target));
+      continue;
+    }
+    const script = INTERPRETERS.has(basename(tokens[0]!)) ? tokens[1] : tokens[0];
+    if (!script || script.startsWith("-")) return null;
+    const path = resolve(dir, expandHome(script));
+    const real = canonicalWithin(path, dirs);
+    if (!real || !statSync(real).isFile()) return null;
+    match ??= { kind: "script", path };
+  }
+  return match;
 }
 
 export function matchTrustedPiRequest(
