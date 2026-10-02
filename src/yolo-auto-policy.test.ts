@@ -96,8 +96,8 @@ describe("decideYoloAuto", () => {
     });
   });
 
-  it("prompts for exec unless already sandboxed", () => {
-    expect(decideYoloAuto(input({ operation: "exec", toolName: "bash", sandboxed: false })).reason).toBe("not_sandboxed");
+  it("lets the model judge eligible unsandboxed exec", () => {
+    expect(decideYoloAuto(input({ operation: "exec", toolName: "bash", sandboxed: false })).reason).not.toBe("not_sandboxed");
   });
 
   it("prompts when exec is not from Bash", () => {

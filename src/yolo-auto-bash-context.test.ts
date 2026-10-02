@@ -6,6 +6,13 @@ import { buildYoloAutoBashContext } from "./yolo-auto-bash-context.js";
 const workspace = process.cwd();
 
 describe("buildYoloAutoBashContext", () => {
+  it("treats cd outside the workspace as non-local", () => {
+    for (const command of ["cd .. && ls", "cd && ls", "cd ~ && ls", "cd - && ls", "ls; cd ../x; cat y"]) {
+      expect(buildYoloAutoBashContext(command, [], workspace).workspaceLocal, command).toBe(false);
+    }
+    expect(buildYoloAutoBashContext("cd src && ls", [], workspace).workspaceLocal).toBe(true);
+  });
+
   it("treats output discard devices as workspace-neutral", () => {
     const result = buildYoloAutoBashContext("cd src 2>/dev/null && ls", ["/dev/null"], workspace);
 

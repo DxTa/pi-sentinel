@@ -158,7 +158,10 @@ export function describeToolGate(
         ? {
             yoloAutoEligible: check.state === "ask"
               && yoloAutoWorkspaceLocal
-              && (yoloAutoOperation !== "exec" || tcc.sandboxed === true),
+              && (yoloAutoOperation !== "exec"
+                || tcc.sandboxed === true
+                // Host Bash reaches the model only without command substitution.
+                || splitBashSegments(yoloAutoCommand ?? "") !== null),
             yoloAutoWorkspaceLocal,
             yoloAutoHardRuleHit,
             ...(yoloAutoWorkspaceRelativePath

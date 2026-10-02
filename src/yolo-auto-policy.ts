@@ -104,7 +104,6 @@ export function decideYoloAuto(input: YoloAutoPolicyInput): YoloAutoPolicyDecisi
   const expectedAction = EXPECTED_TOOL_ACTION[input.operation];
   if (!expectedAction) return prompt("unsupported_operation");
   if (expectedAction === "exec" && input.toolName !== "bash") return prompt("exec_not_bash");
-  if (expectedAction === "exec" && !input.sandboxed) return prompt("not_sandboxed");
   const heads = input.heads;
   if (!heads || typeof heads !== "object") return prompt("model_unavailable");
   if (!isValidModelOutput(heads)) return prompt("invalid_model_output");

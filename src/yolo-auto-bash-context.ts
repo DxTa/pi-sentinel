@@ -1,6 +1,9 @@
 import { homedir } from "node:os";
 import { relative } from "node:path";
 
+import { resolve } from "node:path";
+
+import { splitBashSegments } from "./bash-segments.js";
 import { extractAllNetworkTargets } from "./network/domain-extractor.js";
 import { isPathWithinCanonicalWorkingDirectory, normalizePathForComparison } from "./path-utils.js";
 import { isSensitivePath } from "./yolo-auto-sensitive-paths.js";
@@ -18,6 +21,24 @@ export interface YoloAutoBashContext {
   command: string;
   workspaceLocal: boolean;
   hardRuleHit: boolean;
+}
+
+const CD_SEGMENT = new RegExp("^cd(?:\\s+(\\S+))?\\s*$");
+const UNRESOLVABLE_CD = new RegExp("^[-~$]");
+
+/** `cd` with no slash (`cd ..`, bare `cd`, `cd -`) escapes path extraction; check it directly. */
+function cdLeavesWorkspace(command: string, cwd: string | undefined): boolean {
+  if (!cwd) return true;
+  let dir = cwd;
+  for (const segment of splitBashSegments(command) ?? []) {
+    const cd = segment.match(CD_SEGMENT);
+    if (!cd) continue;
+    const target = cd[1];
+    if (!target || UNRESOLVABLE_CD.test(target)) return true;
+    dir = resolve(dir, target);
+    if (!isPathWithinCanonicalWorkingDirectory(dir, cwd)) return true;
+  }
+  return false;
 }
 
 /** Redact filesystem operands and mark Bash commands safe for classifier use. */
@@ -70,7 +91,7 @@ export function buildYoloAutoBashContext(
   );
 
   const hasNetworkTarget = extractAllNetworkTargets(command).length > 0;
-  workspaceLocal = workspaceLocal && !hasNetworkTarget;
+  workspaceLocal = workspaceLocal && !hasNetworkTarget && !cdLeavesWorkspace(command, cwd);
 
   return { command: sanitizedCommand, workspaceLocal, hardRuleHit };
 }

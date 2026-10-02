@@ -87,6 +87,17 @@ describe("describeToolGate yolo-auto eligibility", () => {
       });
   });
 
+  it("marks workspace-local host Bash eligible unless it uses command substitution", () => {
+    const workspace = process.cwd();
+    const bash = (command: string) => describeToolGate(
+      { ...context("bash", { command }), cwd: workspace, sandboxed: false, yoloAutoWorkspaceLocal: true, yoloAutoCommand: command, yoloAutoHardRuleHit: false },
+      check("bash"),
+    ).promptDetails;
+
+    expect(bash("cd src && grep -n \"a\\|b\" index.ts")).toMatchObject({ yoloAutoEligible: true, yoloAutoSandboxed: false });
+    expect(bash("cat $(echo x)")).toMatchObject({ yoloAutoEligible: false });
+  });
+
   it("does not mark external reads eligible", () => {
     const descriptor = describeToolGate(
       context("read", { path: "../secrets.txt" }),
@@ -204,14 +215,14 @@ describe("describeToolGate yolo-auto Bash eligibility", () => {
     });
   });
 
-  it("keeps host Bash ineligible while preserving safe workspace metadata", () => {
+  it("marks workspace-local host Bash eligible with safe workspace metadata", () => {
     const descriptor = describeToolGate(
       { ...context("bash", { command: "ls" }), sandboxed: false, yoloAutoHardRuleHit: false, yoloAutoWorkspaceLocal: true, yoloAutoCommand: "ls" },
       check("bash"),
     );
 
     expect(descriptor.promptDetails).toMatchObject({
-      yoloAutoEligible: false,
+      yoloAutoEligible: true,
       yoloAutoWorkspaceLocal: true,
       yoloAutoOperation: "exec",
       yoloAutoSandboxed: false,
