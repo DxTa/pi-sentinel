@@ -350,7 +350,7 @@ describe("piPermissionSystemExtension SRT default smoke", () => {
     expect(context.ui.select).not.toHaveBeenCalled();
   });
 
-  it("learns repeated safe approvals for unsandboxed host Bash", async () => {
+  it("auto-allows read-only host Bash chains without prompting", async () => {
     const agentDir = await makeTempDir("pi-permission-agent-");
     const projectDir = await makeTempDir("pi-permission-project-");
     process.env.PI_CODING_AGENT_DIR = agentDir;
@@ -363,25 +363,15 @@ describe("piPermissionSystemExtension SRT default smoke", () => {
 
     const pi = createFakePi();
     piPermissionSystemExtension(pi as never);
-    const context = createContext(projectDir, {
-      hasUI: true,
-      choices: ["Yes", "Yes", "Yes"],
-    });
+    await mkdir(path.join(projectDir, "src"), { recursive: true });
+    const context = createContext(projectDir, { hasUI: true, choices: ["Yes"] });
     const call = pi.handlers.get("tool_call")!;
 
-    for (let index = 0; index < 3; index++) {
-      await expect(call(
-        { toolName: "bash", toolCallId: "host-read-" + index, input: { command: "ls" } },
-        context as never,
-      )).resolves.toBeUndefined();
-    }
-    expect(context.ui.select).toHaveBeenCalledTimes(3);
-
     await expect(call(
-      { toolName: "bash", toolCallId: "host-read-4", input: { command: "ls" } },
+      { toolName: "bash", toolCallId: "host-read", input: { command: "cd src && ls && git status" } },
       context as never,
     )).resolves.toBeUndefined();
-    expect(context.ui.select).toHaveBeenCalledTimes(3);
+    expect(context.ui.select).not.toHaveBeenCalled();
   });
 
   it.each(["manual", "yolo", "yolo-auto"] as const)(

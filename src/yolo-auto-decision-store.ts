@@ -13,12 +13,6 @@ import { YOLO_AUTO_LABEL_SCHEMA, type YoloAutoHeadName } from "./yolo-auto-label
 import type { YoloAutoHeads } from "./yolo-auto-policy";
 
 export type HumanAction = "allow_once" | "session" | "workspace" | "global" | "deny";
-export type HostBashDecisionAction = "allow" | "deny";
-
-export interface HostBashDecisionCounts {
-  approvals: number;
-  denials: number;
-}
 
 export interface EvaluationRow {
   evaluationId: string;
@@ -42,8 +36,6 @@ export interface DecisionStore {
   recordEvaluation(row: EvaluationRow): void;
   /** Returns false when the evaluation is unknown. */
   recordHumanDecision(evaluationId: string, action: HumanAction, ts: number): boolean;
-  recordHostBashDecision(scope: string, patternKey: string, action: HostBashDecisionAction, ts: number): void;
-  getHostBashDecisionCounts(scope: string, patternKey: string, since: number): HostBashDecisionCounts;
   listDecisions(scope: string): DecisionRecord[];
   /** Labelled rows for one tool/operation across all scopes, decided at or after `since`. */
   listLabelled(toolName: string, operation: string, since: number): DecisionRecord[];
@@ -110,22 +102,12 @@ export function openDecisionStore(dbPath: string): DecisionStore {
     human_action TEXT,
     human_ts INTEGER
   );
-  CREATE INDEX IF NOT EXISTS decisions_scope_key ON decisions(scope, tool, operation, pattern_key);
-  CREATE TABLE IF NOT EXISTS host_bash_decisions (
-    scope TEXT NOT NULL, pattern_key TEXT NOT NULL,
-    action TEXT NOT NULL CHECK(action IN ('allow', 'deny')), ts INTEGER NOT NULL
-  );
-  CREATE INDEX IF NOT EXISTS host_bash_decisions_lookup ON host_bash_decisions(scope, pattern_key, ts);`);
+  CREATE INDEX IF NOT EXISTS decisions_scope_key ON decisions(scope, tool, operation, pattern_key);`);
 
   const insert = db.prepare(`INSERT OR REPLACE INTO decisions
     (evaluation_id, ts, scope, tool, operation, pattern_key, features, hard_rule, model_action)
     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`);
   const label = db.prepare("UPDATE decisions SET human_action = ?, human_ts = ? WHERE evaluation_id = ?");
-  const hostBashInsert = db.prepare("INSERT INTO host_bash_decisions(scope, pattern_key, action, ts) VALUES (?, ?, ?, ?)");
-  const hostBashCounts = db.prepare(`SELECT
-    COUNT(CASE WHEN action = 'allow' THEN 1 END) AS approvals,
-    COUNT(CASE WHEN action = 'deny' THEN 1 END) AS denials
-    FROM host_bash_decisions WHERE scope = ? AND pattern_key = ? AND ts >= ?`);
   const list = db.prepare("SELECT * FROM decisions WHERE scope = ? ORDER BY ts");
   const labelled = db.prepare(`SELECT * FROM decisions
     WHERE tool = ? AND operation = ? AND human_action IS NOT NULL AND COALESCE(human_ts, ts) >= ?`);
@@ -137,13 +119,6 @@ export function openDecisionStore(dbPath: string): DecisionStore {
     },
     recordHumanDecision(evaluationId, action, ts) {
       return Number(label.run(action, ts, evaluationId).changes) > 0;
-    },
-    recordHostBashDecision(scope, patternKey, action, ts) {
-      hostBashInsert.run(scope, patternKey, action, ts);
-    },
-    getHostBashDecisionCounts(scope, patternKey, since) {
-      const row = hostBashCounts.get(scope, patternKey, since) as unknown as HostBashDecisionCounts | undefined;
-      return { approvals: row?.approvals ?? 0, denials: row?.denials ?? 0 };
     },
     listDecisions(scope) {
       return (list.all(scope) as unknown as Row[]).map(toRecord);

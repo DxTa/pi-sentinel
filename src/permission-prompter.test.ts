@@ -67,86 +67,33 @@ describe("PermissionPrompter", () => {
     expect(recordHumanDecision).toHaveBeenCalledWith("eval-human-1", action, expect.any(Number));
   });
 
-  it("auto-allows exact read-only host Bash after three approvals and no denials", async () => {
-    const getHostBashDecisionCounts = vi.fn(() => ({ approvals: 3, denials: 0 }));
-    const requestPermissionDecisionFromUi = vi.fn();
+  it("auto-allows workspace read-only Bash chains without the model or UI", async () => {
+    const requestPermissionDecisionFromUi = vi.fn(async () => ({ approved: true, state: "approved" as const }));
     const evaluate = vi.fn();
     const prompter = new PermissionPrompter({
       promptWaitTracker: new PromptWaitTracker({ emit() {} }),
-      getConfig: () => ({ debugLog: false, permissionReviewLog: true, mode: "yolo-auto", yoloAskBashPatterns: [] }),
-      getHostBashDecisionCounts,
-      recordHostBashDecision: vi.fn(),
-      yoloAutoEvaluator: { evaluate },
-      writeReviewLog() {},
-      subagentSessionsDir: "/tmp/subagents",
-      forwardingDir: "/tmp/forwarding",
+      getConfig: () => ({ debugLog: false, permissionReviewLog: false, mode: "yolo-auto", yoloAskBashPatterns: [] }),
+      yoloAutoEvaluator: { evaluate }, writeReviewLog() {},
+      subagentSessionsDir: "/tmp/subagents", forwardingDir: "/tmp/forwarding",
       requestPermissionDecisionFromUi,
     });
-    const result = await prompter.prompt({ hasUI: true, cwd: "/work/repo", ui: { setStatus() {} } } as never, {
-      requestId: "req-host-bash-history",
-      source: "tool_call",
-      agentName: null,
-      message: "Need permission",
-      toolCallId: "call-host-bash-history",
-      toolName: "bash",
-      command: "ls -la src",
-      yoloAutoEligible: false,
-      yoloAutoWorkspaceLocal: true,
-      yoloAutoHardRuleHit: false,
-      yoloAutoSandboxed: false,
-      yoloAutoOperation: "exec",
-    });
+    const context = { hasUI: true, cwd: process.cwd(), ui: { setStatus() {} } } as never;
+    const common = {
+      requestId: "req-chain", source: "tool_call" as const, agentName: null, message: "Need permission",
+      toolName: "bash", yoloAutoEligible: false, yoloAutoWorkspaceLocal: true,
+      yoloAutoHardRuleHit: false, yoloAutoSandboxed: false, yoloAutoOperation: "exec" as const,
+    };
 
-    expect(result).toEqual({ approved: true, state: "approved", autoApproved: true });
-    expect(getHostBashDecisionCounts).toHaveBeenCalledWith(
-      workspaceScope("/work/repo"), expect.stringMatching(/^host-bash:[a-f0-9]{64}$/), expect.any(Number),
-    );
-    expect(JSON.stringify(getHostBashDecisionCounts.mock.calls)).not.toContain("ls -la src");
+    await expect(prompter.prompt(context, { ...common, command: "cd src && ls && head -5 index.ts | grep x" }))
+      .resolves.toEqual({ approved: true, state: "approved", autoApproved: true });
     expect(requestPermissionDecisionFromUi).not.toHaveBeenCalled();
     expect(evaluate).not.toHaveBeenCalled();
-  });
 
-  it("keeps prompting when exact-command history contains a denial", async () => {
-    const ui = vi.fn(async () => ({ approved: true, state: "approved" as const }));
-    const getHostBashDecisionCounts = vi.fn(() => ({ approvals: 3, denials: 1 }));
-    const prompter = new PermissionPrompter({
-      promptWaitTracker: new PromptWaitTracker({ emit() {} }),
-      getConfig: () => ({ debugLog: false, permissionReviewLog: false, mode: "yolo-auto", yoloAskBashPatterns: [] }),
-      getHostBashDecisionCounts,
-      writeReviewLog() {}, subagentSessionsDir: "/tmp/subagents", forwardingDir: "/tmp/forwarding",
-      requestPermissionDecisionFromUi: ui,
-    });
-    const result = await prompter.prompt({ hasUI: true, cwd: "/work/repo", ui: { setStatus() {} } } as never, {
-      requestId: "req-host-bash-denial", source: "tool_call", agentName: null, message: "Need permission",
-      toolName: "bash", command: "ls -la src", yoloAutoEligible: false, yoloAutoWorkspaceLocal: true,
-      yoloAutoHardRuleHit: false, yoloAutoSandboxed: false, yoloAutoOperation: "exec",
-    });
-
-    expect(result).toEqual({ approved: true, state: "approved" });
-    expect(getHostBashDecisionCounts).toHaveBeenCalledOnce();
-    expect(ui).toHaveBeenCalledOnce();
-  });
-
-  it("records only safe host Bash human outcomes", async () => {
-    const recordHostBashDecision = vi.fn();
-    const prompter = new PermissionPrompter({
-      promptWaitTracker: new PromptWaitTracker({ emit() {} }),
-      getConfig: () => ({ debugLog: false, permissionReviewLog: false, mode: "yolo-auto", yoloAskBashPatterns: [] }),
-      recordHostBashDecision,
-      writeReviewLog() {},
-      subagentSessionsDir: "/tmp/subagents",
-      forwardingDir: "/tmp/forwarding",
-      requestPermissionDecisionFromUi: vi.fn(async () => ({ approved: false, state: "denied" as const })),
-    });
-    await prompter.prompt({ hasUI: true, cwd: "/work/repo", ui: { setStatus() {} } } as never, {
-      requestId: "req-host-bash-deny", source: "tool_call", agentName: null, message: "Need permission",
-      toolName: "bash", command: "grep TODO src/index.ts", yoloAutoEligible: false,
-      yoloAutoWorkspaceLocal: true, yoloAutoHardRuleHit: false, yoloAutoSandboxed: false, yoloAutoOperation: "exec",
-    });
-
-    expect(recordHostBashDecision).toHaveBeenCalledWith(
-      workspaceScope("/work/repo"), expect.stringMatching(/^host-bash:[a-f0-9]{64}$/), "deny", expect.any(Number),
-    );
+    await prompter.prompt(context, { ...common, command: "cd src && rm -rf out" });
+    await prompter.prompt(context, { ...common, command: "cd .. && ls" });
+    await prompter.prompt(context, { ...common, command: "cd src && ls", yoloAutoHardRuleHit: true });
+    await prompter.prompt(context, { ...common, command: "cd src && ls", forcePromptInYolo: true });
+    expect(requestPermissionDecisionFromUi).toHaveBeenCalledTimes(4);
   });
 
   it("auto-allows curated diagnostics in manual mode but still honors force-prompt", async () => {
@@ -199,29 +146,6 @@ describe("PermissionPrompter", () => {
     const prompted = await configured.prompt(context, { ...details, command: "docker port api 8501" });
     expect(prompted).toEqual({ approved: true, state: "approved" });
     expect(ui).toHaveBeenCalledOnce();
-  });
-
-  it("does not learn hard-rule or mutating host Bash prompts", async () => {
-    const recordHostBashDecision = vi.fn();
-    const getHostBashDecisionCounts = vi.fn(() => ({ approvals: 3, denials: 0 }));
-    const prompter = new PermissionPrompter({
-      promptWaitTracker: new PromptWaitTracker({ emit() {} }),
-      getConfig: () => ({ debugLog: false, permissionReviewLog: false, mode: "yolo-auto", yoloAskBashPatterns: [] }),
-      getHostBashDecisionCounts, recordHostBashDecision, writeReviewLog() {},
-      subagentSessionsDir: "/tmp/subagents", forwardingDir: "/tmp/forwarding",
-      requestPermissionDecisionFromUi: vi.fn(async () => ({ approved: true, state: "approved" as const })),
-    });
-    const context = { hasUI: true, cwd: "/work/repo", ui: { setStatus() {} } } as never;
-    const common = {
-      requestId: "req-no-learn", source: "tool_call" as const, agentName: null, message: "Need permission",
-      toolName: "bash", yoloAutoEligible: false, yoloAutoWorkspaceLocal: true,
-      yoloAutoSandboxed: false, yoloAutoOperation: "exec" as const,
-    };
-    await prompter.prompt(context, { ...common, command: "rm -rf out", yoloAutoHardRuleHit: false });
-    await prompter.prompt(context, { ...common, command: "ls /etc", yoloAutoHardRuleHit: true });
-
-    expect(getHostBashDecisionCounts).not.toHaveBeenCalled();
-    expect(recordHostBashDecision).not.toHaveBeenCalled();
   });
 
   it("uses model fallback for eligible workspace reads in yolo-auto", async () => {

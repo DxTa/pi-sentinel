@@ -104,21 +104,6 @@ describe("patternKeyFor", () => {
   });
 });
 
-describe("host Bash decisions", () => {
-  it("counts exact workspace/key approvals and denials since the cutoff", () => {
-    const store = openDecisionStore(join(mkdtempSync(join(tmpdir(), "decision-store-")), "d.db"));
-    const scope = workspaceScope("/work/repo");
-    store.recordHostBashDecision(scope, "host-bash:a", "allow", 2_000);
-    store.recordHostBashDecision(scope, "host-bash:a", "allow", 3_000);
-    store.recordHostBashDecision(scope, "host-bash:a", "deny", 4_000);
-    store.recordHostBashDecision(scope, "host-bash:b", "allow", 4_000);
-
-    expect(store.getHostBashDecisionCounts(scope, "host-bash:a", 3_000)).toEqual({ approvals: 1, denials: 1 });
-    expect(store.getHostBashDecisionCounts(workspaceScope("/other"), "host-bash:a", 0)).toEqual({ approvals: 0, denials: 0 });
-    store.close();
-  });
-});
-
 describe("listLabelled", () => {
   it("returns labelled rows for one tool/operation across scopes since a timestamp", () => {
     const store = openDecisionStore(join(mkdtempSync(join(tmpdir(), "decision-store-")), "d.db"));

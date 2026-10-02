@@ -6,6 +6,13 @@ import { buildYoloAutoBashContext } from "./yolo-auto-bash-context.js";
 const workspace = process.cwd();
 
 describe("buildYoloAutoBashContext", () => {
+  it("treats output discard devices as workspace-neutral", () => {
+    const result = buildYoloAutoBashContext("cd src 2>/dev/null && ls", ["/dev/null"], workspace);
+
+    expect(result.workspaceLocal).toBe(true);
+    expect(result.hardRuleHit).toBe(false);
+  });
+
   it("keeps workspace-relative paths and commands eligible", () => {
     const result = buildYoloAutoBashContext("cat src/index.ts", ["src/index.ts"], workspace);
 

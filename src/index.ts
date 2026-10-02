@@ -680,11 +680,6 @@ export default function piPermissionSystemExtension(pi: ExtensionAPI): void {
     recordHumanDecision: (evaluationId, action, ts) => {
       getDecisionStore().recordHumanDecision(evaluationId, action, ts);
     },
-    recordHostBashDecision: (scope, patternKey, action, ts) => {
-      getDecisionStore().recordHostBashDecision(scope, patternKey, action, ts);
-    },
-    getHostBashDecisionCounts: (scope, patternKey, since) =>
-      getDecisionStore().getHostBashDecisionCounts(scope, patternKey, since),
     getConfig: () => runtime.config,
     writeReviewLog: runtime.writeReviewLog.bind(runtime),
     writeDebugLog: runtime.writeDebugLog.bind(runtime),

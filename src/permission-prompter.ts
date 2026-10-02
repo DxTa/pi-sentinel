@@ -2,8 +2,6 @@ import {
   patternKeyFor,
   workspaceScope,
   type HumanAction,
-  type HostBashDecisionAction,
-  type HostBashDecisionCounts,
 } from "./yolo-auto-decision-store";
 import type { PermissionDecisionState } from "./permission-dialog";
 import { createHash } from "node:crypto";
@@ -16,8 +14,7 @@ import {
 } from "./forwarded-permissions/polling";
 import { PromptWaitTracker } from "./prompt-state";
 import { decideYoloAuto } from "./yolo-auto-policy";
-import { isReadOnlyBashCommand, isReadOnlyBashDiagnostic } from "./bash-command-safety";
-import { NEIGHBOUR_WINDOW_MS } from "./yolo-auto-neighbours";
+import { isReadOnlyBashChain, isReadOnlyBashDiagnostic } from "./bash-command-safety";
 import { wildcardMatch } from "./wildcard-matcher";
 import { buildYoloAutoText, type YoloAutoClient } from "./yolo-auto-client";
 import type { YoloAutoEvaluator } from "./yolo-auto-evaluator";
@@ -108,10 +105,6 @@ function decisionStoreFields(
   };
 }
 
-function hostBashPatternKey(command: string): string {
-  return "host-bash:" + createHash("sha256").update(command.trim()).digest("hex");
-}
-
 export interface PermissionPrompterDeps {
   promptWaitTracker: PromptWaitTracker;
   /** Read current config for yolo-mode check (called at prompt time). */
@@ -132,8 +125,6 @@ export interface PermissionPrompterDeps {
   /** Label a stored model evaluation with the human decision (D16). */
   recordHumanDecision?: (evaluationId: string, action: HumanAction, ts: number) => void;
   /** Store workspace-scoped, hashed host Bash decisions; never store command text. */
-  recordHostBashDecision?: (scope: string, patternKey: string, action: HostBashDecisionAction, ts: number) => void;
-  getHostBashDecisionCounts?: (scope: string, patternKey: string, since: number) => HostBashDecisionCounts;
   /** Wait until extension-managed yolo-auto assets are ready or startup failed. */
   waitForYoloAutoStartup?: () => Promise<void>;
   /** Show the interactive permission dialog in the UI. */
@@ -209,7 +200,8 @@ export class PermissionPrompter implements PermissionPrompterApi {
       && details.yoloAutoHardRuleHit === false
       && !explicitlyForcedPrompt
       && typeof details.command === "string"
-      && isReadOnlyBashDiagnostic(details.command)
+      && (isReadOnlyBashDiagnostic(details.command)
+        || (Boolean(ctx.cwd) && isReadOnlyBashChain(details.command, ctx.cwd!)))
     ) {
       this.writeReviewEntry("permission_request.read_only_diagnostic_auto_allowed", {
         ...details,
@@ -222,48 +214,6 @@ export class PermissionPrompter implements PermissionPrompterApi {
         latencyMs: Date.now() - startedAt,
       });
       return { approved: true, state: "approved", autoApproved: true };
-    }
-
-    const hostBashCommand = details.command ?? "";
-    const hostBashKey =
-      config.mode === "yolo-auto"
-      && details.toolName === "bash"
-      && details.yoloAutoSandboxed === false
-      && details.yoloAutoWorkspaceLocal === true
-      && details.yoloAutoHardRuleHit === false
-      && !yoloContext.forcePromptInYolo
-      && Boolean(ctx.cwd)
-      && isReadOnlyBashCommand(hostBashCommand)
-        ? hostBashPatternKey(hostBashCommand)
-        : undefined;
-    const hostBashLearning = ctx.cwd && hostBashKey
-      ? { scope: workspaceScope(ctx.cwd), patternKey: hostBashKey }
-      : undefined;
-    if (hostBashLearning && this.deps.getHostBashDecisionCounts) {
-      try {
-        const counts = this.deps.getHostBashDecisionCounts(
-          hostBashLearning.scope,
-          hostBashLearning.patternKey,
-          Date.now() - NEIGHBOUR_WINDOW_MS,
-        );
-        if (counts.approvals >= 3 && counts.denials === 0) {
-          this.writeReviewEntry("permission_request.host_bash_history_auto_allowed", {
-            ...details,
-            resolution: "host_bash_history_auto_allowed",
-            yoloAutoReason: "three_same_workspace_approvals",
-          });
-          this.writeDebugPrompt("permission_prompt.resolved", details, {
-            approved: true,
-            resolution: "host_bash_history_auto_allowed",
-            latencyMs: Date.now() - startedAt,
-          });
-          return { approved: true, state: "approved", autoApproved: true };
-        }
-      } catch (error) {
-        this.writeDebugPrompt("permission_prompt.decision_store_failed", details, {
-          errorName: error instanceof Error ? error.name : "UnknownError",
-        });
-      }
     }
 
     const yoloAutoDecision = await this.evaluateYoloAuto(config, details, ctx.cwd);
@@ -307,20 +257,6 @@ export class PermissionPrompter implements PermissionPrompterApi {
       );
 
       this.labelEvaluation(yoloAutoDecision.evaluationId, decision.state, details);
-      if (hostBashLearning && this.deps.recordHostBashDecision) {
-        try {
-          this.deps.recordHostBashDecision(
-            hostBashLearning.scope,
-            hostBashLearning.patternKey,
-            decision.approved ? "allow" : "deny",
-            Date.now(),
-          );
-        } catch (error) {
-          this.writeDebugPrompt("permission_prompt.decision_store_failed", details, {
-            errorName: error instanceof Error ? error.name : "UnknownError",
-          });
-        }
-      }
 
       this.writeReviewEntry(
         decision.approved

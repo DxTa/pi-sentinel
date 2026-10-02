@@ -1,3 +1,8 @@
+import { resolve } from "node:path";
+
+import { splitBashSegments } from "./bash-segments";
+import { isPathWithinCanonicalWorkingDirectory } from "./path-utils";
+
 const SHELL_SYNTAX = /&&|\|\||[;|<>`$]|[\r\n]/;
 const READ_ONLY_COMMANDS = new Set([
   "cat", "head", "tail", "grep", "rg", "ag", "wc", "sort", "uniq",
@@ -31,4 +36,28 @@ export function isReadOnlyBashDiagnostic(command: string): boolean {
 
   const inspect = trimmed.match(/^docker inspect --format (['"])(.+)\1 ([A-Za-z0-9][A-Za-z0-9_.-]*)$/);
   return Boolean(inspect && SAFE_INSPECT_FIELDS.has(inspect[2] ?? ""));
+}
+
+const DISCARD_REDIRECT = /\s*(?:[12]?>\s*\/dev\/null|2>&1)(?=\s|$|;|&|\|)/g;
+const GIT_READ = /^git (?:status|log|diff|show)(?:\s|$)/;
+const SED_PRINT = /^sed -n '?\d+(?:,\d+)?p'? [^\s;&|<>]+$/;
+
+/**
+ * True for a chain of read-only commands joined by &&, ;, or pipes, where every
+ * `cd` stays inside cwd and the only redirects discard output. Path operands are
+ * checked separately by the workspace-local gate before this is consulted.
+ */
+export function isReadOnlyBashChain(command: string, cwd: string): boolean {
+  const segments = splitBashSegments(command.replace(DISCARD_REDIRECT, ""));
+  if (!segments?.length) return false;
+  let dir = cwd;
+  return segments.every((segment) => {
+    const cd = segment.match(/^cd\s+([^\s~$-][^\s$]*)$/);
+    if (cd) {
+      dir = resolve(dir, cd[1]!);
+      return isPathWithinCanonicalWorkingDirectory(dir, cwd);
+    }
+    if (GIT_READ.test(segment)) return !/[<>`$]|--output|--ext-diff|--textconv/.test(segment);
+    return SED_PRINT.test(segment) || isReadOnlyBashCommand(segment);
+  });
 }

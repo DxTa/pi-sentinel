@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { isReadOnlyBashCommand, isReadOnlyBashDiagnostic } from "./bash-command-safety";
+import { isReadOnlyBashChain, isReadOnlyBashCommand, isReadOnlyBashDiagnostic } from "./bash-command-safety";
 
 describe("isReadOnlyBashCommand", () => {
   it.each(["ls -la src", "grep TODO src/index.ts", "find src -name '*.ts'", "docker ps"]) (
@@ -26,4 +26,29 @@ describe("isReadOnlyBashDiagnostic", () => {
     "curl https://example.com",
     "ipconfig set en0 DHCP",
   ])("rejects unsafe diagnostic %s", (command) => expect(isReadOnlyBashDiagnostic(command)).toBe(false));
+});
+
+describe("isReadOnlyBashChain", () => {
+  const cwd = process.cwd();
+  it.each([
+    "cd src && ls handlers && head -40 index.ts",
+    "cd src 2>/dev/null && ls && git log --oneline -5 && cat index.ts | head -60",
+    "cd src; grep -n TODO index.ts | head; sed -n 1,12p index.ts",
+    "git status && git diff --stat",
+    "wc -l src/index.ts 2>&1",
+  ])("accepts read-only chain %s", (command) => expect(isReadOnlyBashChain(command, cwd)).toBe(true));
+  it.each([
+    "cd .. && cat secrets",
+    "cd && cat x",
+    "cd - && ls",
+    "cd ~ && ls",
+    "cd src && rm -rf x",
+    "cd src && ls > out",
+    "cd src && cat $(echo x)",
+    "sed -i s,a,b, index.ts",
+    "sed -n 1w out index.ts",
+    "git push",
+    "git diff --output=x",
+    "cd src && python3 x.py",
+  ])("rejects %s", (command) => expect(isReadOnlyBashChain(command, cwd)).toBe(false));
 });

@@ -11,6 +11,8 @@ const CLOSE_ANGLE = String.fromCharCode(62);
 const SENSITIVE_PATH = OPEN_ANGLE + "sensitive-path" + CLOSE_ANGLE;
 const EXTERNAL_PATH = OPEN_ANGLE + "external-path" + CLOSE_ANGLE;
 const PATH = OPEN_ANGLE + "path" + CLOSE_ANGLE;
+/** Output sinks that neither read nor write workspace data. */
+const DISCARD_DEVICES = new Set(["/dev/null", "/dev/stdout", "/dev/stderr"]);
 
 export interface YoloAutoBashContext {
   command: string;
@@ -27,7 +29,9 @@ export function buildYoloAutoBashContext(
   let workspaceLocal = Boolean(cwd);
   let hardRuleHit = false;
   let sanitizedCommand = command;
-  const tokens = [...new Set(pathTokens)].filter(Boolean).sort((left, right) => right.length - left.length);
+  const tokens = [...new Set(pathTokens)]
+    .filter((token) => token && !DISCARD_DEVICES.has(token))
+    .sort((left, right) => right.length - left.length);
 
   for (const token of tokens) {
     const dynamicPath = token.includes("$") || token.includes(String.fromCharCode(96));
@@ -53,7 +57,8 @@ export function buildYoloAutoBashContext(
     command,
   );
   const unclassifiedPaths = [...unclassifiedCommand.matchAll(ABSOLUTE_PATH_PATTERN)]
-    .map((match) => match[2] ?? "");
+    .map((match) => match[2] ?? "")
+    .filter((path) => !DISCARD_DEVICES.has(path));
   workspaceLocal = unclassifiedPaths.length === 0 ? workspaceLocal : false;
   for (const path of unclassifiedPaths) {
     const normalizedPath = normalizePathForComparison(path, cwd ?? "/");
