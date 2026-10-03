@@ -8,6 +8,7 @@ import { readdirSync, realpathSync, statSync } from "node:fs";
 import { homedir } from "node:os";
 import { basename, dirname, join, resolve } from "node:path";
 
+import { scanQuotes, splitBashSegments } from "#src/bash-segments";
 import {
   getPathBearingToolPath,
   isPathWithinDirectory,
@@ -19,13 +20,11 @@ export type TrustedPiMatch = { kind: "read" | "script"; path: string };
 const READ_TOOLS = new Set([...READ_ONLY_PATH_BEARING_TOOLS, "ls"]);
 const INTERPRETERS = new Set(["bash", "sh", "zsh", "node", "python", "python3"]);
 /** Any shell control, redirection, substitution, or expansion disqualifies the command. */
-const CHAIN_OPERATOR = new RegExp("&&|;");
-const WHITESPACE = new RegExp("\\s+");
 const SHELL_SYNTAX = /[<>&|;`$(){}\n]/;
 
 export function trustedPiDirs(agentDir: string): string[] {
-  // Exact subagent delegation helper (~/.pi/scripts/delegate-prompt.sh); siblings stay gated.
-  const dirs = [agentDir, join(dirname(agentDir), "scripts", "delegate-prompt.sh")];
+  // Both Pi-owned roots are trusted; writes still use normal permission gates.
+  const dirs = [agentDir, join(dirname(agentDir), "scripts")];
   // Top-level symlinked dirs (e.g. linked skill dirs) are part of the agent tree, but a
   // link to an ancestor of the agent dir (home or filesystem root) would trust far too much.
   try {
@@ -66,50 +65,59 @@ function canonicalWithin(path: string, dirs: readonly string[]): string | null {
   return null;
 }
 
-/**
- * Replace quoted arguments with a placeholder so punctuation inside quotes is not
- * mistaken for shell syntax. Double quotes still expand `$`, backticks, and `\`, so
- * those reject; unbalanced quotes reject.
- */
-function maskQuotedArguments(command: string): string | null {
-  let out = "";
-  for (let i = 0; i < command.length; i++) {
-    const char = command[i]!;
-    if (char !== "'" && char !== '"') {
-      out += char;
-      continue;
-    }
-    const end = command.indexOf(char, i + 1);
-    if (end === -1) return null;
-    if (char === '"' && /[$`\\]/.test(command.slice(i + 1, end))) return null;
-    out += "Q";
-    i = end;
+/** `cd <dir>` and trusted script runs chained with `&&` or `;`; any other step rejects. */
+type ScriptStep =
+  | { kind: "cd"; path: string }
+  | { kind: "script"; path: string };
+
+/** Parse and validate one segment of a trusted Pi command chain. */
+function matchScriptSegment(segment: string, dir: string, dirs: readonly string[]): ScriptStep | null {
+  const scan = scanQuotes(segment);
+  if (!scan) return null;
+  const words = [...scan.masked.matchAll(/\S+/g)];
+  const tokens = words.map((word) => segment.slice(word.index, word.index + word[0].length));
+  const operandIndex = tokens[0] === "cd" || INTERPRETERS.has(basename(tokens[0] ?? "")) ? 1 : 0;
+  const operand = tokens[operandIndex];
+  if (!operand) return null;
+  let script = operand;
+  const singleQuoted = script.startsWith("'");
+  const quoted = (script.startsWith('"') && script.endsWith('"'))
+    || (singleQuoted && script.endsWith("'"));
+  if (quoted) script = script.slice(1, -1);
+  // HOME expansion is safe only inside double quotes; unquoted values undergo field splitting.
+  if (quoted && !singleQuoted) {
+    if (script.startsWith("$HOME/")) script = join(homedir(), script.slice(6));
+    else if (script.startsWith("${HOME}/")) script = join(homedir(), script.slice(8));
   }
-  return out;
+  if (/["'$`\\*?{}]/.test(script) || script.startsWith("-")) return null;
+  const operandWord = words[operandIndex]!;
+  const rest = segment.slice(0, operandWord.index) + "SCRIPT" + segment.slice(operandWord.index + operandWord[0].length);
+  const restScan = scanQuotes(rest);
+  if (!restScan || restScan.expands || restScan.substitutes || SHELL_SYNTAX.test(restScan.masked) || rest.includes(String.fromCharCode(92))) return null;
+  const path = resolve(dir, quoted ? script : expandHome(script));
+  if (tokens[0] === "cd") {
+    return tokens.length === 2 ? { kind: "cd", path } : null;
+  }
+  const real = canonicalWithin(path, dirs);
+  if (!real || !statSync(real).isFile()) return null;
+  return { kind: "script", path };
 }
 
 /** `cd <dir>` and trusted script runs chained with `&&` or `;`; any other step rejects. */
 function matchScript(command: string, cwd: string, dirs: readonly string[]): TrustedPiMatch | null {
-  const masked = maskQuotedArguments(command.trim());
-  if (!masked) return null;
+  const segments = splitBashSegments(command.trim());
+  const fullScan = scanQuotes(command);
+  if (!segments || !fullScan || /[|<>\n\r]/.test(fullScan.masked)) return null;
   let dir = cwd;
   let match: TrustedPiMatch | null = null;
-  for (const segment of masked.split(CHAIN_OPERATOR)) {
-    const trimmed = segment.trim();
-    if (!trimmed || SHELL_SYNTAX.test(trimmed)) return null;
-    const tokens = trimmed.split(WHITESPACE);
-    if (tokens[0] === "cd") {
-      const target = tokens[1];
-      if (tokens.length !== 2 || !target || target === "-" || target.startsWith("$")) return null;
-      dir = resolve(dir, expandHome(target));
+  for (const segment of segments) {
+    const step = matchScriptSegment(segment, dir, dirs);
+    if (!step) return null;
+    if (step.kind === "cd") {
+      dir = step.path;
       continue;
     }
-    const script = INTERPRETERS.has(basename(tokens[0]!)) ? tokens[1] : tokens[0];
-    if (!script || script.startsWith("-")) return null;
-    const path = resolve(dir, expandHome(script));
-    const real = canonicalWithin(path, dirs);
-    if (!real || !statSync(real).isFile()) return null;
-    match ??= { kind: "script", path };
+    match ??= step;
   }
   return match;
 }

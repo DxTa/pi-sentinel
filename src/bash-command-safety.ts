@@ -1,24 +1,27 @@
 import { resolve } from "node:path";
 
-import { splitBashSegments } from "./bash-segments";
+import { scanQuotes, splitBashSegments } from "./bash-segments";
 import { isPathWithinCanonicalWorkingDirectory } from "./path-utils";
 
 const SHELL_SYNTAX = /&&|\|\||[;|<>`$]|[\r\n]/;
 const READ_ONLY_COMMANDS = new Set([
   "cat", "head", "tail", "grep", "rg", "ag", "wc", "sort", "uniq",
-  "diff", "ls", "find", "stat", "du", "df",
+  "diff", "ls", "find", "stat", "du", "df", "echo", "printf", "pwd",
 ]);
+const QUOTE_CHARS = new RegExp("['\"]", "g");
 const SAFE_INSPECT_FIELDS = new Set(["{{.State.Status}}", "{{.State.Running}}", "{{.Config.Image}}"]);
 
 /** True only for one simple command with no known write-capable option. */
 export function isReadOnlyBashCommand(command: string): boolean {
   const trimmed = command.trim();
-  if (!trimmed || SHELL_SYNTAX.test(trimmed)) return false;
+  const scan = scanQuotes(trimmed);
+  if (!trimmed || !scan || scan.expands || SHELL_SYNTAX.test(scan.masked)) return false;
   if (trimmed === "docker ps") return true;
 
-  const [name, ...args] = trimmed.split(/\s+/);
+  const [name, ...quotedArgs] = trimmed.split(/\s+/);
+  const args = quotedArgs.map((arg) => arg.replace(QUOTE_CHARS, ""));
   if (!READ_ONLY_COMMANDS.has(name ?? "")) return false;
-  if (name !== "find" && ["*", "?", "["].some((char) => trimmed.includes(char))) return false;
+  if (name !== "find" && ["*", "?", "["].some((char) => scan.masked.includes(char))) return false;
   if (name === "find" && args.some((arg) => ["-L", "-H", "-follow"].includes(arg) || /^-(?:exec(?:dir)?|ok(?:dir)?|delete|fprint0?|fprintf|fls)$/.test(arg))) return false;
   if (name === "sort" && args.some((arg) => arg === "-o" || arg.startsWith("-o") || arg === "--output" || arg.startsWith("--output=") || arg === "--compress-program" || arg.startsWith("--compress-program="))) return false;
   if (name === "diff" && args.some((arg) => arg === "--output" || arg.startsWith("--output="))) return false;

@@ -4,7 +4,7 @@ import type { NeighbourQuery, NeighbourSummary } from "./yolo-auto-neighbours";
 import type { ScorerResult } from "./yolo-auto-scorer";
 import { createHash, randomUUID } from "node:crypto";
 
-import { decideYoloAuto } from "./yolo-auto-policy";
+import { decideYoloAuto, YOLO_AUTO_POLICY_THRESHOLDS } from "./yolo-auto-policy";
 import type { YoloAutoHeads } from "./yolo-auto-policy";
 import { MODEL_REVISION } from "./yolo-auto-build";
 import type { PermissionState } from "./types";
@@ -339,7 +339,10 @@ export class YoloAutoEvaluator {
       evaluationId: details.evaluationId,
       ...(request.toolCallId ? { toolCallId: request.toolCallId } : {}),
       flow: request.flow,
+      candidate: request.candidate,
+      eligible: request.eligible,
       disposition: details.disposition,
+      policyThresholds: YOLO_AUTO_POLICY_THRESHOLDS,
       toolName: request.toolName,
       operation: request.operation,
       pathPresent: Boolean(request.workspaceRelativePath),

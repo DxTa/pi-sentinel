@@ -63,14 +63,94 @@ describe("matchTrustedPiRequest", () => {
     expect(matchTrustedPiRequest("write", { path: join(s.agentDir, "permissions.json"), content: "x" }, s.workspace, s.dirs)).toBeNull();
   });
 
-  it("trusts only the exact delegate helper beside the agent dir", () => {
+  it("trusts Pi helper scripts beside the agent dir, including HOME-relative invocations", () => {
     const s = setup();
     mkdirSync(join(s.root, "scripts"));
     writeFileSync(join(s.root, "scripts", "delegate-prompt.sh"), "echo\n");
-    writeFileSync(join(s.root, "scripts", "other.sh"), "echo\n");
-    expect(matchTrustedPiRequest("bash", { command: `${join(s.root, "scripts", "delegate-prompt.sh")} --mode review` }, s.workspace, s.dirs)?.kind).toBe("script");
-    expect(matchTrustedPiRequest("bash", { command: `bash ${join(s.root, "scripts", "other.sh")}` }, s.workspace, s.dirs)).toBeNull();
+    writeFileSync(join(s.root, "scripts", "agent-semantic-search.mjs"), "1\n");
+    writeFileSync(join(s.root, "scripts", "other.sh"), "echo hi\n");
+    const previousHome = process.env.HOME;
+    process.env.HOME = s.root;
+    try {
+      for (const command of [
+        `${join(s.root, "scripts", "delegate-prompt.sh")} --mode review`,
+        `bash ${join(s.root, "scripts", "other.sh")}`,
+        `node "${join(s.root, "scripts", "agent-semantic-search.mjs")}" search`,
+        `node "$HOME/scripts/agent-semantic-search.mjs" search --query "a b"`,
+        `node "\${HOME}/scripts/agent-semantic-search.mjs" search`,
+      ]) {
+        expect(matchTrustedPiRequest("bash", { command }, s.workspace, trustedPiDirs(s.agentDir))?.kind, command).toBe("script");
+      }
+      expect(matchTrustedPiRequest("bash", { command: `node "$OTHER/scripts/agent-semantic-search.mjs"` }, s.workspace, trustedPiDirs(s.agentDir))).toBeNull();
+      for (const command of [
+        `node "$(echo ${s.root})/scripts/other.sh"`,
+        `node '$HOME/scripts/other.sh'`,
+        "node $HOME/scripts/agent-semantic-search.mjs search",
+        "node ${HOME}/scripts/agent-semantic-search.mjs search",
+        `node "$HOME/scripts/other.sh" && curl evil`,
+        `node "$HOME/scripts/other.sh" | sh`,
+        `node "$HOME/scripts/other.sh" > output`,
+        `node "$HOME/scripts/other.sh" "$OTHER"`,
+      ]) expect(matchTrustedPiRequest("bash", { command }, s.workspace, trustedPiDirs(s.agentDir)), command).toBeNull();
+      symlinkSync(join(s.root, "outside.sh"), join(s.root, "scripts", "escape.sh"));
+      expect(matchTrustedPiRequest("bash", { command: `bash ${join(s.root, "scripts", "escape.sh")}` }, s.workspace, trustedPiDirs(s.agentDir))).toBeNull();
+      expect(matchTrustedPiRequest("write", { path: join(s.root, "scripts", "other.sh"), content: "x" }, s.workspace, trustedPiDirs(s.agentDir))).toBeNull();
+    } finally {
+      if (previousHome === undefined) delete process.env.HOME;
+      else process.env.HOME = previousHome;
+    }
   });
+
+  it("rejects unquoted HOME paths when field splitting can change the script", () => {
+    const s = setup();
+    const home = join(s.root, "home with spaces");
+    const agentDir = join(home, ".pi", "agent");
+    const scriptsDir = join(home, ".pi", "scripts");
+    mkdirSync(agentDir, { recursive: true });
+    mkdirSync(scriptsDir, { recursive: true });
+    writeFileSync(join(scriptsDir, "helper.mjs"), "void 0;\n");
+    writeFileSync(join(s.workspace, "helper.mjs"), "void 0;\n");
+
+    const previousHome = process.env.HOME;
+    process.env.HOME = home;
+    try {
+      const dirs = trustedPiDirs(agentDir);
+      for (const command of [
+        "node $HOME/.pi/scripts/helper.mjs",
+        "cd $HOME/.pi/scripts; node helper.mjs",
+      ]) {
+        expect(matchTrustedPiRequest("bash", { command }, s.workspace, dirs), command).toBeNull();
+      }
+    } finally {
+      if (previousHome === undefined) delete process.env.HOME;
+      else process.env.HOME = previousHome;
+    }
+  });
+
+  it.each(['node "~/.pi/scripts/helper.mjs"', "node '~/.pi/scripts/helper.mjs'"])(
+    "does not trust a quoted tilde script path: %s",
+    (command) => {
+      const s = setup();
+      const home = join(s.root, "home");
+      const helperDir = join(home, ".pi", "scripts");
+      mkdirSync(helperDir, { recursive: true });
+      writeFileSync(join(helperDir, "helper.mjs"), "void 0;\n");
+
+      const counterfeitDir = join(s.workspace, "~", ".pi", "scripts");
+      mkdirSync(counterfeitDir, { recursive: true });
+      writeFileSync(join(counterfeitDir, "helper.mjs"), "void 0;\n");
+
+      const previousHome = process.env.HOME;
+      process.env.HOME = home;
+      try {
+        const dirs = trustedPiDirs(join(home, ".pi", "agent"));
+        expect(matchTrustedPiRequest("bash", { command }, s.workspace, dirs)).toBeNull();
+      } finally {
+        if (previousHome === undefined) delete process.env.HOME;
+        else process.env.HOME = previousHome;
+      }
+    },
+  );
 
   it.each([
     (s: ReturnType<typeof setup>) => join(s.skill, "run.sh"),

@@ -54,7 +54,6 @@ interface InputPayload {
 
 interface PermissionGateHandlerOptions {
   isTrustedClipboardReadPath?: (pathValue: string) => boolean;
-  isWorkspaceEnvReadRedactionEnabled?: (cwd: string) => boolean;
 }
 
 /**
@@ -215,7 +214,6 @@ export class PermissionGateHandler {
       tcc,
       checkPermission,
       getSessionRuleset,
-      this.options.isWorkspaceEnvReadRedactionEnabled,
     );
     if (pathDesc) {
       if (isGateBypass(pathDesc)) {
@@ -268,10 +266,7 @@ export class PermissionGateHandler {
 
     const workspaceLocalFileOperation = Boolean(
       tcc.cwd
-      && isWorkspaceLocalFileOperation(tcc.toolName, tcc.input, tcc.cwd, {
-        allowWorkspaceEnvRead:
-          this.options.isWorkspaceEnvReadRedactionEnabled?.(tcc.cwd) === true,
-      })
+      && isWorkspaceLocalFileOperation(tcc.toolName, tcc.input, tcc.cwd)
     );
 
     // ── Bash external-directory gate (descriptor + runner) ───────────────────

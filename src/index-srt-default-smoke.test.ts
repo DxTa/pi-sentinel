@@ -473,7 +473,7 @@ describe("piPermissionSystemExtension SRT default smoke", () => {
       ];
       for (const event of events) await toolCall(event, context as never);
       expect(classificationTexts.map((text) => text.split(" ", 1)[0])).toEqual([
-        "tool=write", "tool=edit", "tool=bash",
+        "tool=write", "tool=edit",
       ]);
     } finally {
       random.mockRestore();
@@ -573,7 +573,7 @@ describe("piPermissionSystemExtension SRT default smoke", () => {
     },
   );
 
-  it("allows a canonical .env read when result scanning is enabled", async () => {
+  it("ignores stale credential-scan config and denies .env reads", async () => {
     const agentDir = await makeTempDir("pi-permission-agent-");
     const projectDir = await makeTempDir("pi-permission-project-");
     const envPath = path.join(projectDir, ".env");
@@ -595,17 +595,16 @@ describe("piPermissionSystemExtension SRT default smoke", () => {
     await expect(pi.handlers.get("tool_call")?.(
       { toolName: "read", input: { path: envPath } },
       createContext(projectDir) as never,
-    )).resolves.toEqual({});
+    )).resolves.toMatchObject({ block: true });
   });
 
-  it("keeps .env reads and selectors gated when result scanning is disabled", async () => {
+  it("keeps .env reads and selectors gated by path rules", async () => {
     const agentDir = await makeTempDir("pi-permission-agent-");
     const projectDir = await makeTempDir("pi-permission-project-");
     const envPath = path.join(projectDir, ".env.local");
     process.env.PI_CODING_AGENT_DIR = agentDir;
     await writeFile(envPath, "TOKEN=secret", "utf8");
     await writeExtensionConfig(agentDir, {
-      sentinelCreds: { enabled: true, resultScanning: false },
       permission: {
         "*": "allow",
         path: { "*": "allow", "*.env": "deny", "*.env.*": "deny" },

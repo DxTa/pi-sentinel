@@ -13,6 +13,12 @@ describe("buildYoloAutoBashContext", () => {
     expect(buildYoloAutoBashContext("cd src && ls", [], workspace).workspaceLocal).toBe(true);
   });
 
+  it("fails closed when quoted line continuations hide an escaping cd", () => {
+    const command = String.raw`cd && cat README.md && echo "a\
+b"`;
+    expect(buildYoloAutoBashContext(command, [], workspace).workspaceLocal).toBe(false);
+  });
+
   it("treats output discard devices as workspace-neutral", () => {
     const result = buildYoloAutoBashContext("cd src 2>/dev/null && ls", ["/dev/null"], workspace);
 

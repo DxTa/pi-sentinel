@@ -1,6 +1,6 @@
 # pi-sentinel
 
-Pi extension for permission enforcement, network-domain gating, sandboxed Bash, and credential protection.
+Pi extension for permission enforcement, network-domain gating, sandboxed Bash, and masked-path enforcement.
 
 ## Install
 
@@ -14,10 +14,10 @@ Git is the supported distribution path. No build step is required. The npm name 
 
 ## Security defaults
 
-- Normal workspace-local `read`, `write`, `edit`, `grep`, `find`, and `ls` operations are auto-approved after canonical workspace checks. `.env*` direct reads proceed only with result scanning and masked output; `.env*` writes and edits remain protected. External paths and symlink escapes still use the existing gates.
+- Normal workspace-local `read`, `write`, `edit`, `grep`, `find`, and `ls` operations are auto-approved after canonical workspace checks. `.env*` direct reads follow the configured path rules; `.env*` writes and edits remain protected. External paths and symlink escapes still use the existing gates.
 - Bash asks by default, except `git status` and `git diff`.
 - Recognized literal network destinations not on the allowlist require approval. Domain preflight uses static command extraction; dynamic or obfuscated destinations may not be identified. Host-bypassed commands have normal host network access after Bash approval.
-- `yolo-auto` evaluates eligible workspace-local reads, listings, writes, and edits, plus already-sandboxed Bash after normal gates. Deterministic path, credential, network, sandbox, and destructive-action gates remain authoritative.
+- `yolo-auto` evaluates eligible workspace-local reads, listings, writes, and edits, plus already-sandboxed Bash after normal gates. Deterministic path, network, sandbox, and destructive-action gates remain authoritative.
 - Pi clipboard images may be read directly in `manual`, `yolo`, and `yolo-auto` only when they come from an interactive input event and match the current OS temp-root `pi-clipboard-<UUID>.<extension>` shape. Writes, Bash, compound commands, and untracked temp files remain protected.
 - SRT is enabled with the network-capable `online-dev` profile.
 - **Approved Bash runs on the host by default** because bundled `sandbox.bypassCommands` is `['*']`. Set it to `[]` to require SRT wrapping and fail closed when SRT is unavailable.
@@ -26,13 +26,13 @@ Git is the supported distribution path. No build step is required. The npm name 
 
 ## Threat model
 
-**Protects:** user files and credentials, command authorization, network egress, sandbox boundaries, and accidental destructive actions.
+**Protects:** user files, configured credential-path masks, command authorization, network egress, sandbox boundaries, and accidental destructive actions.
 
 **Untrusted inputs:** model output, tool arguments, MCP and skill requests, project files, shell commands and output, and external worker responses.
 
-**Enforcement boundary:** deterministic gates run before execution and before `yolo-auto`. Credential files and secret environment variables are masked or denied. Non-bypassed Bash is wrapped by SRT; bypassed Bash has normal host filesystem and network access after permission and network preflight. A bypass is not a sandbox.
+**Enforcement boundary:** deterministic gates run before execution and before `yolo-auto`. SRT denies configured credential-path patterns for wrapped commands; `.env*` reads follow permission/path rules. Non-bypassed Bash is wrapped by SRT; bypassed Bash has normal host filesystem and network access after permission and network preflight. A bypass is not a sandbox.
 
-**Model safety:** `yolo-auto` evaluates eligible ask-state workspace-local read/list/write/edit requests and already-sandboxed Bash; secret reads require active result scanning. The evaluator sends path/tool metadata for reads and listings, up to 800 characters of write/edit content, or a redacted Bash command. Read output is not sent, so prompt injection inside a file cannot be detected before reading. Sensitive paths, external targets, network operations, unsandboxed Bash, and model failures prompt. Fixed thresholds and deterministic credential gates remain authoritative; 5% of would-allow decisions prompt for audit.
+**Model safety:** `yolo-auto` evaluates eligible ask-state workspace-local read/list/write/edit requests and already-sandboxed Bash. The evaluator sends path/tool metadata for reads and listings, up to 800 characters of write/edit content, or a redacted Bash command. Read output is not sent, so prompt injection inside a file cannot be detected before reading. Sensitive paths, external targets, network operations, unsandboxed Bash, and model failures prompt. Fixed thresholds remain authoritative; 5% of would-allow decisions prompt for audit.
 
 **Worker trust:** the configured worker and model cache are trusted components. The socket uses owner-only filesystem permissions, but the protocol does not authenticate the peer or prove response honesty.
 
@@ -43,7 +43,7 @@ See [`SECURITY.md`](SECURITY.md) for reporting instructions.
 ## How it works
 
 ```text
-request -> canonical workspace file check or permission/path/network/credential gates
+request -> canonical workspace file check or permission/path/network gates
         -> yolo-auto for eligible local reads/lists/writes/edits and sandboxed Bash
         -> SRT wrapper or approved host bypass
         -> execute or prompt/deny

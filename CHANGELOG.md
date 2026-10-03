@@ -4,7 +4,8 @@
 
 Standalone Git distribution prepared for `DxTa/pi-sentinel`.
 
-- Preserved permission, network, sandbox, credential, masking, grant, service, and backend behavior.
+- Preserved permission, network, sandbox, masked-path, grant, service, and backend behavior.
+- Removed content-based credential scanning and approval; configured SRT masks and permission/path rules remain.
 - Resolved bundled bubblewrap runner relative to installed package root.
 - Removed environment-specific semantic-search trust behavior.
 - Excluded private grants, logs, generated state, and parent-repository tests.

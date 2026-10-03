@@ -1,7 +1,7 @@
 {
   "name": "@dxta/pi-sentinel",
   "version": "0.1.0",
-  "description": "Permission enforcement, network domain gating, sandboxed Bash, and credential protection for the Pi coding agent.",
+  "description": "Permission enforcement, network domain gating, sandboxed Bash, and masked credential paths for the Pi coding agent.",
   "type": "module",
   "exports": {
     ".": "./src/service.ts"

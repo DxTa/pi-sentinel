@@ -298,24 +298,6 @@ function mergeSandboxConfig(baseValue: unknown, overrideValue: unknown): JsonObj
   return merged;
 }
 
-function mergeSentinelCredsConfig(baseValue: unknown, overrideValue: unknown): JsonObject | undefined {
-  const base = requireConfigObject(baseValue, "sentinelCreds");
-  const override = requireConfigObject(overrideValue, "sentinelCreds");
-  if (Object.keys(base).length === 0 && Object.keys(override).length === 0) {
-    return undefined;
-  }
-
-  const merged = mergeObject(base, override);
-  const readAllowedPaths = dedupeStrings([
-    ...toStringArray(base.readAllowedPaths),
-    ...toStringArray(override.readAllowedPaths),
-  ]);
-  if (readAllowedPaths.length > 0) {
-    merged.readAllowedPaths = readAllowedPaths;
-  }
-  return merged;
-}
-
 function mergePermissionConfig(baseValue: unknown, overrideValue: unknown): FlatPermissionConfig | undefined {
   const base = requireConfigObject(baseValue, "permission") as FlatPermissionConfig;
   const override = requireConfigObject(overrideValue, "permission") as FlatPermissionConfig;
@@ -451,15 +433,9 @@ export function loadMergedScopedConfig(
     const permission = mergePermissionConfig(base.permission, layer.permission);
     const network = mergeNetworkConfig(base.network, layer.network);
     const sandbox = mergeSandboxConfig(base.sandbox, layer.sandbox);
-    const sentinelCreds = mergeSentinelCredsConfig(
-      base.sentinelCreds,
-      layer.sentinelCreds,
-    );
-
     if (permission !== undefined) merged.permission = permission;
     if (network !== undefined) merged.network = network;
     if (sandbox !== undefined) merged.sandbox = sandbox;
-    if (sentinelCreds !== undefined) merged.sentinelCreds = sentinelCreds;
   }
 
   return { bundledPath: bundledConfigPath, globalPath, workspacePath, global, workspace, merged };
@@ -670,31 +646,6 @@ export function removeSandboxPathGrantFromConfig(
   const nextConfig = { ...current, sandbox: nextSandbox };
   if (!writeConfigFile(configPath, nextConfig, workspaceRoot)) {
     throw new Error(`Failed to revoke sandbox path grant at '${configPath}'.`);
-  }
-  return nextConfig;
-}
-
-export function persistSentinelReadAllowedPathToConfig(
-  configPath: string,
-  absolutePath: string,
-): JsonObject {
-  const current = readConfigForWrite(configPath);
-  if (!current) throw new Error(`Failed to read sentinel config at '${configPath}'.`);
-  const sentinelCreds = requireConfigObject(current.sentinelCreds, "sentinelCreds");
-  const readAllowedPaths = dedupeStrings([
-    ...toStringArray(sentinelCreds.readAllowedPaths),
-    absolutePath,
-  ]);
-
-  const nextConfig = {
-    ...current,
-    sentinelCreds: {
-      ...sentinelCreds,
-      readAllowedPaths,
-    },
-  };
-  if (!writeConfigFile(configPath, nextConfig)) {
-    throw new Error(`Failed to persist sentinel path at '${configPath}'.`);
   }
   return nextConfig;
 }

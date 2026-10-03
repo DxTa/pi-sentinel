@@ -30,7 +30,9 @@ const UNRESOLVABLE_CD = new RegExp("^[-~$]");
 function cdLeavesWorkspace(command: string, cwd: string | undefined): boolean {
   if (!cwd) return true;
   let dir = cwd;
-  for (const segment of splitBashSegments(command) ?? []) {
+  const segments = splitBashSegments(command);
+  if (segments === null) return true;
+  for (const segment of segments) {
     const cd = segment.match(CD_SEGMENT);
     if (!cd) continue;
     const target = cd[1];

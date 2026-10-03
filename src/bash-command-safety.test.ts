@@ -8,6 +8,12 @@ describe("isReadOnlyBashCommand", () => {
   it.each(["find . -exec rm -rf {} \;", "sort -o out", "cat secret && touch x", "ls > out", "python script.py", "cat $HOME/.ssh/id_rsa", "grep TODO src/*.ts", "find -L src -name '*.ts'", "less +!touch x file", "more +!touch x file", "sort --compress-program=sh input"]) (
     "rejects unsafe or mutating command %s", (command) => expect(isReadOnlyBashCommand(command)).toBe(false),
   );
+
+  it("rejects a find flag reconstructed by a quoted line continuation", () => {
+    const command = 'find . "-ex\\\nec" touch output ";"';
+    expect(isReadOnlyBashCommand(command)).toBe(false);
+    expect(isReadOnlyBashChain(command, process.cwd())).toBe(false);
+  });
 });
 
 describe("isReadOnlyBashDiagnostic", () => {
@@ -36,6 +42,7 @@ describe("isReadOnlyBashChain", () => {
     "cd src; grep -n TODO index.ts | head; sed -n 1,12p index.ts",
     "git status && git diff --stat",
     "wc -l src/index.ts 2>&1",
+    'cd src && grep -rn -E "gpt-6-sol|sonnet-5" . | grep -v "sonnet-5\\.5" | head -50; echo; grep -rln -E "gpt-6-sol|sonnet-5([^.]|$)" . | wc -l',
   ])("accepts read-only chain %s", (command) => expect(isReadOnlyBashChain(command, cwd)).toBe(true));
   it.each([
     "cd .. && cat secrets",
@@ -50,5 +57,7 @@ describe("isReadOnlyBashChain", () => {
     "git push",
     "git diff --output=x",
     "cd src && python3 x.py",
+    "ls & touch output",
+    "find . \"-exec\" touch output \";\"",
   ])("rejects %s", (command) => expect(isReadOnlyBashChain(command, cwd)).toBe(false));
 });

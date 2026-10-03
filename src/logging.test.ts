@@ -4,6 +4,7 @@ import { join } from "node:path";
 import { describe, expect, it } from "vitest";
 
 import { createPermissionSystemLogger } from "./logging";
+import { redactSecrets } from "./secret-redaction";
 
 function loggerFixture(debugLog: boolean) {
   const dir = mkdtempSync(join("/tmp", "pi-sentinel-logging-"));
@@ -29,6 +30,12 @@ function loggerFixture(debugLog: boolean) {
 }
 
 describe("createPermissionSystemLogger", () => {
+  it("redacts known credentials", () => {
+    const token = "ghp_" + "a".repeat(36);
+
+    expect(redactSecrets(token)).toBe("[REDACTED: GitHub Token]");
+  });
+
   it("does not write debug records when debug logging is disabled", () => {
     const { logger, debugLogPath } = loggerFixture(false);
 

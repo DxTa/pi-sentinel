@@ -78,8 +78,6 @@ import {
 } from "./yolo-mode";
 
 // ── Our modules ──────────────────────────────────────────────────────────
-import { registerSentinelCreds } from "./sentinel-creds/index";
-import { loadSentinelCredsConfig } from "./sentinel-creds/config";
 import { loadDomainPolicy, type DomainGateConfig } from "./network/config.js";
 import { registerDomainGateCommand } from "./network/domain-gate.js";
 import { clearSessionNetworkApprovals, getSessionNetworkApprovals, handleNetworkToolCall, handleNetworkUserBash } from "./network/network-gate-handler.js";
@@ -200,7 +198,6 @@ interface UnifiedConfig {
   permission?: Record<string, unknown>;
   network?: DomainGateConfig;
   sandbox?: Record<string, unknown>;
-  sentinelCreds?: Record<string, unknown>;
 }
 
 function loadConfig(cwd?: string): UnifiedConfig {
@@ -799,14 +796,6 @@ export default function piPermissionSystemExtension(pi: ExtensionAPI): void {
   };
   publishPermissionsService(permissionsService);
 
-  // ── sentinel-creds integration (shared promptWaitTracker) ────────────
-  registerSentinelCreds(pi, {
-    promptWaitTracker,
-    getConfig: (cwd) => loadConfig(cwd) as Record<string, unknown>,
-    getPermissionConfig: (cwd) => loadConfig(cwd),
-    yoloAutoEvaluator,
-  });
-
   emitReadyEvent(pi.events);
 
   const toolRegistry = {
@@ -822,10 +811,6 @@ export default function piPermissionSystemExtension(pi: ExtensionAPI): void {
   const agentPrep = new AgentPrepHandler(session, toolRegistry);
   const gates = new PermissionGateHandler(session, pi.events, toolRegistry, {
     isTrustedClipboardReadPath: clipboardTempCleanup.isTrackedInteractivePath,
-    isWorkspaceEnvReadRedactionEnabled: (cwd) => {
-      const sentinelConfig = loadSentinelCredsConfig(loadConfig(cwd));
-      return sentinelConfig.enabled && sentinelConfig.resultScanning;
-    },
   });
 
   type PersistentGrantRecord =

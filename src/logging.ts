@@ -1,6 +1,6 @@
 import { closeSync, fchmodSync, openSync, writeFileSync } from "node:fs";
 
-import { redactSecrets } from "./sentinel-creds/scanner";
+import { redactSecrets } from "./secret-redaction";
 
 import {
   EXTENSION_ID,

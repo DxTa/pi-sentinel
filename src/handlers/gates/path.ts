@@ -25,7 +25,6 @@ export function describePathGate(
   tcc: ToolCallContext,
   checkPermission: CheckPermissionFn,
   getSessionRuleset: () => Rule[],
-  isWorkspaceEnvReadRedactionEnabled?: (cwd: string) => boolean,
 ): GateResult {
   const filePath = getPathBearingToolPath(tcc.toolName, tcc.input);
   if (!filePath) return null;
@@ -40,14 +39,11 @@ export function describePathGate(
 
   if (check.state === "allow") return null;
 
-  // Workspace reads remain available to the result-redaction layer, including
-  // protected .env* reads; writes and edits still use the path gate.
+  // Qualifying workspace-local reads bypass the path gate; .env* reads do not.
   if (
     tcc.toolName === "read"
     && tcc.cwd
-    && isWorkspaceLocalFileOperation(tcc.toolName, tcc.input, tcc.cwd, {
-      allowWorkspaceEnvRead: isWorkspaceEnvReadRedactionEnabled?.(tcc.cwd) === true,
-    })
+    && isWorkspaceLocalFileOperation(tcc.toolName, tcc.input, tcc.cwd)
   ) {
     return null;
   }

@@ -61,7 +61,7 @@ describe("YoloAutoEvaluator", () => {
       random: () => { randomCalls += 1; return 0.05; },
     });
 
-    await expect(evaluator.evaluate(request)).resolves.toMatchObject({
+    await expect(evaluator.evaluate({ ...request, patternKey: "bash:git status *" })).resolves.toMatchObject({
       action: "allow",
       reason: "model_allow",
       candidate: true,
@@ -69,11 +69,19 @@ describe("YoloAutoEvaluator", () => {
     });
     expect(evaluate).toHaveBeenCalledWith("tool=read path=src/index.ts");
     expect(writeReviewLog).toHaveBeenCalledOnce();
+    expect(writeReviewLog.mock.calls[0]?.[1]).not.toHaveProperty("patternKeyHash");
     expect(writeReviewLog).toHaveBeenCalledWith(
       "yolo_auto.evaluation",
       expect.objectContaining({
         evaluationId: "opaque-eval-1",
         flow: "permission",
+        candidate: true,
+        eligible: true,
+        policyThresholds: {
+          minBenignThreat: 0.9,
+          maxInjection: 0.1,
+          maxToolTag: 0.5,
+        },
         disposition: "attempted",
         outcome: "allowed",
         policyAction: "allow",
@@ -84,6 +92,7 @@ describe("YoloAutoEvaluator", () => {
       }),
     );
     expect(JSON.stringify(writeReviewLog.mock.calls[0])).not.toContain("src/index.ts");
+    expect(JSON.stringify(writeReviewLog.mock.calls[0])).not.toContain("git status");
     expect(randomCalls).toBe(1);
     expect(writeCalibrationLog).toHaveBeenCalledOnce();
     const modelText = "tool=read path=src/index.ts";

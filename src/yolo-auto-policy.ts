@@ -24,9 +24,11 @@ export interface YoloAutoPolicyDecision {
 }
 
 // ponytail: fixed uncalibrated thresholds; tune from calibration log.
-const MIN_BENIGN_THREAT = 0.9;
-const MAX_INJECTION = 0.1;
-const MAX_TOOL_TAG = 0.5;
+export const YOLO_AUTO_POLICY_THRESHOLDS = {
+  minBenignThreat: 0.9,
+  maxInjection: 0.1,
+  maxToolTag: 0.5,
+} as const;
 const RESTRICTED_TOOL_CLASSES = new Set(["secrets", "infra", "system"]);
 const EXPECTED_TOOL_ACTION: Record<string, string> = {
   read: "read",
@@ -108,10 +110,10 @@ export function decideYoloAuto(input: YoloAutoPolicyInput): YoloAutoPolicyDecisi
   if (!heads || typeof heads !== "object") return prompt("model_unavailable");
   if (!isValidModelOutput(heads)) return prompt("invalid_model_output");
   if (argmax(heads.threat) !== "benign") return prompt("threat_not_benign");
-  if (!(heads.threat.benign >= MIN_BENIGN_THREAT)) return prompt("threat_benign_low_confidence");
-  if (!(heads.injection.injection < MAX_INJECTION)) return prompt("injection_detected");
-  if (!(heads.tool_tags["source:sensitive"] < MAX_TOOL_TAG)) return prompt("source_sensitive");
-  if (!(heads.tool_tags["sink:external"] < MAX_TOOL_TAG)) return prompt("sink_external");
+  if (!(heads.threat.benign >= YOLO_AUTO_POLICY_THRESHOLDS.minBenignThreat)) return prompt("threat_benign_low_confidence");
+  if (!(heads.injection.injection < YOLO_AUTO_POLICY_THRESHOLDS.maxInjection)) return prompt("injection_detected");
+  if (!(heads.tool_tags["source:sensitive"] < YOLO_AUTO_POLICY_THRESHOLDS.maxToolTag)) return prompt("source_sensitive");
+  if (!(heads.tool_tags["sink:external"] < YOLO_AUTO_POLICY_THRESHOLDS.maxToolTag)) return prompt("sink_external");
   if (argmax(heads.tool_action) !== expectedAction) return prompt("tool_action_mismatch");
   const toolClass = argmax(heads.tool_class);
   if (!toolClass || RESTRICTED_TOOL_CLASSES.has(toolClass)) return prompt("tool_class_restricted");

@@ -281,6 +281,7 @@ const STATE_RANK: Record<PermissionState, number> = { allow: 0, ask: 1, deny: 2 
  * cover `cd x && rm -rf y`. Compound commands are checked per segment and the
  * most restrictive result wins; a whole-command config deny still applies.
  * Commands with substitution never match session approvals.
+ * Unsegmentable syntax cannot inherit a prefix allow.
  */
 function evaluateBashCommand(
   values: string[],
@@ -288,7 +289,12 @@ function evaluateBashCommand(
   fullRules: Ruleset,
 ): ReturnType<typeof evaluateFirst> {
   const segments = splitBashSegments(values[0] ?? "");
-  if (segments === null) return evaluateFirst("bash", values, composedRules);
+  if (segments === null) {
+    const whole = evaluateFirst("bash", values, composedRules);
+    return whole.rule.action === "allow"
+      ? { rule: evaluate("bash", whole.value, [], "ask"), value: whole.value }
+      : whole;
+  }
   if (segments.length <= 1) return evaluateFirst("bash", values, fullRules);
   const whole = evaluateFirst("bash", values, composedRules);
   if (whole.rule.action === "deny") return whole;

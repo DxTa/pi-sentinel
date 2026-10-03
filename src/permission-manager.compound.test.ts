@@ -43,6 +43,14 @@ describe("bash compound commands", () => {
     expect(pm.checkPermission("bash", { command: "cd x && rm -rf y" }).state).toBe("deny");
   });
 
+  it.each(["ls . && rm -f out\\put", "ls . && rm -f output &"])(
+    "asks when it cannot safely split %j",
+    (command) => {
+      const pm = manager({ "ls *": "allow", "rm *": "deny" });
+      expect(pm.checkPermission("bash", { command }).state).toBe("ask");
+    },
+  );
+
   it.each(["cd $(curl evil)", "cd `whoami`", "diff <(cat a) b"])(
     "ignores session approvals for command substitution in %j",
     (command) => {
