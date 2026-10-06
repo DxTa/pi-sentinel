@@ -1,5 +1,5 @@
 #!/usr/bin/env node
-import { existsSync, readFileSync } from "node:fs";
+import { existsSync, readFileSync, readdirSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
 import { pathToFileURL } from "node:url";
@@ -7,6 +7,190 @@ import { parseArgs } from "node:util";
 
 const THRESHOLDS = [0.05, 0.1, 0.25, 0.5, 0.75, 0.9, 0.95];
 const RESTRICTED_TOOL_CLASSES = new Set(["secrets", "infra", "system"]);
+
+function readJsonl(file) {
+  return readFileSync(file, "utf8").split(/\r?\n/).flatMap((line, index) => {
+    if (!line.trim()) return [];
+    try {
+      return [JSON.parse(line)];
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      throw new Error(file + ":" + (index + 1) + ": " + message);
+    }
+  });
+}
+
+function isWithinWindow(value, since, until) {
+  const timestamp = Date.parse(value ?? "");
+  return Number.isFinite(timestamp)
+    && (since === undefined || timestamp >= since)
+    && (until === undefined || timestamp < until);
+}
+
+function countBy(records, keyFor) {
+  const counts = new Map();
+  for (const record of records) {
+    const key = keyFor(record);
+    counts.set(key, (counts.get(key) ?? 0) + 1);
+  }
+  return Object.fromEntries([...counts].sort(([a], [b]) => a.localeCompare(b)));
+}
+
+function formatCounts(counts) {
+  return Object.entries(counts).map(([key, count]) => key + "=" + count).join(", ") || "none";
+}
+
+function permissionCategory(event) {
+  const toolName = typeof event.toolName === "string" ? event.toolName : "unknown";
+  const operation = typeof event.yoloAutoOperation === "string"
+    ? event.yoloAutoOperation
+    : typeof event.operation === "string" ? event.operation : "unknown";
+  const eligible = typeof event.yoloAutoEligible === "boolean"
+    ? String(event.yoloAutoEligible) : "unknown";
+  return toolName + "/" + operation + "/eligible=" + eligible;
+}
+
+function collectToolCallsFromSession(records, since, until, toolCalls) {
+  let active = false;
+  for (const record of records) {
+    if (record?.type !== "message" || !isWithinWindow(record.timestamp, since, until)) continue;
+    active = true;
+    if (record.message?.role !== "assistant" || !Array.isArray(record.message.content)) continue;
+    for (const block of record.message.content) {
+      if (block?.type !== "toolCall" || typeof block.id !== "string" || toolCalls.has(block.id)) continue;
+      toolCalls.set(block.id, {
+        toolName: typeof block.name === "string" ? block.name : "unknown",
+        timestamp: Date.parse(record.timestamp),
+      });
+    }
+  }
+  return active;
+}
+
+function collectSessionActivity(roots, since, until) {
+  const sessions = new Set();
+  const toolCalls = new Map();
+  for (const root of roots) {
+    const entries = readdirSync(root, { withFileTypes: true })
+      .filter((entry) => entry.isFile() && entry.name.endsWith(".jsonl"))
+      .sort((a, b) => a.name.localeCompare(b.name));
+    for (const entry of entries) {
+      const records = readJsonl(join(root, entry.name));
+      const header = records.find((record) => record?.type === "session");
+      if (typeof header?.id !== "string") continue;
+      if (collectToolCallsFromSession(records, since, until, toolCalls)) sessions.add(header.id);
+    }
+  }
+  return { sessions, toolCalls };
+}
+
+function collectEvaluationRecords(reviewEvents, toolCalls, since, until) {
+  const evaluations = new Map();
+  for (const event of reviewEvents) {
+    if (!isWithinWindow(event?.timestamp, since, until)
+      || !toolCalls.has(event.toolCallId)
+      || event.event !== "yolo_auto.evaluation") continue;
+    const id = typeof event.evaluationId === "string"
+      ? event.evaluationId : event.toolCallId + ":" + event.timestamp;
+    const timestamp = Date.parse(event.timestamp);
+    const previous = evaluations.get(id);
+    if (!previous || timestamp >= previous.timestamp) {
+      evaluations.set(id, {
+        timestamp,
+        modelBuildId: typeof event.modelBuildId === "string" ? event.modelBuildId : "not-recorded",
+        outcome: typeof event.outcome === "string" ? event.outcome : "not-recorded",
+        disposition: typeof event.disposition === "string" ? event.disposition : "not-recorded",
+        policyAction: typeof event.policyAction === "string" ? event.policyAction : "not-recorded",
+        policyReason: typeof event.policyReason === "string" ? event.policyReason : "not-recorded",
+      });
+    }
+  }
+  return evaluations;
+}
+
+function collectPermissionRequests(reviewEvents, toolCalls, since, until) {
+  const requests = new Map();
+  let waitingWithoutRequestId = 0;
+  for (const event of reviewEvents) {
+    if (!isWithinWindow(event?.timestamp, since, until)
+      || !toolCalls.has(event.toolCallId)
+      || typeof event.event !== "string"
+      || !event.event.startsWith("permission_request.")) continue;
+    if (typeof event.requestId !== "string") {
+      if (event.event === "permission_request.waiting") waitingWithoutRequestId++;
+      continue;
+    }
+    const key = JSON.stringify([event.toolCallId, event.requestId]);
+    const request = requests.get(key) ?? { waited: false, category: "unknown", latest: null };
+    if (event.event === "permission_request.waiting") {
+      request.waited = true;
+      request.category = permissionCategory(event);
+    }
+    const timestamp = Date.parse(event.timestamp);
+    if (!request.latest || timestamp >= request.latest.timestamp) {
+      request.latest = { event: event.event, timestamp };
+    }
+    requests.set(key, request);
+  }
+  return { requests, waitingWithoutRequestId };
+}
+
+function summarizePermissionRequests({ requests, waitingWithoutRequestId }) {
+  const prompted = [...requests.values()].filter((request) => request.waited);
+  const pendingRequests = prompted.filter((request) => request.latest?.event === "permission_request.waiting");
+  const approved = prompted.filter((request) => request.latest?.event === "permission_request.approved").length;
+  const denied = prompted.filter((request) => request.latest?.event === "permission_request.denied").length;
+  const pending = pendingRequests.length;
+  const resolved = prompted.length - pending;
+  return {
+    waited: prompted.length + waitingWithoutRequestId,
+    resolved,
+    approved,
+    denied,
+    otherResolved: resolved - approved - denied,
+    pending,
+    waitingWithoutRequestId,
+    waitCategories: countBy(prompted, (request) => request.category),
+    pendingCategories: countBy(pendingRequests, (request) => request.category),
+  };
+}
+
+export function buildSessionActivityReport(sessionRoots, reviewEvents, { since, until } = {}) {
+  const roots = [...new Set(sessionRoots)];
+  const { sessions, toolCalls } = collectSessionActivity(roots, since, until);
+  const evaluations = collectEvaluationRecords(reviewEvents, toolCalls, since, until);
+  const permissionRequests = summarizePermissionRequests(
+    collectPermissionRequests(reviewEvents, toolCalls, since, until),
+  );
+  const toolCallRecords = [...toolCalls.values()];
+  const evaluationRecords = [...evaluations.values()];
+
+  return {
+    roots: roots.length,
+    sessions: sessions.size,
+    toolCalls: toolCalls.size,
+    toolCounts: countBy(toolCallRecords, (record) => record.toolName),
+    latestToolCalls: [...toolCalls.values()]
+      .sort((a, b) => a.timestamp - b.timestamp)
+      .slice(-10)
+      .map(({ toolName, timestamp }) => ({ toolName, timestamp: new Date(timestamp).toISOString() })),
+    evaluations: {
+      total: evaluations.size,
+      byBuild: countBy(evaluationRecords, (record) => record.modelBuildId),
+      attemptedByBuild: countBy(
+        evaluationRecords.filter((record) => record.disposition === "attempted"),
+        (record) => record.modelBuildId,
+      ),
+      outcomes: countBy(evaluationRecords, (record) => record.outcome),
+      dispositions: countBy(evaluationRecords, (record) => record.disposition),
+      promptReasons: countBy(
+        evaluationRecords.filter((record) => record.policyAction === "prompt" || record.outcome === "prompt"),
+        (record) => record.policyReason,
+      ),
+    },
+    permissionRequests,
+  };
+}
 
 function buildCoverageRows(records, labels, telemetryById) {
   const groups = new Map();
@@ -195,15 +379,35 @@ export function buildCalibrationReport(calibrationRecords, reviewEvents, { since
   };
 }
 
+function printSessionActivityReport(report) {
+  console.log("\nSession activity uses the supplied roots; calibration tables above use the selected logs.");
+  console.log("Pi session activity (tool inputs and message bodies omitted):");
+  console.log("Session roots: " + report.roots + "; sessions: " + report.sessions + "; tool calls: " + report.toolCalls);
+  console.log("Tool calls by tool: " + formatCounts(report.toolCounts));
+  console.log("Latest tool calls (UTC, tool only): " + report.latestToolCalls.map(({ timestamp, toolName }) => timestamp + ":" + toolName).join(", "));
+  console.log("Approval evaluations: " + report.evaluations.total + "; builds: " + formatCounts(report.evaluations.byBuild));
+  console.log("Evaluation outcomes: " + formatCounts(report.evaluations.outcomes));
+  console.log("Evaluation dispositions: " + formatCounts(report.evaluations.dispositions));
+  console.log("Model attempts by build: " + formatCounts(report.evaluations.attemptedByBuild));
+  console.log("Evaluation prompt reasons: " + formatCounts(report.evaluations.promptReasons));
+  const requests = report.permissionRequests;
+  console.log("Permission requests: waited=" + requests.waited + "; resolved=" + requests.resolved
+    + "; approved=" + requests.approved + "; denied=" + requests.denied
+    + "; other_resolved=" + requests.otherResolved + "; pending=" + requests.pending
+    + "; missing_request_id=" + requests.waitingWithoutRequestId);
+  console.log("Permission waits by category: " + formatCounts(requests.waitCategories));
+  console.log("Pending requests by category: " + formatCounts(requests.pendingCategories));
+}
+
 if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {
   try {
     const { values, positionals } = parseArgs({
       args: process.argv.slice(2),
-      options: { since: { type: "string" }, until: { type: "string" } },
+      options: { since: { type: "string" }, until: { type: "string" }, "session-root": { type: "string", multiple: true } },
       allowPositionals: true,
     });
     if (positionals.length > 2) {
-      throw new Error("Usage: node scripts/calibration-report.mjs [calibration.jsonl] [review.jsonl] [--since ISO] [--until ISO]");
+      throw new Error("Usage: node scripts/calibration-report.mjs [calibration.jsonl] [review.jsonl] [--since ISO] [--until ISO] [--session-root DIR ...]");
     }
     const parseBound = (value, option) => {
       if (value === undefined) return undefined;
@@ -223,20 +427,12 @@ if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) 
     const agentDir = join(homedir(), ".pi", "agent");
     const calibrationPath = positionals[0] ?? join(agentDir, "logs", "yolo-auto-calibration.jsonl");
     const reviewPath = positionals[1] ?? join(agentDir, "extensions", "pi-sentinel", "logs", "pi-sentinel-permission-review.jsonl");
-    const readJsonl = (file) => readFileSync(file, "utf8").split(/\r?\n/).flatMap((line, index) => {
-      if (!line.trim()) return [];
-      try {
-        return [JSON.parse(line)];
-      } catch (error) {
-        const message = error instanceof Error ? error.message : String(error);
-        throw new Error(file + ":" + (index + 1) + ": " + message);
-      }
-    });
     const calibrationFiles = [calibrationPath + ".1", calibrationPath].filter(existsSync);
     if (calibrationFiles.length === 0) throw new Error("Calibration log not found: " + calibrationPath);
+    const reviewEvents = readJsonl(reviewPath);
     const report = buildCalibrationReport(
       calibrationFiles.flatMap(readJsonl),
-      readJsonl(reviewPath),
+      reviewEvents,
       { since, until },
     );
     const window = since === undefined && until === undefined
@@ -275,6 +471,10 @@ if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) 
         row.humanDenied, row.hardRuleHits, row.failures, row.missingHeads,
         row.auditSamples, reasons,
       ].join("\t"));
+    }
+    const sessionRoots = values["session-root"] ?? [];
+    if (sessionRoots.length > 0) {
+      printSessionActivityReport(buildSessionActivityReport(sessionRoots, reviewEvents, { since, until }));
     }
     console.log("Log-only heads omitted from gate sweeps: sensitive_document, routing, source:untrusted.");
   } catch (error) {

@@ -1,3 +1,8 @@
+import { spawnSync } from "node:child_process";
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { fileURLToPath } from "node:url";
 import { describe, expect, it } from "vitest";
 
 import { buildCalibrationReport } from "./calibration-report.mjs";
@@ -250,5 +255,124 @@ describe("calibration report", () => {
       missingHeads: 3,
       reasons: { transport_failure: 1, result_scanning_disabled: 1, startup_failed: 1 },
     });
+  });
+});
+
+
+describe("session-scoped report", () => {
+  it("joins multiple roots and reports decisions separately from private permission inputs", () => {
+    const temp = mkdtempSync(join(tmpdir(), "pi-sentinel-report-"));
+    const rootA = join(temp, "sessions-a");
+    const rootB = join(temp, "sessions-b");
+    const calibrationPath = join(temp, "calibration.jsonl");
+    const reviewPath = join(temp, "review.jsonl");
+    mkdirSync(rootA);
+    mkdirSync(rootB);
+    writeFileSync(calibrationPath, "");
+
+    const writeJsonl = (path, rows) =>
+      writeFileSync(path, rows.map((row) => JSON.stringify(row)).join("\n") + "\n");
+    const toolCall = (id, name, args, timestamp = "2026-10-05T10:00:00Z") => ({
+      type: "message",
+      timestamp,
+      message: {
+        role: "assistant",
+        content: [{ type: "toolCall", id, name, arguments: args }],
+      },
+    });
+    writeJsonl(join(rootA, "session-a.jsonl"), [
+      { type: "session", id: "session-a", cwd: "/workspace/a" },
+      { type: "message", timestamp: "2026-10-05T09:59:00Z", message: { role: "user", content: [{ type: "text", text: "PRIVATE_PROMPT" }] } },
+      toolCall("call-a", "bash", { command: "PRIVATE_COMMAND" }),
+    ]);
+    writeJsonl(join(rootB, "session-b.jsonl"), [
+      { type: "session", id: "session-b", cwd: "/workspace/b" },
+      toolCall("call-a", "bash", { command: "PRIVATE_DUPLICATE_COMMAND" }),
+      toolCall("call-b", "read", { path: "PRIVATE_PATH" }),
+      toolCall("call-c", "bash", { command: "PRIVATE_PENDING_COMMAND" }),
+      toolCall("call-d", "bash", { command: "PRIVATE_DENIED_COMMAND" }),
+      toolCall("call-since", "read", { path: "PRIVATE_BOUNDARY_PATH" }, "2026-10-05T00:00:00Z"),
+      toolCall("call-until", "bash", { command: "PRIVATE_UNTIL_COMMAND" }, "2026-10-06T00:00:00Z"),
+    ]);
+    writeJsonl(reviewPath, [
+      {
+        event: "yolo_auto.evaluation", timestamp: "2026-10-05T10:00:01Z",
+        evaluationId: "eval-a", toolCallId: "call-a", modelBuildId: "build-a",
+        outcome: "prompt", policyAction: "prompt", policyReason: "threat_not_benign", disposition: "attempted",
+        toolName: "bash", operation: "exec", command: "PRIVATE_REVIEW_COMMAND",
+      },
+      {
+        event: "permission_request.waiting", timestamp: "2026-10-05T10:00:02Z",
+        requestId: "request-a", toolCallId: "call-a", toolName: "bash",
+        yoloAutoOperation: "exec", yoloAutoEligible: false, message: "PRIVATE_PROMPT_BODY",
+      },
+      {
+        event: "permission_request.approved", timestamp: "2026-10-05T10:00:03Z",
+        requestId: "request-a", toolCallId: "call-a", toolName: "bash",
+        yoloAutoOperation: "exec", yoloAutoEligible: false, resolution: "approved",
+      },
+      {
+        event: "yolo_auto.evaluation", timestamp: "2026-10-05T10:00:04Z",
+        evaluationId: "eval-b", toolCallId: "call-b", modelBuildId: "build-a",
+        outcome: "allowed", policyAction: "allow", policyReason: "model_allow", disposition: "attempted",
+        toolName: "read", operation: "read",
+      },
+      {
+        event: "permission_request.waiting", timestamp: "2026-10-05T10:00:05Z",
+        requestId: "request-c", toolCallId: "call-c", toolName: "bash",
+        yoloAutoOperation: "exec", yoloAutoEligible: false, command: "PRIVATE_PENDING_COMMAND",
+      },
+      {
+        event: "permission_request.waiting", timestamp: "2026-10-05T10:00:05Z",
+        requestId: "request-a", toolCallId: "call-d", toolName: "bash",
+        yoloAutoOperation: "exec", yoloAutoEligible: false,
+      },
+      {
+        event: "permission_request.denied", timestamp: "2026-10-05T10:00:06Z",
+        requestId: "request-a", toolCallId: "call-d", toolName: "bash",
+        yoloAutoOperation: "exec", yoloAutoEligible: false, resolution: "denied",
+      },
+      {
+        event: "yolo_auto.evaluation", timestamp: "2026-10-05T00:00:00Z",
+        evaluationId: "eval-since", toolCallId: "call-since", modelBuildId: "build-a",
+        outcome: "allowed", policyAction: "allow", policyReason: "model_allow", disposition: "attempted",
+      },
+      {
+        event: "yolo_auto.evaluation", timestamp: "2026-10-06T00:00:00Z",
+        evaluationId: "eval-until", toolCallId: "call-until", modelBuildId: "build-x",
+        outcome: "prompt", policyAction: "prompt", policyReason: "injection_detected",
+      },
+      {
+        event: "yolo_auto.evaluation", timestamp: "2026-10-05T10:00:06Z",
+        evaluationId: "unrelated", toolCallId: "not-in-selected-sessions", modelBuildId: "build-x",
+        outcome: "allowed", command: "PRIVATE_UNRELATED_COMMAND",
+      },
+    ]);
+
+    try {
+      const script = fileURLToPath(new URL("./calibration-report.mjs", import.meta.url));
+      const result = spawnSync(process.execPath, [
+        script, calibrationPath, reviewPath,
+        "--since", "2026-10-05T00:00:00Z",
+        "--until", "2026-10-06T00:00:00Z",
+        "--session-root", rootA,
+        "--session-root", rootB,
+      ], { encoding: "utf8" });
+
+      expect(result.status).toBe(0);
+      expect(result.stdout).toContain("Session roots: 2; sessions: 2; tool calls: 5");
+      expect(result.stdout).toContain("Approval evaluations: 3");
+      expect(result.stdout).toContain("outcomes: allowed=2, prompt=1");
+      expect(result.stdout).toContain("Evaluation dispositions: attempted=3");
+      expect(result.stdout).toContain("Model attempts by build: build-a=3");
+      expect(result.stdout).toContain("Session activity uses the supplied roots; calibration tables above use the selected logs.");
+      expect(result.stdout).toContain("Permission requests: waited=3; resolved=2; approved=1; denied=1; other_resolved=0; pending=1");
+      expect(result.stdout).toContain("threat_not_benign=1");
+      for (const secret of ["PRIVATE_PROMPT", "PRIVATE_COMMAND", "PRIVATE_PATH", "PRIVATE_REVIEW_COMMAND", "PRIVATE_PROMPT_BODY", "PRIVATE_PENDING_COMMAND", "PRIVATE_DUPLICATE_COMMAND", "PRIVATE_DENIED_COMMAND", "PRIVATE_BOUNDARY_PATH", "PRIVATE_UNTIL_COMMAND", "PRIVATE_UNRELATED_COMMAND"]) {
+        expect(result.stdout).not.toContain(secret);
+      }
+    } finally {
+      rmSync(temp, { recursive: true, force: true });
+    }
   });
 });
