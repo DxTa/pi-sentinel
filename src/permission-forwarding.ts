@@ -53,6 +53,8 @@ export type ForwardedPermissionResponse = {
   approved: boolean;
   state: PermissionDecisionState;
   denialReason?: string;
+  /** Set only when a person answered the responder's dialog. */
+  humanDecided?: true;
   responderSessionId: string;
   respondedAt: number;
 };

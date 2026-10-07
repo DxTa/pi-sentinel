@@ -3,6 +3,7 @@ import { createHash } from "node:crypto";
 import { describe, expect, it, vi } from "vitest";
 
 import { YoloAutoEvaluator } from "./yolo-auto-evaluator";
+import type { NeighbourSummary } from "./yolo-auto-neighbours";
 import type { YoloAutoHeads } from "./yolo-auto-policy";
 import { YOLO_AUTO_LABEL_SCHEMA } from "./yolo-auto-label-schema";
 import { MODEL_REVISION } from "./yolo-auto-build";
@@ -38,6 +39,20 @@ const heads: YoloAutoHeads = {
   sensitive_document: oneHot(YOLO_AUTO_LABEL_SCHEMA.sensitive_document, "source_code"),
   routing: oneHot(YOLO_AUTO_LABEL_SCHEMA.routing, "tool_operation_request"),
 }
+
+const lowConfidenceHeads = {
+  ...heads,
+  threat: Object.fromEntries(
+    Object.keys(heads.threat).map((k) => [k, k === "benign" ? 0.6 : 0.4 / 6]),
+  ),
+};
+const neighbours = (
+  workspace: Partial<NeighbourSummary["workspace"]> = {},
+  global: Partial<NeighbourSummary["global"]> = {},
+): NeighbourSummary => ({
+  workspace: { approvals: 0, approvalWeight: 0, approvalDays: 0, denials: 0, latestIsDeny: false, ...workspace },
+  global: { approvals: 0, approvalWeight: 0, approvalDays: 0, workspaces: 0, denials: 0, denialWorkspaces: 0, ...global },
+});
 
 const safeResult = {
   status: "complete" as const,
@@ -155,49 +170,61 @@ describe("YoloAutoEvaluator", () => {
     }));
   });
 
-  it("fuses past decisions: denials force a prompt, approvals can allow a model prompt", async () => {
-    const riskyHeads = { ...safeResult.heads, threat: Object.fromEntries(
-      Object.keys(safeResult.heads.threat).map((k) => [k, k === "tool_abuse" ? 0.9 : 0.1 / 6]),
-    ) };
+  it("fuses past decisions: denials force a prompt, approvals can allow a low-confidence model prompt", async () => {
     const summarize = vi.fn();
     const writeReviewLog = vi.fn();
     const evaluator = new YoloAutoEvaluator({
-      client: { evaluate: vi.fn(async () => ({ ...safeResult, heads: riskyHeads })) },
+      client: { evaluate: vi.fn(async () => ({ ...safeResult, heads: lowConfidenceHeads })) },
       summarizeNeighbours: summarize,
       writeReviewLog,
       random: () => 0.99,
     });
     const scoped = { ...request, scope: "ws:abc", patternKey: "read:src/*.ts" };
 
-    summarize.mockReturnValueOnce({ workspace: { approvals: 3, denials: 0 }, global: { approvals: 0, denials: 0, workspaces: 0 } });
+    summarize.mockReturnValueOnce(neighbours({ approvals: 3, approvalWeight: 2.8, approvalDays: 2 }));
     await expect(evaluator.evaluate(scoped)).resolves.toMatchObject({ action: "allow", reason: "neighbour_workspace_approved" });
     expect(summarize).toHaveBeenCalledWith(expect.objectContaining({
       scope: "ws:abc", toolName: "read", operation: "read", patternKey: "read:src/*.ts", now: expect.any(Number),
     }));
     expect(writeReviewLog).toHaveBeenLastCalledWith("yolo_auto.evaluation", expect.objectContaining({
       policyReason: "neighbour_workspace_approved",
-      modelPolicyReason: expect.any(String),
+      modelPolicyReason: "threat_benign_low_confidence",
+      fusionVersion: 2,
       neighbourWorkspaceApprovals: 3,
+      neighbourWorkspaceApprovalWeight: 2.8,
+      neighbourWorkspaceApprovalDays: 2,
+      neighbourWorkspaceLatestDeny: false,
       neighbourDenials: 0,
+      neighbourDenialWorkspaces: 0,
     }));
 
     const benign = new YoloAutoEvaluator({
       client: { evaluate: vi.fn(async () => safeResult) },
-      summarizeNeighbours: () => ({ workspace: { approvals: 0, denials: 1 }, global: { approvals: 0, denials: 0, workspaces: 0 } }),
+      summarizeNeighbours: () => neighbours({ denials: 1, latestIsDeny: true }),
       random: () => 0.99,
     });
     await expect(benign.evaluate(scoped)).resolves.toMatchObject({ action: "prompt", reason: "neighbour_denied" });
   });
 
-  it("passes a workspace scorer result into fusion and telemetry", async () => {
-    const riskyHeads = { ...safeResult.heads, threat: Object.fromEntries(
-      Object.keys(safeResult.heads.threat).map((k) => [k, k === "tool_abuse" ? 0.9 : 0.1 / 6]),
+  it("does not let approvals override a specific model finding", async () => {
+    const riskyHeads = { ...heads, threat: Object.fromEntries(
+      Object.keys(heads.threat).map((k) => [k, k === "tool_abuse" ? 0.9 : 0.1 / 6]),
     ) };
+    const evaluator = new YoloAutoEvaluator({
+      client: { evaluate: vi.fn(async () => ({ ...safeResult, heads: riskyHeads })) },
+      summarizeNeighbours: () => neighbours({ approvals: 9, approvalWeight: 9, approvalDays: 5 }),
+      random: () => 0.99,
+    });
+    await expect(evaluator.evaluate({ ...request, scope: "ws:abc", patternKey: "read:src/*.ts" }))
+      .resolves.toMatchObject({ action: "prompt", reason: "threat_not_benign" });
+  });
+
+  it("passes a workspace scorer result into fusion and telemetry", async () => {
     const scoreRequest = vi.fn(() => ({ probability: 0.99, samples: 24, positives: 20, negatives: 4 }));
     const writeReviewLog = vi.fn();
     const evaluator = new YoloAutoEvaluator({
-      client: { evaluate: vi.fn(async () => ({ ...safeResult, heads: riskyHeads })) },
-      summarizeNeighbours: () => ({ workspace: { approvals: 0, denials: 0 }, global: { approvals: 0, denials: 0, workspaces: 0 } }),
+      client: { evaluate: vi.fn(async () => ({ ...safeResult, heads: lowConfidenceHeads })) },
+      summarizeNeighbours: () => neighbours(),
       scoreRequest,
       writeReviewLog,
       random: () => 0.99,
@@ -227,7 +254,7 @@ describe("YoloAutoEvaluator", () => {
     const recordEvaluation = vi.fn();
     const evaluator = new YoloAutoEvaluator({
       client: { evaluate: vi.fn(async () => safeResult) },
-      summarizeNeighbours: () => ({ workspace: { approvals: 0, denials: 1 }, global: { approvals: 0, denials: 0, workspaces: 0 } }),
+      summarizeNeighbours: () => neighbours({ denials: 1, latestIsDeny: true }),
       recordEvaluation,
       random: () => 0.99,
     });
@@ -293,6 +320,31 @@ describe("YoloAutoEvaluator", () => {
       reason: "audit_sample",
       audit: true,
     });
+  });
+
+  it("audits history-driven allows at twenty percent and flags the stored row", async () => {
+    const recordEvaluation = vi.fn();
+    const make = (random: number) => new YoloAutoEvaluator({
+      client: { evaluate: vi.fn(async () => ({ ...safeResult, heads: lowConfidenceHeads })) },
+      summarizeNeighbours: () => neighbours({ approvals: 3, approvalWeight: 3, approvalDays: 2 }),
+      recordEvaluation,
+      random: () => random,
+    });
+    const scoped = { ...request, scope: "ws:abc", patternKey: "read:src/*.ts" };
+
+    await expect(make(0.19).evaluate(scoped)).resolves.toMatchObject({ action: "prompt", reason: "audit_sample", audit: true });
+    expect(recordEvaluation).toHaveBeenLastCalledWith(expect.objectContaining({ audit: true, modelAction: "prompt" }));
+
+    await expect(make(0.21).evaluate(scoped)).resolves.toMatchObject({ action: "allow", reason: "neighbour_workspace_approved", audit: false });
+    expect(recordEvaluation).toHaveBeenLastCalledWith(expect.objectContaining({ audit: false }));
+  });
+
+  it("keeps the five percent audit rate for plain model allows", async () => {
+    const evaluator = new YoloAutoEvaluator({
+      client: { evaluate: async () => safeResult },
+      random: () => 0.19,
+    });
+    await expect(evaluator.evaluate(request)).resolves.toMatchObject({ action: "allow", audit: false });
   });
 
   it("prompts when the caller marks a protected path", async () => {

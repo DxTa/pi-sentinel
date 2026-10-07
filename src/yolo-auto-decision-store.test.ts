@@ -1,4 +1,5 @@
 import { mkdtempSync, statSync } from "node:fs";
+import { DatabaseSync } from "node:sqlite";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, expect, it } from "vitest";
@@ -85,7 +86,7 @@ describe("openDecisionStore", () => {
   it("keeps only structured columns (no raw request text)", () => {
     const store = openDecisionStore(join(mkdtempSync(join(tmpdir(), "decision-store-")), "d.db"));
     expect(store.columnNames().sort()).toEqual([
-      "evaluation_id", "features", "hard_rule", "human_action", "human_ts",
+      "audit", "evaluation_id", "features", "hard_rule", "human_action", "human_ts",
       "model_action", "operation", "pattern_key", "scope", "tool", "ts",
     ]);
     store.close();
@@ -116,5 +117,45 @@ describe("listLabelled", () => {
     const ids = store.listLabelled("bash", "exec", 1_000).map((r) => r.evaluationId).sort();
     store.close();
     expect(ids).toEqual(["a", "b"]);
+  });
+});
+
+describe("audit flag and legacy labels", () => {
+  const open = () => openDecisionStore(join(mkdtempSync(join(tmpdir(), "decision-store-")), "d.db"));
+
+  it("persists whether an evaluation was an audit sample", () => {
+    const store = open();
+    store.recordEvaluation({ ...row("audited"), audit: true });
+    store.recordEvaluation(row("plain"));
+    const scope = workspaceScope("/work/repo");
+    const byId = Object.fromEntries(store.listDecisions(scope).map((r) => [r.evaluationId, r.audit]));
+    store.close();
+    expect(byId).toEqual({ audited: true, plain: false });
+  });
+
+  it("adds the audit column to a database created before it existed", () => {
+    const dbPath = join(mkdtempSync(join(tmpdir(), "decision-store-")), "legacy.db");
+    const legacy = new DatabaseSync(dbPath);
+    legacy.exec(`CREATE TABLE decisions (
+      evaluation_id TEXT PRIMARY KEY, ts INTEGER NOT NULL, scope TEXT NOT NULL, tool TEXT NOT NULL,
+      operation TEXT NOT NULL, pattern_key TEXT NOT NULL, features TEXT NOT NULL, hard_rule INTEGER NOT NULL,
+      model_action TEXT NOT NULL, human_action TEXT, human_ts INTEGER);
+      INSERT INTO decisions VALUES ('old', 5000, 'ws:x', 'bash', 'exec', 'bash:pytest *', '[]', 0, 'prompt', 'allow_once', 9000);`);
+    legacy.close();
+    const store = openDecisionStore(dbPath);
+    const [saved] = store.listLabelled("bash", "exec", 0);
+    store.close();
+    expect(saved).toMatchObject({ evaluationId: "old", audit: false });
+  });
+
+  it("ignores denials recorded faster than a person can answer, but keeps fast approvals", () => {
+    const store = open();
+    for (const id of ["fast-deny", "slow-deny", "fast-allow"]) store.recordEvaluation({ ...row(id), ts: 5_000 });
+    store.recordHumanDecision("fast-deny", "deny", 5_000);
+    store.recordHumanDecision("slow-deny", "deny", 7_000);
+    store.recordHumanDecision("fast-allow", "allow_once", 5_100);
+    const ids = store.listLabelled("bash", "exec", 0).map((r) => r.evaluationId).sort();
+    store.close();
+    expect(ids).toEqual(["fast-allow", "slow-deny"]);
   });
 });

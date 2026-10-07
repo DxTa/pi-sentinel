@@ -330,6 +330,7 @@ export function readForwardedPermissionResponse(
         typeof parsed.denialReason === "string"
           ? parsed.denialReason
           : undefined,
+      ...(parsed.humanDecided === true ? { humanDecided: true as const } : {}),
       responderSessionId: parsed.responderSessionId,
       respondedAt:
         typeof parsed.respondedAt === "number"

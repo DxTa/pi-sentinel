@@ -32,7 +32,7 @@ Git is the supported distribution path. No build step is required. The npm name 
 
 **Enforcement boundary:** deterministic gates run before execution and before `yolo-auto`. SRT denies configured credential-path patterns for wrapped commands; `.env*` reads follow permission/path rules. Non-bypassed Bash is wrapped by SRT; bypassed Bash has normal host filesystem and network access after permission and network preflight. A bypass is not a sandbox.
 
-**Model safety:** `yolo-auto` evaluates eligible ask-state workspace-local read/list/write/edit requests and already-sandboxed Bash. The evaluator sends path/tool metadata for reads and listings, up to 800 characters of write/edit content, or a redacted Bash command. Read output is not sent, so prompt injection inside a file cannot be detected before reading. Sensitive paths, external targets, network operations, unsandboxed Bash, and model failures prompt. Fixed thresholds remain authoritative; 5% of would-allow decisions prompt for audit.
+**Model safety:** `yolo-auto` evaluates eligible ask-state workspace-local read/list/write/edit requests and already-sandboxed Bash. The evaluator sends path/tool metadata for reads and listings, up to 800 characters of write/edit content, or a redacted Bash command. Read output is not sent, so prompt injection inside a file cannot be detected before reading. Sensitive paths, external targets, network operations, unsandboxed Bash, and model failures prompt. Fixed thresholds remain authoritative; 5% of would-allow decisions prompt for audit (20% for allows learned from history).
 
 **Worker trust:** the configured worker and model cache are trusted components. The socket uses owner-only filesystem permissions, but the protocol does not authenticate the peer or prove response honesty.
 
@@ -65,6 +65,16 @@ export PI_SENTINEL_YOLO_AUTO_SOCKET=/path/to/yolo-auto.sock
 ```
 
 Each evaluation writes a calibration record to `~/.pi/agent/logs/yolo-auto-calibration.jsonl`. Records contain a hash of classifier input, not raw request text. The owner-only file is mode `0600`, rotates at 50 MB, and retains one `.1` file. A shared active worker can serve multiple Pi sessions; worker failure falls back to prompting.
+
+### Learning from your answers
+
+`yolo-auto` stores one row per evaluation in `~/.pi/agent/extensions/pi-sentinel/decision-store/decisions.db` (mode `0600`): head scores, tool, operation, a coarse pattern key, and a hashed workspace. It stores no prompt or command text. Past answers can turn a model prompt into an allow, or force a prompt:
+
+- **Only your dialog answers are labels.** Failures, timeouts, dismissed dialogs, and auto-approvals write no label. Denials stored within 1 second by earlier versions are ignored.
+- **The latest explicit decision for a key in a workspace wins.** A denial prompts until a later approval clears it. Denials in at least two other workspaces also prompt.
+- **History may resolve only `threat_benign_low_confidence`.** It never overrides injection, threat, tool-action, sensitive-source, or external-sink findings, or a hard rule. The benign score must be at least 0.5.
+- **Project allow:** decayed approvals (14-day half-life) of at least 2.5 over at least 2 days, within 30 days. **Global allow:** the same, across at least 3 workspaces with no denying workspace.
+- **Audit approvals add no evidence.** Audit denials count as denials. Telemetry records `fusionVersion`, approval weights, days, and denial counts so any rule can be replayed offline.
 
 Run `node scripts/calibration-report.mjs [calibration.jsonl] [review.jsonl]` to join human approval/denial labels by `evaluationId` and print precision/recall by gate and threshold. It includes the rotated calibration file when present; automatic model approvals are not treated as human labels.
 

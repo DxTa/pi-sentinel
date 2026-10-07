@@ -666,7 +666,8 @@ export default function piPermissionSystemExtension(pi: ExtensionAPI): void {
     scoreRequest: (query) => scoreWithHistory(
       getDecisionStore()
         .listLabelled(query.toolName, query.operation, query.now - NEIGHBOUR_WINDOW_MS)
-        .filter((row) => row.scope === query.scope)
+        // Audit approvals add no allow evidence, matching the neighbour summary.
+        .filter((row) => row.scope === query.scope && (row.humanAction === "deny" || !row.audit))
         .map((row) => ({ features: row.features, label: row.humanAction === "deny" ? 0 : 1 })),
       query.features,
     ),

@@ -440,6 +440,7 @@ export async function processForwardedPermissionRequests(
         approved: decision.approved,
         state: decision.state,
         denialReason: decision.denialReason,
+        ...(decision.humanDecided ? { humanDecided: true as const } : {}),
         responderSessionId: currentSessionId,
         respondedAt: Date.now(),
       } satisfies ForwardedPermissionResponse);

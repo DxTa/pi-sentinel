@@ -16,6 +16,12 @@ export type PermissionPromptDecision = {
    * rather than "user_approved" in the permissions:decision broadcast.
    */
   autoApproved?: true;
+  /**
+   * True only when a person chose this answer in a permission dialog. Failures,
+   * timeouts, dismissed dialogs, and auto-approvals leave it unset so they never
+   * become learning labels.
+   */
+  humanDecided?: true;
 };
 
 export interface PermissionDecisionUi {
@@ -64,6 +70,11 @@ export function createDeniedPermissionDecision(
         state: "denied",
       };
 }
+
+const humanDecision = (decision: PermissionPromptDecision): PermissionPromptDecision => ({
+  ...decision,
+  humanDecided: true,
+});
 
 export function isPermissionDecisionState(
   value: unknown,
@@ -117,31 +128,19 @@ export async function requestPermissionDecisionFromUi(
   ]);
 
   if (selected === APPROVE_OPTION) {
-    return {
-      approved: true,
-      state: "approved",
-    };
+    return humanDecision({ approved: true, state: "approved" });
   }
 
   if (selected === sessionOption) {
-    return {
-      approved: true,
-      state: "approved_for_session",
-    };
+    return humanDecision({ approved: true, state: "approved_for_session" });
   }
 
   if (allowWorkspace && selected === workspaceOption) {
-    return {
-      approved: true,
-      state: "approved_for_workspace",
-    };
+    return humanDecision({ approved: true, state: "approved_for_workspace" });
   }
 
   if (allowGlobal && selected === globalOption) {
-    return {
-      approved: true,
-      state: "approved_globally",
-    };
+    return humanDecision({ approved: true, state: "approved_globally" });
   }
 
   if (selected === DENY_WITH_REASON_OPTION) {
@@ -152,8 +151,11 @@ export async function requestPermissionDecisionFromUi(
       ),
     );
 
-    return createDeniedPermissionDecision(denialReason);
+    return humanDecision(createDeniedPermissionDecision(denialReason));
   }
 
-  return createDeniedPermissionDecision();
+  // A dismissed dialog (undefined) is not a deliberate answer.
+  return selected === DENY_OPTION
+    ? humanDecision(createDeniedPermissionDecision())
+    : createDeniedPermissionDecision();
 }

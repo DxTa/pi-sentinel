@@ -44,7 +44,7 @@ describe("PermissionPrompter", () => {
       writeReviewLog() {},
       subagentSessionsDir: "/tmp/subagents",
       forwardingDir: "/tmp/forwarding",
-      requestPermissionDecisionFromUi: vi.fn(async () => ({ approved: state !== "denied", state })),
+      requestPermissionDecisionFromUi: vi.fn(async () => ({ approved: state !== "denied", state, humanDecided: true as const })),
     });
 
     await prompter.prompt({ hasUI: true, cwd: "/work/repo", ui: { setStatus() {} } } as never, {
@@ -65,6 +65,39 @@ describe("PermissionPrompter", () => {
       patternKey: "write:./*.txt",
     }));
     expect(recordHumanDecision).toHaveBeenCalledWith("eval-human-1", action, expect.any(Number));
+  });
+
+  it("does not label the evaluation when the decision did not come from a human answer", async () => {
+    const recordHumanDecision = vi.fn();
+    const prompter = new PermissionPrompter({
+      promptWaitTracker: new PromptWaitTracker({ emit() {} }),
+      getConfig: () => ({ debugLog: false, permissionReviewLog: false, mode: "yolo-auto", yoloAskBashPatterns: [] }),
+      yoloAutoEvaluator: { evaluate: vi.fn(async () => ({
+        action: "prompt" as const, reason: "threat_not_benign", candidate: true, attempted: true,
+        evaluationId: "eval-system-1", audit: false,
+      })) },
+      recordHumanDecision,
+      writeReviewLog() {},
+      subagentSessionsDir: "/tmp/subagents",
+      forwardingDir: "/tmp/forwarding",
+      requestPermissionDecisionFromUi: vi.fn(async () => ({ approved: false, state: "denied" as const })),
+    });
+
+    const decision = await prompter.prompt({ hasUI: true, cwd: "/work/repo", ui: { setStatus() {} } } as never, {
+      requestId: "req-system-1",
+      source: "tool_call",
+      agentName: null,
+      message: "Need permission",
+      toolName: "write",
+      yoloAutoEligible: true,
+      yoloAutoHardRuleHit: false,
+      yoloAutoWorkspaceLocal: true,
+      yoloAutoOperation: "write",
+      yoloAutoWorkspaceRelativePath: "notes.txt",
+    });
+
+    expect(decision.approved).toBe(false);
+    expect(recordHumanDecision).not.toHaveBeenCalled();
   });
 
   it("auto-allows workspace read-only Bash chains without the model or UI", async () => {

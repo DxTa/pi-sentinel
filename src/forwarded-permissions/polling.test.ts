@@ -1,3 +1,4 @@
+import { readForwardedPermissionResponse } from "./io";
 import { mkdtempSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -277,6 +278,7 @@ describe("processForwardedPermissionRequests", () => {
     const requestPermissionDecisionFromUi = vi.fn(async () => ({
       approved: true,
       state: "approved_for_session" as const,
+      humanDecided: true as const,
     }));
 
     await processForwardedPermissionRequests(
@@ -318,6 +320,25 @@ describe("processForwardedPermissionRequests", () => {
     expect(response).toMatchObject({
       approved: true,
       state: "approved_for_session",
+      humanDecided: true,
     });
+  });
+});
+
+describe("readForwardedPermissionResponse", () => {
+  it("keeps the human-decided flag only when the responder set it", () => {
+    const dir = mkdtempSync(join(tmpdir(), "forwarded-response-"));
+    const write = (name: string, extra: object) => {
+      const path = join(dir, name);
+      writeFileSync(path, JSON.stringify({
+        approved: false, state: "denied", responderSessionId: "parent", respondedAt: 1, ...extra,
+      }), "utf-8");
+      return path;
+    };
+    expect(readForwardedPermissionResponse(null, write("human.json", { humanDecided: true })))
+      .toMatchObject({ humanDecided: true });
+    expect(readForwardedPermissionResponse(null, write("system.json", {}))).not.toHaveProperty("humanDecided");
+    expect(readForwardedPermissionResponse(null, write("spoof.json", { humanDecided: "yes" })))
+      .not.toHaveProperty("humanDecided");
   });
 });

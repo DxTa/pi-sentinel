@@ -256,7 +256,10 @@ export class PermissionPrompter implements PermissionPrompterApi {
         },
       );
 
-      this.labelEvaluation(yoloAutoDecision.evaluationId, decision.state, details);
+      // Only a person's explicit dialog answer is a learning label; failures and timeouts are not.
+      if (decision.humanDecided) {
+        this.labelEvaluation(yoloAutoDecision.evaluationId, decision.state, details);
+      }
 
       this.writeReviewEntry(
         decision.approved

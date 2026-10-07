@@ -1,5 +1,5 @@
 import { featuresFromHeads, type EvaluationRow } from "./yolo-auto-decision-store";
-import { fuseWithNeighbours, type FusionDecision } from "./yolo-auto-fusion";
+import { FUSION_VERSION, fuseWithNeighbours, type FusionDecision } from "./yolo-auto-fusion";
 import type { NeighbourQuery, NeighbourSummary } from "./yolo-auto-neighbours";
 import type { ScorerResult } from "./yolo-auto-scorer";
 import { createHash, randomUUID } from "node:crypto";
@@ -94,6 +94,11 @@ export interface YoloAutoEvaluatorDeps {
   random?: () => number;
   now?: () => number;
 }
+
+const MODEL_AUDIT_RATE = 0.05;
+const HISTORY_AUDIT_RATE = 0.2;
+
+const round2 = (value: number): number => Math.round(value * 100) / 100;
 
 function elapsed(now: () => number, startedAt: number): number {
   return Math.max(0, now() - startedAt);
@@ -213,7 +218,7 @@ export class YoloAutoEvaluator {
     });
     const history = this.applyHistory(request, result.heads, policyDecision);
     const finalPolicy = history.policy;
-    const audit = finalPolicy.action === "allow" && this.random() < 0.05;
+    const audit = this.isAudited(finalPolicy, policyDecision);
     const decision: YoloAutoEvaluationDecision = {
       action: audit ? "prompt" : finalPolicy.action,
       reason: audit ? "audit_sample" : finalPolicy.reason,
@@ -222,7 +227,7 @@ export class YoloAutoEvaluator {
       evaluationId: resultEvaluationId,
       audit,
     };
-    this.recordForStore(request, resultEvaluationId, result.heads, policyDecision.action);
+    this.recordForStore(request, resultEvaluationId, result.heads, policyDecision.action, audit);
     await this.writeTelemetry(request, decision, {
       evaluationId: resultEvaluationId,
       disposition: "attempted",
@@ -237,6 +242,12 @@ export class YoloAutoEvaluator {
       ...(history.fusion ? { fusion: history.fusion } : {}),
     }, inputText);
     return decision;
+  }
+
+  /** History-driven allows are the learned ones, so they are audited more often to get unbiased labels. */
+  private isAudited(final: FusionDecision, model: FusionDecision): boolean {
+    if (final.action !== "allow") return false;
+    return this.random() < (final.reason !== model.reason ? HISTORY_AUDIT_RATE : MODEL_AUDIT_RATE);
   }
 
   private promptDecision(
@@ -277,7 +288,13 @@ export class YoloAutoEvaluator {
       const scorer = scoreRequest?.(query);
       const extra = scorer ? { scorer } : {};
       return {
-        policy: fuseWithNeighbours(model, { heads, hardRuleHit: request.hardRuleHit, summary, ...extra }),
+        policy: fuseWithNeighbours(model, {
+          heads,
+          hardRuleHit: request.hardRuleHit,
+          operation: request.operation,
+          summary,
+          ...extra,
+        }),
         fusion: { modelPolicyReason: model.reason, summary, ...extra },
       };
     } catch (error) {
@@ -292,6 +309,7 @@ export class YoloAutoEvaluator {
     evaluationId: string,
     heads: YoloAutoHeads,
     modelAction: "allow" | "prompt",
+    audit: boolean,
   ): void {
     // Hard-rule prompts are the rule's job; storing them would teach denials for unrelated requests.
     if (!this.deps.recordEvaluation || !request.scope || !request.patternKey || request.hardRuleHit) return;
@@ -306,6 +324,7 @@ export class YoloAutoEvaluator {
         heads,
         hardRuleHit: request.hardRuleHit,
         modelAction,
+        audit,
       });
     } catch (error) {
       this.logStoreError("yolo_auto.decision_store_failed", error);
@@ -360,10 +379,17 @@ export class YoloAutoEvaluator {
       ...(details.fusion
         ? {
             modelPolicyReason: details.fusion.modelPolicyReason,
+            fusionVersion: FUSION_VERSION,
             neighbourWorkspaceApprovals: details.fusion.summary.workspace.approvals,
+            neighbourWorkspaceApprovalWeight: round2(details.fusion.summary.workspace.approvalWeight),
+            neighbourWorkspaceApprovalDays: details.fusion.summary.workspace.approvalDays,
+            neighbourWorkspaceLatestDeny: details.fusion.summary.workspace.latestIsDeny,
             neighbourGlobalApprovals: details.fusion.summary.global.approvals,
+            neighbourGlobalApprovalWeight: round2(details.fusion.summary.global.approvalWeight),
+            neighbourGlobalApprovalDays: details.fusion.summary.global.approvalDays,
             neighbourGlobalWorkspaces: details.fusion.summary.global.workspaces,
             neighbourDenials: details.fusion.summary.workspace.denials + details.fusion.summary.global.denials,
+            neighbourDenialWorkspaces: details.fusion.summary.global.denialWorkspaces,
             ...(details.fusion.scorer
               ? { scorerProbability: details.fusion.scorer.probability, scorerSamples: details.fusion.scorer.samples }
               : {}),

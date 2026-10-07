@@ -38,6 +38,11 @@ const EXPECTED_TOOL_ACTION: Record<string, string> = {
   exec: "exec",
 };
 
+/** The tool_action label the model must predict for an operation, if the operation is supported. */
+export function expectedToolAction(operation: string): string | undefined {
+  return EXPECTED_TOOL_ACTION[operation];
+}
+
 function prompt(reason: string): YoloAutoPolicyDecision {
   return { action: "prompt", reason };
 }
