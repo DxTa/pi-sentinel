@@ -1357,6 +1357,7 @@ export default function piPermissionSystemExtension(pi: ExtensionAPI): void {
         {
           getNetworkConfig,
           getAgentDir: getAgentDir,
+          autoApproveAsk: () => runtime.config.mode === "yolo",
           promptWaitTracker,
           persistNetworkGrants: (domains, scope, state) =>
             persistNetworkGrantTransaction(policyManager, ctx.cwd, domains, scope, state),

@@ -36,6 +36,19 @@ function expectDescriptor(
 }
 
 describe("describeBashExternalDirectoryGate", () => {
+  it("neither forces a prompt nor hard-blocks external writes in yolo mode", async () => {
+    process.env[FALLBACK_ENV] = "1";
+
+    const result = await describeBashExternalDirectoryGate(
+      { toolName: "bash", agentName: "worker", input: { command: "touch /opt/shared/notes.txt" }, toolCallId: "call-yolo", cwd, mode: "yolo" },
+      () => makeCheckResult(),
+      () => [],
+    );
+
+    expect(result).not.toMatchObject({ preResolved: { state: "deny" } });
+    expect((result as any)?.promptDetails?.forcePromptInYolo).toBeUndefined();
+  });
+
   it("hard-blocks mutating commands outside workspace and temporary roots", async () => {
     process.env[FALLBACK_ENV] = "1";
 
@@ -118,7 +131,7 @@ describe("describeBashExternalDirectoryGate", () => {
     expect((result.promptDetails as any).forcePromptInYolo).toBeUndefined();
   });
 
-  it("forces a prompt in yolo for mutating external bash commands", async () => {
+  it("forces a prompt for mutating external bash commands outside yolo", async () => {
     process.env[FALLBACK_ENV] = "1";
 
     const result = expectDescriptor(
@@ -138,7 +151,7 @@ describe("describeBashExternalDirectoryGate", () => {
     expect((result.promptDetails as any).forcePromptInYolo).toBe(true);
   });
 
-  it("forces a prompt in yolo for redirected read-only bash commands", async () => {
+  it("forces a prompt for redirected read-only bash commands outside yolo", async () => {
     process.env[FALLBACK_ENV] = "1";
 
     const result = expectDescriptor(

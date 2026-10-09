@@ -47,15 +47,82 @@ describe("matchesYoloAskBashPattern", () => {
 
   it.each([
     "git push origin main",
+    "git -C repo push origin main",
     "ssh prod.example.com",
-    "docker exec -it app sh",
     "kubectl apply -f deploy.yaml",
-    "aws s3 ls s3://example-bucket",
-  ])("requires prompt for remote-control %s commands in YOLO mode", (command: string) => {
+    "kubectl set image deploy/a a=b",
+    "kubectl delete pod a",
+    "kubectl -n prod delete pod a",
+    "kubectl --context prod scale deploy/a --replicas=2",
+    "kubectl rollout restart deploy/a",
+    "kubectl uncordon node-a",
+    "kubectl autoscale deploy a --max=3",
+    "kubectl run x --image=y",
+    "kubectl expose deploy a --port=80",
+    "kubectl --as admin delete pod a",
+    "/bin/rm ./notes.txt",
+    "/usr/bin/ssh host",
+    "rm\t./notes.txt",
+    "sudo git push origin main",
+    "git -c user.name=x push origin main",
+  ])("requires prompt for %s in YOLO mode", (command: string) => {
     const context = { toolName: "bash", command };
 
     expect(matchesYoloAskBashPattern(context, yoloConfig)).toBe(true);
     expect(shouldAutoApprovePermissionState("ask", yoloConfig, context)).toBe(false);
+  });
+
+  it.each([
+    "cd src && rm -rf build",
+    "git status; git push origin main",
+    "for f in a b; do rm $f; done",
+    "if true; then kubectl delete pod a; fi",
+    "bash -c 'rm x'",
+    "ls | xargs rm",
+    "find . -name x -exec rm {} +",
+    "sudo rm x",
+  ])("requires prompt when %j hides a built-in ask pattern", (command: string) => {
+    const context = { toolName: "bash", command };
+
+    expect(matchesYoloAskBashPattern(context, yoloConfig)).toBe(true);
+    expect(shouldAutoApprovePermissionState("ask", yoloConfig, context)).toBe(false);
+  });
+
+  it("applies user ask patterns to inner commands too", () => {
+    const config = { ...yoloConfig, yoloAskBashPatterns: ["make deploy *"] };
+
+    expect(matchesYoloAskBashPattern({ toolName: "bash", command: "cd app && make deploy prod" }, config)).toBe(true);
+    expect(matchesYoloAskBashPattern({ toolName: "bash", command: "cd app && make test" }, config)).toBe(false);
+  });
+
+  it("keeps ordinary compound commands auto-approvable", () => {
+    for (const command of ["cd src && npm test", "for f in a b; do echo $f; done", "ls | grep x"]) {
+      expect(matchesYoloAskBashPattern({ toolName: "bash", command }, yoloConfig), command).toBe(false);
+    }
+  });
+
+  it.each([
+    "docker exec -it app sh",
+    "aws s3 ls s3://example-bucket",
+    "gh pr list",
+    "scp a host:b",
+    "rsync -a a b",
+    "terraform plan",
+    "git pull",
+    "git clone https://example.test/r.git",
+    "git fetch",
+    "kubectl get pods",
+    "kubectl -n prod describe pod a",
+    "kubectl logs deploy/a",
+    "kubectl get configmap apply",
+    "kubectl rollout status deploy/a",
+    "kubectl rollout history deploy/a",
+    "git log --grep push",
+  ])("lets %s through in YOLO mode", (command: string) => {
+    const context = { toolName: "bash", command };
+
+    expect(matchesYoloAskBashPattern(context, yoloConfig)).toBe(false);
+    expect(shouldAutoApprovePermissionState("ask", yoloConfig, context)).toBe(true);
   });
 
   it("keeps non-rm bash commands auto-approvable", () => {
@@ -141,12 +208,27 @@ describe("shouldRelaxBundledToolDenyInYolo", () => {
     },
   );
 
-  it("keeps first external write denied until external_directory is allowed", () => {
+  it.each(["write", "edit"] as const)("relaxes a bundled external %s deny in yolo without a prior approval", (toolName) => {
     const relaxer = getBundledDenyRelaxer();
 
     expect(
       relaxer({
         config: yoloConfig,
+        toolName,
+        path: "/tmp/shared/file.txt",
+        cwd: "/tmp/project",
+        toolPermission: bundledDeny(toolName),
+        hasExternalDirectoryApproval: false,
+      }),
+    ).toBe(true);
+  });
+
+  it("keeps the first external write denied in yolo-auto until external_directory is allowed", () => {
+    const relaxer = getBundledDenyRelaxer();
+
+    expect(
+      relaxer({
+        config: { ...yoloConfig, mode: "yolo-auto" },
         toolName: "write",
         path: "/tmp/shared/file.txt",
         cwd: "/tmp/project",

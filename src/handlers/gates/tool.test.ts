@@ -42,6 +42,34 @@ describe("describeToolGate bash session approval", () => {
   });
 });
 
+describe("describeToolGate bash approvals use inner commands", () => {
+  const gate = (command: string) =>
+    describeToolGate(context("bash", { command }), { ...check("bash"), command });
+
+  it("stores the inner command of a loop, not the loop keywords", () => {
+    const descriptor = gate("for f in a b; do rm $f; done");
+    expect(descriptor.sessionApproval).toEqual({ surface: "bash", pattern: "rm *" });
+    expect(descriptor.promptDetails.sessionLabel).toContain('"rm *"');
+    expect(descriptor.promptDetails.sessionLabel).not.toContain('"for *"');
+  });
+
+  it("stores each distinct inner command of a wrapped chain", () => {
+    expect(gate("cd src && bash -c 'pytest -q && rm -rf build'").sessionApproval).toEqual({
+      surface: "bash",
+      patterns: ["cd *", "pytest *", "rm *"],
+    });
+  });
+
+  it.each(['eval "$x"', "python3 -c 'import os'", "ls && bash", "sudo rm -rf build", "find . -exec rm {} \\;", 'echo "$(id)"'])(
+    "stores nothing for %j and says so",
+    (command) => {
+      const descriptor = gate(command);
+      expect(descriptor.sessionApproval).toEqual({ surface: "bash", patterns: [] });
+      expect(descriptor.promptDetails.sessionLabel).toContain("not remembered");
+    },
+  );
+});
+
 describe("describeToolGate yolo-auto eligibility", () => {
   it("marks workspace-local read requests after deterministic gates", () => {
     const descriptor = describeToolGate(
@@ -97,6 +125,28 @@ describe("describeToolGate yolo-auto eligibility", () => {
 
     expect(bash("cd src && grep -n \"a\\|b\" index.ts")).toMatchObject({ yoloAutoEligible: true, yoloAutoSandboxed: false });
     expect(bash("cat $(echo x)")).toMatchObject({ yoloAutoEligible: false });
+  });
+
+  it("passes the redacted inner commands to the evaluator", () => {
+    const details = describeToolGate(
+      { ...context("bash", { command: "cd src && rm x" }), cwd: process.cwd(), sandboxed: false, yoloAutoWorkspaceLocal: true,
+        yoloAutoCommand: "cd src && rm x", yoloAutoHardRuleHit: false, yoloAutoUnits: ["cd src", "rm x"], yoloAutoOpaque: false },
+      check("bash"),
+    ).promptDetails;
+
+    expect(details).toMatchObject({ yoloAutoUnits: ["cd src", "rm x"], yoloAutoOpaque: false });
+  });
+
+  it("keeps elevated Bash away from yolo-auto but leaves unreadable code to the model", () => {
+    const workspace = process.cwd();
+    const bash = (command: string, sandboxed: boolean) => describeToolGate(
+      { ...context("bash", { command }), cwd: workspace, sandboxed, yoloAutoWorkspaceLocal: true, yoloAutoCommand: command, yoloAutoHardRuleHit: false },
+      check("bash"),
+    ).promptDetails;
+
+    expect(bash("sudo rm -rf build", false)).toMatchObject({ yoloAutoEligible: false });
+    expect(bash("sudo rm -rf build", true)).toMatchObject({ yoloAutoEligible: false });
+    expect(bash("python3 -c 'print(1)'", false)).toMatchObject({ yoloAutoEligible: true });
   });
 
   it("does not mark external reads eligible", () => {

@@ -3,7 +3,7 @@ import { relative } from "node:path";
 
 import { resolve } from "node:path";
 
-import { splitBashSegments } from "./bash-segments.js";
+import { bashInnerCommands } from "./bash-segments.js";
 import { extractAllNetworkTargets } from "./network/domain-extractor.js";
 import { isPathWithinCanonicalWorkingDirectory, normalizePathForComparison } from "./path-utils.js";
 import { isSensitivePath } from "./yolo-auto-sensitive-paths.js";
@@ -21,24 +21,30 @@ export interface YoloAutoBashContext {
   command: string;
   workspaceLocal: boolean;
   hardRuleHit: boolean;
+  /* Redacted inner commands; empty when the command cannot be split. */
+  units: string[];
+  /* The inner commands cannot all be read statically. */
+  opaque: boolean;
 }
 
-const CD_SEGMENT = new RegExp("^cd(?:\\s+(\\S+))?\\s*$");
+const CD_COMMAND = new RegExp("^cd(?:\\s+(\\S+))?(?:\\s|$)");
 const UNRESOLVABLE_CD = new RegExp("^[-~$]");
 
 /** `cd` with no slash (`cd ..`, bare `cd`, `cd -`) escapes path extraction; check it directly. */
 function cdLeavesWorkspace(command: string, cwd: string | undefined): boolean {
   if (!cwd) return true;
   let dir = cwd;
-  const segments = splitBashSegments(command);
-  if (segments === null) return true;
-  for (const segment of segments) {
-    const cd = segment.match(CD_SEGMENT);
+  const inner = bashInnerCommands(command);
+  if (inner === null) return true;
+  for (const part of inner.commands) {
+    const cd = part.match(CD_COMMAND);
     if (!cd) continue;
     const target = cd[1];
     if (!target || UNRESOLVABLE_CD.test(target)) return true;
     dir = resolve(dir, target);
     if (!isPathWithinCanonicalWorkingDirectory(dir, cwd)) return true;
+    // A child shell's `cd` may not carry over, so the target must also stay inside when read from the start.
+    if (inner.scoped && !isPathWithinCanonicalWorkingDirectory(resolve(cwd, target), cwd)) return true;
   }
   return false;
 }
@@ -51,7 +57,7 @@ export function buildYoloAutoBashContext(
 ): YoloAutoBashContext {
   let workspaceLocal = Boolean(cwd);
   let hardRuleHit = false;
-  let sanitizedCommand = command;
+  const replacements: Array<[token: string, safePath: string]> = [];
   const tokens = [...new Set(pathTokens)]
     .filter((token) => token && !DISCARD_DEVICES.has(token))
     .sort((left, right) => right.length - left.length);
@@ -72,7 +78,7 @@ export function buildYoloAutoBashContext(
       : workspacePath
         ? relative(cwd!, normalizedPath).replaceAll("\\", "/") || "."
         : EXTERNAL_PATH;
-    sanitizedCommand = sanitizedCommand.replaceAll(token, () => safePath);
+    replacements.push([token, safePath]);
   }
 
   const unclassifiedCommand = tokens.reduce(
@@ -87,13 +93,23 @@ export function buildYoloAutoBashContext(
     const normalizedPath = normalizePathForComparison(path, cwd ?? "/");
     hardRuleHit = hardRuleHit || isSensitivePath(normalizedPath, homedir());
   }
-  sanitizedCommand = sanitizedCommand.replace(
-    ABSOLUTE_PATH_PATTERN,
-    (_match, prefix: string, path: string) => prefix + (isSensitivePath(normalizePathForComparison(path, cwd ?? "/"), homedir()) ? SENSITIVE_PATH : PATH),
-  );
+  const redact = (text: string): string =>
+    replacements
+      .reduce((value, [token, safePath]) => value.replaceAll(token, () => safePath), text)
+      .replace(
+        ABSOLUTE_PATH_PATTERN,
+        (_match, prefix: string, path: string) => prefix + (isSensitivePath(normalizePathForComparison(path, cwd ?? "/"), homedir()) ? SENSITIVE_PATH : PATH),
+      );
 
   const hasNetworkTarget = extractAllNetworkTargets(command).length > 0;
   workspaceLocal = workspaceLocal && !hasNetworkTarget && !cdLeavesWorkspace(command, cwd);
 
-  return { command: sanitizedCommand, workspaceLocal, hardRuleHit };
+  const inner = bashInnerCommands(command);
+  return {
+    command: redact(command),
+    workspaceLocal,
+    hardRuleHit,
+    units: inner ? inner.commands.map(redact) : [],
+    opaque: inner === null || inner.opaque,
+  };
 }

@@ -27,6 +27,26 @@ describe("handleNetworkToolCall", () => {
     expect(select).not.toHaveBeenCalled();
   });
 
+  it("approves ask verdicts without a prompt when the caller auto-approves, but keeps denies", async () => {
+    clearSessionNetworkApprovals();
+    const select = vi.fn();
+    const deps = {
+      getNetworkConfig: () => ({ enabled: true, unknownDomains: "ask" as const, deniedDomains: ["blocked.example.com"] }),
+      getAgentDir: () => "/agent",
+      autoApproveAsk: () => true,
+    };
+    const ctx = { hasUI: true, cwd: "/repo", ui: { select } } as never;
+
+    const approved = await handleNetworkToolCall(
+      { toolName: "bash", input: { command: "curl https://api.example.com" } } as never, ctx, deps);
+    const denied = await handleNetworkToolCall(
+      { toolName: "bash", input: { command: "curl https://blocked.example.com" } } as never, ctx, deps);
+
+    expect(approved).toMatchObject({ approvedDomains: ["api.example.com"] });
+    expect(denied).toMatchObject({ block: true });
+    expect(select).not.toHaveBeenCalled();
+  });
+
   it("reports blocked while waiting for domain approval", async () => {
     clearSessionNetworkApprovals();
     const events: Array<{ channel: string; payload: unknown }> = [];

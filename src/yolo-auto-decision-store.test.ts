@@ -100,9 +100,21 @@ describe("patternKeyFor", () => {
     [{ toolName: "write", workspaceRelativePath: "notes.txt" }, "write:./*.txt"],
     [{ toolName: "ls", workspaceRelativePath: "tests" }, "ls:tests/*"],
     [{ toolName: "read" }, "read:*"],
+    [{ toolName: "bash", command: "cd src && rm -rf build" }, "bash:cd *|rm *"],
+    [{ toolName: "bash", command: "rm -rf build && cd src && rm x" }, "bash:cd *|rm *"],
+    [{ toolName: "bash", command: "for f in a b; do rm $f; done" }, "bash:rm *"],
+    [{ toolName: "bash", command: "bash -c 'cd x && pytest -q'" }, "bash:cd *|pytest *"],
+    [{ toolName: "bash", command: "FOO=1" }, "bash:*"],
   ])("derives a coarse key for %j", (input, expected) => {
     expect(patternKeyFor(input)).toBe(expected);
   });
+
+  it.each(['eval "$x"', "ls && python3 -c 'print(1)'", 'echo "$(id)"', "cat a | sh"])(
+    "gives unreadable Bash %j no key, so history can never convert it",
+    (command) => {
+      expect(patternKeyFor({ toolName: "bash", command })).toBeUndefined();
+    },
+  );
 });
 
 describe("listLabelled", () => {

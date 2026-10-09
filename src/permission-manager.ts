@@ -1,4 +1,4 @@
-import { splitBashSegments } from "./bash-segments";
+import { bashInnerCommands, splitBashSegments } from "./bash-segments";
 import { isPermissionState } from "./common";
 import { normalizeInput } from "./input-normalizer";
 import { normalizeFlatConfig } from "./normalize";
@@ -283,24 +283,32 @@ const STATE_RANK: Record<PermissionState, number> = { allow: 0, ask: 1, deny: 2 
  * Commands with substitution never match session approvals.
  * Unsegmentable syntax cannot inherit a prefix allow.
  */
+type BashRuleResult = ReturnType<typeof evaluateFirst>;
+
 function evaluateBashCommand(
   values: string[],
   composedRules: Ruleset,
   fullRules: Ruleset,
 ): ReturnType<typeof evaluateFirst> {
-  const segments = splitBashSegments(values[0] ?? "");
-  if (segments === null) {
+  const command = values[0] ?? "";
+  const inner = bashInnerCommands(command);
+  const needsAsk = (result: BashRuleResult) =>
+    result.rule.action === "allow" ? { rule: evaluate("bash", result.value, [], "ask"), value: result.value } : result;
+  if (inner === null) return needsAsk(evaluateFirst("bash", values, composedRules));
+  const segments = splitBashSegments(command) ?? [];
+  if (segments.length > 1) {
     const whole = evaluateFirst("bash", values, composedRules);
-    return whole.rule.action === "allow"
-      ? { rule: evaluate("bash", whole.value, [], "ask"), value: whole.value }
-      : whole;
+    if (whole.rule.action === "deny") return whole;
   }
-  if (segments.length <= 1) return evaluateFirst("bash", values, fullRules);
-  const whole = evaluateFirst("bash", values, composedRules);
-  if (whole.rule.action === "deny") return whole;
-  return segments
+  const worse = (a: BashRuleResult, b: BashRuleResult) => (STATE_RANK[b.rule.action] > STATE_RANK[a.rule.action] ? b : a);
+  const results = inner.commands.map((part) => evaluateFirst("bash", [part], fullRules));
+  // Wrapper text (`sudo ...`, `bash -c ...`) is gone from the inner commands, so an explicit rule on it still applies.
+  const wrappers = segments
     .map((segment) => evaluateFirst("bash", [segment], fullRules))
-    .reduce((worst, next) => (STATE_RANK[next.rule.action] > STATE_RANK[worst.rule.action] ? next : worst));
+    .filter(({ rule }) => rule.action === "deny" || (rule.action === "ask" && rule.pattern !== "*"));
+  const all = [...results, ...wrappers];
+  const worst = all.length ? all.reduce(worse) : evaluateFirst("bash", values, fullRules);
+  return inner.opaque || inner.elevated ? needsAsk(worst) : worst;
 }
 
 /**

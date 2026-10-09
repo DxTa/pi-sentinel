@@ -67,6 +67,34 @@ describe("PermissionPrompter", () => {
     expect(recordHumanDecision).toHaveBeenCalledWith("eval-human-1", action, expect.any(Number));
   });
 
+  it("sends no pattern key for Bash whose inner commands cannot be read", async () => {
+    const evaluate = vi.fn(async () => ({
+      action: "prompt" as const, reason: "threat_not_benign", candidate: true, attempted: true,
+      evaluationId: "eval-opaque-1", audit: false,
+    }));
+    const prompter = new PermissionPrompter({
+      promptWaitTracker: new PromptWaitTracker({ emit() {} }),
+      getConfig: () => ({ debugLog: false, permissionReviewLog: false, mode: "yolo-auto", yoloAskBashPatterns: [] }),
+      yoloAutoEvaluator: { evaluate },
+      writeReviewLog() {},
+      subagentSessionsDir: "/tmp/subagents",
+      forwardingDir: "/tmp/forwarding",
+      requestPermissionDecisionFromUi: vi.fn(async () => ({ approved: true, state: "approved" as const })),
+    });
+    const bash = (command: string) => prompter.prompt({ hasUI: true, cwd: "/work/repo", ui: { setStatus() {} } } as never, {
+      requestId: "req-opaque-1", source: "tool_call", agentName: null, message: "Need permission",
+      toolName: "bash", command, yoloAutoEligible: true, yoloAutoHardRuleHit: false,
+      yoloAutoWorkspaceLocal: true, yoloAutoOperation: "exec", yoloAutoText: "tool=bash command=x",
+      yoloAutoUnits: command.startsWith("eval") ? ['eval "$x"'] : ["rm $f"], yoloAutoOpaque: command.startsWith("eval"),
+    });
+
+    await bash('eval "$x"');
+    await bash("for f in a; do rm $f; done");
+    expect(evaluate.mock.calls[1]![0]).toMatchObject({ units: ["rm $f"], opaque: false });
+    expect(evaluate.mock.calls[0]![0]).not.toHaveProperty("patternKey");
+    expect(evaluate.mock.calls[1]![0]).toMatchObject({ patternKey: "bash:rm *" });
+  });
+
   it("does not label the evaluation when the decision did not come from a human answer", async () => {
     const recordHumanDecision = vi.fn();
     const prompter = new PermissionPrompter({

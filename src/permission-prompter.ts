@@ -15,7 +15,6 @@ import {
 import { PromptWaitTracker } from "./prompt-state";
 import { decideYoloAuto } from "./yolo-auto-policy";
 import { isReadOnlyBashChain, isReadOnlyBashDiagnostic } from "./bash-command-safety";
-import { wildcardMatch } from "./wildcard-matcher";
 import { buildYoloAutoText, type YoloAutoClient } from "./yolo-auto-client";
 import type { YoloAutoEvaluator } from "./yolo-auto-evaluator";
 import type {
@@ -23,6 +22,7 @@ import type {
   RequestPermissionOptions,
 } from "./permission-dialog";
 import {
+  matchesBashAskPattern,
   matchesYoloAskBashPattern,
   shouldAutoApprovePermissionState,
 } from "./yolo-mode";
@@ -59,6 +59,10 @@ export interface PromptPermissionDetails {
   yoloAutoTextTruncated?: boolean;
   /** True only when the Bash request will run inside SRT. */
   yoloAutoSandboxed?: boolean;
+  /** Redacted inner Bash commands, classified one by one. */
+  yoloAutoUnits?: string[];
+  /** Inner Bash commands cannot all be read statically. */
+  yoloAutoOpaque?: boolean;
   /** Relative path only; never an absolute path or raw input. */
   yoloAutoWorkspaceRelativePath?: string;
 }
@@ -87,22 +91,26 @@ const HUMAN_ACTION_BY_STATE: Record<PermissionDecisionState, HumanAction> = {
   denied_with_reason: "deny",
 };
 
+/** Inner Bash commands for per-command classification; omitted when the command could not be split. */
+function yoloAutoUnitFields(details: PromptPermissionDetails): { units?: string[]; opaque?: boolean } {
+  const units = details.yoloAutoUnits;
+  return units?.length ? { units, opaque: details.yoloAutoOpaque === true } : {};
+}
+
 /** Scope and coarse pattern key for the decision store; omitted without a workspace. */
 function decisionStoreFields(
   details: PromptPermissionDetails,
   cwd: string | undefined,
 ): { scope?: string; patternKey?: string } {
   if (!cwd) return {};
-  return {
-    scope: workspaceScope(cwd),
-    patternKey: patternKeyFor({
-      toolName: details.toolName ?? "unknown",
-      ...(details.command ? { command: details.command } : {}),
-      ...(details.yoloAutoWorkspaceRelativePath
-        ? { workspaceRelativePath: details.yoloAutoWorkspaceRelativePath }
-        : {}),
-    }),
-  };
+  const patternKey = patternKeyFor({
+    toolName: details.toolName ?? "unknown",
+    ...(details.command ? { command: details.command } : {}),
+    ...(details.yoloAutoWorkspaceRelativePath
+      ? { workspaceRelativePath: details.yoloAutoWorkspaceRelativePath }
+      : {}),
+  });
+  return { scope: workspaceScope(cwd), ...(patternKey ? { patternKey } : {}) };
 }
 
 export interface PermissionPrompterDeps {
@@ -193,7 +201,7 @@ export class PermissionPrompter implements PermissionPrompterApi {
       details.forcePromptInYolo === true
       || ((config.mode === "yolo" || config.mode === "yolo-auto")
         && typeof details.command === "string"
-        && (config.yoloAskBashPatterns ?? []).some((pattern) => wildcardMatch(pattern, details.command!)));
+        && matchesBashAskPattern(config.yoloAskBashPatterns ?? [], details.command));
     if (
       details.toolName === "bash"
       && details.yoloAutoWorkspaceLocal === true
@@ -350,6 +358,7 @@ export class PermissionPrompter implements PermissionPrompterApi {
               truncated: details.yoloAutoTextTruncated ?? false,
             }
           : {}),
+        ...yoloAutoUnitFields(details),
         toolCallIdPresent: Boolean(details.toolCallId),
         ...(details.toolCallId ? { toolCallId: details.toolCallId } : {}),
         ...decisionStoreFields(details, cwd),

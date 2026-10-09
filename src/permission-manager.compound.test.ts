@@ -63,3 +63,57 @@ describe("bash compound commands", () => {
     expect(manager().checkPermission("bash", { command: "ls" }).state).toBe("ask");
   });
 });
+
+describe("bash inner commands", () => {
+  const check = (command: string, bash: Record<string, "allow" | "ask" | "deny">, ...patterns: string[]) =>
+    manager(bash).checkPermission("bash", { command }, undefined, session(...patterns)).state;
+  const LOOP = "for f in a b; do rm $f; done";
+
+  it("does not let loop-keyword approvals allow the loop body", () => {
+    expect(check(LOOP, { "*": "ask" }, "for *", "do *", "done")).toBe("ask");
+  });
+
+  it("allows a loop when its inner command is approved", () => {
+    expect(check(LOOP, { "*": "ask" }, "rm *")).toBe("allow");
+  });
+
+  it.each([LOOP, "if true; then rm x; fi", "bash -c 'rm x'", "ls | xargs rm", "find . -exec rm {} +", "(cd x && rm y)"])(
+    "applies a deny on the inner command in %j",
+    (command) => {
+      expect(check(command, { "*": "allow", "rm *": "deny" })).toBe("deny");
+    },
+  );
+
+  it.each([["sudo ls", "sudo *"], ["bash -c 'ls'", "bash *"], ["eval ls", "eval *"]])(
+    "keeps an explicit deny on the wrapper itself in %j",
+    (command, pattern) => {
+      expect(check(command, { "*": "allow", [pattern]: "deny" })).toBe("deny");
+    },
+  );
+
+  it.each([
+    ['eval "$x"', "eval *"],
+    ["python3 -c 'import os'", "python3 *"],
+    ["bash", "bash"],
+    ['ls && eval "$x"', "ls *"],
+  ])("never lets a rule allow unreadable code in %j", (command, pattern) => {
+    expect(check(command, { "*": "ask" }, pattern, "*")).toBe("ask");
+    expect(check(command, { "*": "allow" })).toBe("ask");
+  });
+
+  it("never lets a rule allow an elevated command", () => {
+    expect(check("sudo ls", { "*": "allow" })).toBe("ask");
+    expect(check("sudo ls", { "*": "ask" }, "sudo *", "ls *")).toBe("ask");
+  });
+
+  it("keeps session approvals ahead of a blanket deny for a plain command", () => {
+    expect(check("ls", { "*": "deny" }, "ls *")).toBe("allow");
+    expect(check("command -v git", { "*": "deny" }, "command *")).toBe("allow");
+  });
+
+  it("still allows ordinary approved commands and wrappers around them", () => {
+    expect(check("command -v git", { "*": "ask" }, "command *")).toBe("allow");
+    expect(check("timeout 5 pytest -q", { "*": "ask" }, "pytest *")).toBe("allow");
+    expect(check("FOO=1 pytest -q", { "*": "ask" }, "pytest *")).toBe("allow");
+  });
+});

@@ -34,7 +34,7 @@ describe("describeExternalDirectoryGate", () => {
   });
 
   it.each(["write", "edit"] as const)(
-    "forces a prompt in yolo for external %s tools",
+    "forces a prompt in yolo-auto and manual for external %s tools",
     (toolName) => {
       const result = expectDescriptor(
         describeExternalDirectoryGate(
@@ -52,6 +52,17 @@ describe("describeExternalDirectoryGate", () => {
       expect((result.promptDetails as any).forcePromptInYolo).toBe(true);
     },
   );
+
+  it.each(["write", "edit"] as const)("does not force a prompt for external %s tools in yolo mode", (toolName) => {
+    const result = expectDescriptor(
+      describeExternalDirectoryGate(
+        { toolName, agentName: "worker", input: { path: "../notes.txt" }, toolCallId: `call-${toolName}`, cwd, mode: "yolo" },
+        [],
+      ),
+    );
+
+    expect((result.promptDetails as any).forcePromptInYolo).toBeUndefined();
+  });
 
   it("allows a trusted Pi clipboard direct read without a permission descriptor", () => {
     const clipboardPath = "/var/folders/cg/T/pi-clipboard-b46509f4-a820-4442-9013-73da6d2739d2.png";

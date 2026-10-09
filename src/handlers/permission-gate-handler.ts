@@ -33,6 +33,7 @@ import {
   type ToolRegistry,
 } from "#src/tool-registry";
 import { buildYoloAutoBashContext } from "#src/yolo-auto-bash-context";
+import { forbiddenWriteTarget } from "#src/yolo-forbidden-writes";
 import { shouldRelaxBundledToolDenyInYolo } from "#src/yolo-mode";
 import { describeBashExternalDirectoryGate } from "./gates/bash-external-directory";
 
@@ -118,6 +119,7 @@ export class PermissionGateHandler {
       toolCallId,
       cwd: ctx.cwd,
       sandboxed: sandboxedForYoloAuto,
+      mode: session.config.mode,
     };
 
     session.logger.debug("tool_call.received", {
@@ -164,6 +166,30 @@ export class PermissionGateHandler {
       canConfirm,
       promptPermission,
     };
+
+    // ── yolo hard rule: never write system or credential paths ──────────────
+    const forbiddenWrite = session.config.mode === "yolo"
+      ? forbiddenWriteTarget(tcc.toolName, tcc.input, tcc.cwd)
+      : null;
+    if (forbiddenWrite) {
+      writeReviewLog("permission_request.yolo_forbidden_write", {
+        source: "tool_call",
+        toolCallId: tcc.toolCallId,
+        toolName: tcc.toolName,
+        agentName: tcc.agentName,
+        path: forbiddenWrite,
+      });
+      emitDecision({
+        surface: tcc.toolName,
+        value: forbiddenWrite,
+        result: "deny",
+        resolution: "policy_deny",
+        origin: null,
+        agentName: tcc.agentName ?? null,
+        matchedPattern: null,
+      });
+      return { block: true, reason: `yolo mode never writes to ${forbiddenWrite} (system or credential path).` };
+    }
 
     // ── Trusted Pi dirs: reads + single-script runs, in every mode ──────────
     const trusted = tcc.cwd
@@ -310,6 +336,8 @@ export class PermissionGateHandler {
           yoloAutoHardRuleHit: yoloAutoBashContext.hardRuleHit,
           yoloAutoWorkspaceLocal: yoloAutoBashContext.workspaceLocal,
           yoloAutoCommand: yoloAutoBashContext.command,
+          yoloAutoUnits: yoloAutoBashContext.units,
+          yoloAutoOpaque: yoloAutoBashContext.opaque,
         };
     const bashPathDesc = await describeBashPathGate(
       toolTcc,

@@ -12,7 +12,7 @@ import {
   READ_ONLY_PATH_BEARING_TOOLS,
 } from "#src/path-utils";
 import { isSensitivePath } from "../../yolo-auto-sensitive-paths";
-import { splitBashSegments } from "#src/bash-segments";
+import { bashInnerCommands } from "#src/bash-segments";
 import { suggestSessionPattern } from "#src/pattern-suggest";
 import { formatAskPrompt } from "#src/permission-prompts";
 import { getEditReplacementText, getPermissionLogContext } from "#src/tool-input-preview";
@@ -32,24 +32,30 @@ function deriveSuggestionValue(
   tcc: ToolCallContext,
   check: PermissionCheckResult,
 ): string {
-  if (tcc.toolName === "bash") return check.command ?? "";
+  if (tcc.toolName === "bash") {
+    const command = check.command ?? "";
+    const inner = bashInnerCommands(command);
+    return inner?.commands.length === 1 ? inner.commands[0]! : command;
+  }
   if (tcc.toolName === "mcp") return check.target ?? "mcp";
   return getPathBearingToolPath(tcc.toolName, tcc.input) ?? "*";
 }
 
 /**
- * Compound Bash commands are checked per segment, so a session approval must
- * store one pattern per segment or the same command would keep prompting.
+ * Bash rules match the inner commands, so a session approval stores one pattern
+ * per distinct inner command. Code that cannot be read statically and elevated
+ * commands store nothing, so approving them never covers a later command.
  */
 function sessionApprovalFor(
   tcc: ToolCallContext,
   check: PermissionCheckResult,
   suggestion: { surface: string; pattern: string },
 ): { surface: string; pattern: string } | { surface: string; patterns: string[] } {
-  const segments = tcc.toolName === "bash" ? splitBashSegments(check.command ?? "") : null;
-  if (!segments || segments.length <= 1) return { surface: suggestion.surface, pattern: suggestion.pattern };
-  const patterns = [...new Set(segments.map((segment) => suggestSessionPattern("bash", segment).pattern))];
-  return { surface: "bash", patterns };
+  if (tcc.toolName !== "bash") return { surface: suggestion.surface, pattern: suggestion.pattern };
+  const inner = bashInnerCommands(check.command ?? "");
+  if (!inner || inner.opaque || inner.elevated) return { surface: "bash", patterns: [] };
+  const patterns = [...new Set(inner.commands.map((command) => suggestSessionPattern("bash", command).pattern))];
+  return patterns.length === 1 ? { surface: "bash", pattern: patterns[0]! } : { surface: "bash", patterns };
 }
 
 /**
@@ -125,6 +131,7 @@ export function describeToolGate(
           })
         : undefined
     : undefined;
+  const yoloAutoInner = yoloAutoOperation === "exec" ? bashInnerCommands(yoloAutoCommand ?? "") : null;
   const forcePromptInYolo = hasProtectedEnvSelector(tcc.toolName, tcc.input);
   const yoloAutoHardRuleTarget = yoloAutoWorkspaceLocal && tcc.cwd
     ? toolPath
@@ -155,7 +162,9 @@ export function describeToolGate(
       toolCallId: tcc.toolCallId,
       toolName: tcc.toolName,
       sessionLabel: 'patterns' in sessionApproval
-        ? 'Yes, allow bash ' + sessionApproval.patterns.map((p) => JSON.stringify(p)).join(', ') + ' for this session'
+        ? sessionApproval.patterns.length === 0
+          ? "Yes, allow this once (code that cannot be matched is not remembered)"
+          : 'Yes, allow bash ' + sessionApproval.patterns.map((p) => JSON.stringify(p)).join(', ') + ' for this session'
         : suggestion.label,
       ...permissionLogContext,
       ...(yoloAutoOperation
@@ -163,9 +172,11 @@ export function describeToolGate(
             yoloAutoEligible: check.state === "ask"
               && yoloAutoWorkspaceLocal
               && (yoloAutoOperation !== "exec"
-                || tcc.sandboxed === true
-                // Host Bash reaches the model only without command substitution.
-                || splitBashSegments(yoloAutoCommand ?? "") !== null),
+                // Elevated commands always prompt.
+                || (yoloAutoInner?.elevated !== true
+                  && (tcc.sandboxed === true
+                    // Host Bash reaches the model only without command substitution.
+                    || yoloAutoInner !== null))),
             yoloAutoWorkspaceLocal,
             yoloAutoHardRuleHit,
             ...(yoloAutoWorkspaceRelativePath
@@ -173,7 +184,10 @@ export function describeToolGate(
               : {}),
             yoloAutoOperation,
             ...(yoloAutoOperation === "exec"
-              ? { yoloAutoSandboxed: tcc.sandboxed === true }
+              ? {
+                  yoloAutoSandboxed: tcc.sandboxed === true,
+                  ...(tcc.yoloAutoUnits ? { yoloAutoUnits: [...tcc.yoloAutoUnits], yoloAutoOpaque: tcc.yoloAutoOpaque === true } : {}),
+                }
               : {}),
             ...(yoloAutoText !== undefined ? { yoloAutoText, yoloAutoTextTruncated } : {}),
             ...(forcePromptInYolo ? { forcePromptInYolo: true } : {}),

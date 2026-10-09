@@ -22,7 +22,9 @@ type EvaluationSkipReason =
   | "result_scanning_disabled"
   | "unsupported_tool"
   | "unstable_tool_call_id"
-  | "not_workspace_local";
+  | "not_workspace_local"
+  | "too_many_units"
+  | "unit_too_long";
 
 interface FusionTelemetry {
   modelPolicyReason: string;
@@ -44,6 +46,10 @@ export interface YoloAutoEvaluationRequest {
   workspaceRelativePath?: string;
   text?: string;
   truncated?: boolean;
+  /** Redacted inner Bash commands; each is classified on its own so none hides behind the 256-token window. */
+  units?: string[];
+  /** The inner Bash commands cannot all be read statically. */
+  opaque?: boolean;
   hardRuleHit: boolean;
   sandboxed?: boolean;
   toolCallIdPresent: boolean;
@@ -97,6 +103,32 @@ export interface YoloAutoEvaluatorDeps {
 
 const MODEL_AUDIT_RATE = 0.05;
 const HISTORY_AUDIT_RATE = 0.2;
+const MAX_UNITS = 8;
+/* A token covers at least one UTF-8 byte, so this keeps a unit and its prefix inside the 256-token window. */
+const MAX_UNIT_BYTES = 200;
+
+interface UnitOutcome {
+  result: Extract<YoloAutoClientResult, { status: "complete" }>;
+  policy: FusionDecision;
+}
+
+/* Malformed heads rank as least benign; the policy already turned them into a prompt. */
+const benignOf = (outcome: UnitOutcome): number =>
+  (outcome.result.heads as Partial<YoloAutoHeads>).threat?.benign ?? -1;
+
+/** Allow only when every input allows; the least benign blocking input decides. */
+function decidingOutcome(outcomes: UnitOutcome[]): { deciding: UnitOutcome; blockingCount: number } {
+  const blocking = outcomes.filter((outcome) => outcome.policy.action !== "allow");
+  const deciding = (blocking.length ? blocking : outcomes).reduce((worst, next) =>
+    benignOf(next) < benignOf(worst) ? next : worst);
+  return { deciding, blockingCount: blocking.length };
+}
+
+function unitCapReason(units: string[] | undefined): "too_many_units" | "unit_too_long" | undefined {
+  if (!units) return undefined;
+  if (units.length > MAX_UNITS) return "too_many_units";
+  return units.some((unit) => Buffer.byteLength(unit) > MAX_UNIT_BYTES) ? "unit_too_long" : undefined;
+}
 
 const round2 = (value: number): number => Math.round(value * 100) / 100;
 
@@ -146,6 +178,23 @@ export class YoloAutoEvaluator {
       return decision;
     }
 
+    const capReason = unitCapReason(request.units);
+    if (capReason) {
+      const decision = { ...this.promptDecision(evaluationId, capReason), attempted: false };
+      await this.writeTelemetry(request, decision, {
+        evaluationId,
+        disposition: "skipped",
+        outcome: "skipped",
+        classificationLatencyMs: 0,
+        startupLatencyMs: 0,
+        totalLatencyMs: elapsed(this.now, startedAt),
+        failureReason: capReason,
+        modelBuildId: null,
+        unitCount: request.units!.length,
+      }, inputText);
+      return decision;
+    }
+
     let startupLatencyMs = 0;
     if (this.deps.waitForStartup) {
       const startupStartedAt = this.now();
@@ -169,54 +218,30 @@ export class YoloAutoEvaluator {
       startupLatencyMs = elapsed(this.now, startupStartedAt);
     }
 
-    let result: YoloAutoClientResult;
-    try {
-      result = await this.deps.client.evaluate(inputText);
-    } catch {
-      const decision = this.promptDecision(evaluationId, "transport_failure");
+    const texts = this.classificationTexts(request, inputText);
+    const classified = await this.classify(request, texts, evaluationId);
+    if ("failure" in classified) {
+      const { failure } = classified;
+      const decision = this.promptDecision(failure.evaluationId, failure.reason);
       await this.writeTelemetry(request, decision, {
-        evaluationId,
+        evaluationId: failure.evaluationId,
         disposition: "attempted",
         outcome: "prompt",
-        classificationLatencyMs: 0,
+        classificationLatencyMs: classified.latencyMs,
         startupLatencyMs,
         totalLatencyMs: elapsed(this.now, startedAt),
-        failureReason: "transport_failure",
+        failureReason: failure.reason,
         modelBuildId: null,
       }, inputText);
       return decision;
     }
+    const { outcomes, latencyMs: classificationLatencyMs } = classified;
 
+    const { deciding, blockingCount } = decidingOutcome(outcomes);
+    const { result, policy: policyDecision } = deciding;
     const resultEvaluationId = result.evaluationId;
-    if (result.status === "unavailable") {
-      const decision = this.promptDecision(resultEvaluationId, result.reason);
-      await this.writeTelemetry(request, decision, {
-        evaluationId: resultEvaluationId,
-        disposition: "attempted",
-        outcome: "prompt",
-        classificationLatencyMs: result.totalLatencyMs,
-        startupLatencyMs,
-        totalLatencyMs: elapsed(this.now, startedAt),
-        failureReason: result.reason,
-        modelBuildId: null,
-      }, inputText);
-      return decision;
-    }
-
-    const policyDecision = decideYoloAuto({
-      enabled: request.enabled,
-      permissionState: request.permissionState,
-      source: request.source,
-      eligible: request.eligible,
-      forcedPrompt: request.forcedPrompt,
-      workspaceLocal: request.workspaceLocal,
-      hardRuleHit: request.hardRuleHit,
-      sandboxed: request.sandboxed ?? false,
-      operation: request.operation,
-      toolName: request.toolName,
-      heads: result.heads,
-    });
-    const history = this.applyHistory(request, result.heads, policyDecision);
+    // History may convert one low-confidence input, never a request with several blocking ones.
+    const history = blockingCount > 1 ? { policy: policyDecision } : this.applyHistory(request, result.heads, policyDecision);
     const finalPolicy = history.policy;
     const audit = this.isAudited(finalPolicy, policyDecision);
     const decision: YoloAutoEvaluationDecision = {
@@ -232,16 +257,71 @@ export class YoloAutoEvaluator {
       evaluationId: resultEvaluationId,
       disposition: "attempted",
       outcome: decision.action === "allow" ? "allowed" : "prompt",
-      classificationLatencyMs: result.totalLatencyMs,
+      classificationLatencyMs,
       startupLatencyMs,
       totalLatencyMs: elapsed(this.now, startedAt),
       failureReason: null,
       modelBuildId: result.buildId,
       heads: result.heads,
       audit,
+      ...(request.units ? { unitCount: texts.length, decidingUnit: outcomes.indexOf(deciding) } : {}),
       ...(history.fusion ? { fusion: history.fusion } : {}),
-    }, inputText);
+    }, texts[outcomes.indexOf(deciding)] ?? inputText);
     return decision;
+  }
+
+  /** Classify every input in order; the first unavailable result or transport error stops the request. */
+  private async classify(
+    request: YoloAutoEvaluationRequest,
+    texts: string[],
+    evaluationId: string,
+  ): Promise<
+    | { outcomes: UnitOutcome[]; latencyMs: number }
+    | { failure: { evaluationId: string; reason: YoloAutoFailureReason | "transport_failure" }; latencyMs: number }
+  > {
+    const outcomes: UnitOutcome[] = [];
+    let latencyMs = 0;
+    for (const text of texts) {
+      let result: YoloAutoClientResult;
+      try {
+        result = await this.deps.client.evaluate(text);
+      } catch {
+        return { failure: { evaluationId, reason: "transport_failure" }, latencyMs };
+      }
+      latencyMs += result.totalLatencyMs;
+      if (result.status === "unavailable") {
+        return { failure: { evaluationId: result.evaluationId, reason: result.reason }, latencyMs };
+      }
+      outcomes.push({
+        result,
+        policy: decideYoloAuto({
+          enabled: request.enabled,
+          permissionState: request.permissionState,
+          source: request.source,
+          eligible: request.eligible,
+          forcedPrompt: request.forcedPrompt,
+          workspaceLocal: request.workspaceLocal,
+          hardRuleHit: request.hardRuleHit,
+          sandboxed: request.sandboxed ?? false,
+          operation: request.operation,
+          toolName: request.toolName,
+          heads: result.heads,
+        }),
+      });
+    }
+    return { outcomes, latencyMs };
+  }
+
+  /**
+   * The model inputs for one request. Compound Bash commands add every inner command
+   * to the whole command: the whole keeps loop and group context, while the parts
+   * cover what the 256-token window cuts off.
+   */
+  private classificationTexts(request: YoloAutoEvaluationRequest, inputText: string): string[] {
+    if (!request.units?.length) return [inputText];
+    const units = request.units.map((command) =>
+      buildYoloAutoText({ toolName: request.toolName, operation: request.operation, command }));
+    return units.length === 1 && units[0] === inputText ? units : [inputText, ...units];
   }
 
   /** History-driven allows are the learned ones, so they are audited more often to get unbiased labels. */
@@ -351,6 +431,9 @@ export class YoloAutoEvaluator {
       audit?: boolean;
       truncated?: boolean;
       fusion?: FusionTelemetry;
+      /** Model inputs for a compound Bash request, and the index of the one that decided. */
+      unitCount?: number;
+      decidingUnit?: number;
     },
     inputText: string,
   ): Promise<void> {
@@ -376,6 +459,13 @@ export class YoloAutoEvaluator {
       policyReason: decision.reason,
       failureReason: details.failureReason,
       modelBuildId: details.modelBuildId,
+      ...(details.unitCount !== undefined
+        ? {
+            unitCount: details.unitCount,
+            ...(details.decidingUnit !== undefined ? { decidingUnit: details.decidingUnit } : {}),
+            opaque: request.opaque === true,
+          }
+        : {}),
       ...(details.fusion
         ? {
             modelPolicyReason: details.fusion.modelPolicyReason,

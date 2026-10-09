@@ -51,6 +51,39 @@ request -> canonical workspace file check or permission/path/network gates
 
 SRT is the only sandbox backend. SRT-wrapped commands can read the repository and working directory, configured binds, standard runtime/system paths, temporary directories, selected home paths such as `~/.config`, `~/.gitconfig`, and `~/.gitignore`, and the pi-sentinel/SRT package roots. The repository and configured writable binds are writable. Known credential paths are masked by patterns, not by complete secret detection; project scripts and tests remain visible inside the repository.
 
+### Commands inside loops and wrappers
+
+Rules, stored approvals, `yolo` ask patterns, the `yolo-auto` history key, the workspace `cd` check, and the model all use the commands that really run, not the text around them.
+
+- **Removed:** loop, `if`, group, and subshell syntax; `VAR=x` prefixes; `env`, `timeout`, `nice`, `time`, `command`, `nohup`, and `exec`.
+- **Read:** `xargs CMD`, `find -exec|-execdir|-ok|-okdir CMD`, `bash|sh|zsh|dash -c '<literal>'` (two levels), and `sudo CMD`. A deny rule or ask pattern on the wrapper itself (for example `sudo *`) still applies.
+- **`sudo` always prompts.** No rule, stored approval, or `yolo-auto` decision allows it. Classic `yolo` mode still auto-approves it unless an ask pattern matches the inner command.
+- **Opaque code never inherits an allow.** This covers `eval`, `source`, `trap`, interpreter `-c`/`-e` (`python`, `node`, `perl`, `ruby`, `php`), `bash` without a script, a `$cmd` command name, `case`, function definitions, a `PATH=`/`LD_*`/`IFS=` prefix, and wrapper options pi-sentinel does not know. Rules cannot allow it, approving it stores nothing, and history cannot convert it. The model can still allow it at the normal thresholds.
+- **Model input:** the whole command plus each inner command, each classified alone. A request is allowed only when every input is allowed. More than 8 inner commands, or one longer than 200 bytes, prompts. The byte cap keeps each input inside the model's 256-token window, because a token is never shorter than one byte.
+- **History key:** the sorted inner-command patterns, for example `bash:cd *|rm *`. Keys saved earlier age out of the 30-day window.
+
+Approvals saved by earlier versions can contain keyword or wrapper patterns such as `for *`, `do *`, `done`, or `bash *`. They no longer match. List and remove them:
+
+```sh
+grep -noE '"(for|while|until|if|then|elif|else|do|done|fi|select|case|esac|bash|sh|zsh|dash|eval|source|xargs|env|timeout|sudo|nohup|time|command|exec|nice)( [^"]*)?"[[:space:]]*:[[:space:]]*"[a-z]+"' ~/.pi/agent/permissions.json .pi/permissions.json
+```
+
+## `yolo` mode: hard rules
+
+`yolo` lets requests run without a prompt, including external directories, network `ask` verdicts, and writes outside the workspace, except these hard rules:
+
+- **Denied, no prompt:** `write`, `edit`, and readable Bash commands that write to a forbidden path: `/etc`, `/System`, `/Library`, `/usr` (except `/usr/local`), `/bin`, `/sbin`, `/private/etc`, `/var` (except `/var/folders` and `/var/tmp`), `~/.ssh`, `~/.aws`, and `~/.gnupg`. Symlinks into these paths count, including `link/../etc`. Bash writes are redirects (`>`, `>>`, `&>`) and the verbs `cp`, `mv`, `ln`, `install`, `rm`, `touch`, `mkdir`, `tee`, `truncate`, `chmod`, `chown`, `dd of=`, `sed -i`, `curl -o`, and `wget -O`. Reads are never denied.
+- **Prompt:** `rm`, `ssh`, `git push`, and kubectl commands that change a cluster (`apply`, `create`, `delete`, `edit`, `patch`, `replace`, `set`, `scale`, `rollout` except `status`/`history`, `drain`, `cordon`, `uncordon`, `taint`, `label`, `annotate`, `autoscale`, `run`, `expose`, `cp`). Matching uses the executable name and subcommand, so `/bin/rm`, `git -C repo push`, and `kubectl -n prod delete` count while `git log --grep push` does not. Add your own with `yoloAskBashPatterns`.
+- **Still protected:** explicit `deny` rules in your config, explicit denied network domains, and `.env*` protection. SRT sandbox grant prompts are unchanged.
+
+Limits:
+
+- The forbidden-path check is best effort. It reads only commands the parser can read, so `eval`, interpreter code (`python -c`), and writer commands not in the list (`tar -C`, `unzip -d`, `git clone <dir>`) pass. The SRT sandbox stays on and is the backstop.
+- A `cd` inside a subshell is tracked as if it carried over, so a later relative write in the same command can be denied by mistake.
+- `kubectl exec` is not treated as a write.
+
+`manual` and `yolo-auto` are unchanged, including forced prompts for external writes.
+
 ## `yolo-auto` worker
 
 In `yolo-auto` mode, pi-sentinel starts or reuses one shared, detached Node worker. The worker uses the Apache-2.0 Lion Warden classifier, pinned to revision `77888f617584758f904faefd6f38d4cf926f6d5d`. The model and tokenizer are not bundled; first startup downloads about 130 MB into `~/.pi/agent/runtime/pi-sentinel/yolo-auto/models`, verifies SHA-256 hashes, and resumes interrupted downloads. The worker fails closed: unavailable or invalid model assets mean permission requests prompt.
@@ -89,7 +122,7 @@ Run `node scripts/calibration-report.mjs [calibration.jsonl] [review.jsonl]` to 
 | `/sandbox-grant network --domain <domain> [--ttl <duration>]` | Grant a sandbox network domain. |
 | `/sandbox-revoke <grant-id>` | Revoke a sandbox grant. |
 
-`mode` selects one behavior: `manual` prompts ordinary gated requests, `yolo` enables classic eligible auto-approval, and `yolo-auto` adds model-backed approval for eligible read/list/write/edit and already-sandboxed Bash requests while retaining classic yolo bypass elsewhere. The deterministic canonical workspace file rule applies in every mode. Protected Bash patterns, `.env*` writes/edits, and external paths still use their safety gates.
+`mode` selects one behavior: `manual` prompts ordinary gated requests, `yolo` enables classic eligible auto-approval, and `yolo-auto` adds model-backed approval for eligible read/list/write/edit and already-sandboxed Bash requests while retaining classic yolo bypass elsewhere. The deterministic canonical workspace file rule applies in every mode. In `yolo` mode, only the hard rules below stop a request; `yolo-auto` keeps its external-path and `.env*` prompts.
 
 ## Logs
 

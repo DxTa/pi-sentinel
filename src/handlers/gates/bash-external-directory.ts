@@ -1,5 +1,5 @@
-import { getNonEmptyString, toRecord } from "#src/common";
 import { isReadOnlyBashCommand } from "#src/bash-command-safety";
+import { getNonEmptyString, toRecord } from "#src/common";
 import { isPathWithinDirectory, normalizePathForComparison } from "#src/path-utils";
 import type { Rule } from "#src/rule";
 import { deriveApprovalPattern } from "#src/session-rules";
@@ -69,10 +69,6 @@ type CheckPermissionFn = (
   sessionRules?: Rule[],
 ) => PermissionCheckResult;
 
-function shouldForcePromptBashExternalDirectoryInYolo(command: string): boolean {
-  return !isReadOnlyBashCommand(command);
-}
-
 /**
  * Build a pure descriptor for the bash external-directory permission gate.
  *
@@ -103,7 +99,7 @@ export async function describeBashExternalDirectoryGate(
     tcc.cwd,
     externalPaths,
   );
-  if (unsafeMutationPaths.length > 0) {
+  if (unsafeMutationPaths.length > 0 && tcc.mode !== "yolo") {
     if (hasPotentiallyMutatingCommand(command)) {
       const hardBlockMessage =
         "Blocked mutating Bash command outside workspace or temporary roots: "
@@ -188,7 +184,7 @@ export async function describeBashExternalDirectoryGate(
   );
 
   const patterns = uncoveredPaths.map((path) => deriveApprovalPattern(path));
-  const forcePromptInYolo = shouldForcePromptBashExternalDirectoryInYolo(command);
+  const forcePromptInYolo = tcc.mode !== "yolo" && !isReadOnlyBashCommand(command);
 
   return {
     surface: "external_directory",

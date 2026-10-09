@@ -31,7 +31,7 @@
     },
     "yoloAskBashPatterns": {
       "description": "Bash command wildcard patterns that still prompt in yolo and yolo-auto modes.",
-      "markdownDescription": "Bash command wildcard patterns that still prompt in `yolo` and `yolo-auto` modes.\n\nPatterns use the same wildcard matching as `permission.bash` and are matched against the raw bash command string. Example: `git push *` or `git commit *`.",
+      "markdownDescription": "Bash command wildcard patterns that still prompt in `yolo` and `yolo-auto` modes.\n\nPatterns use the same wildcard matching as `permission.bash` and are matched against the whole command, each segment, and each inner command, so `cd x && git push` and loop bodies match too. Example: `git push *` or `git commit *`.",
       "type": "array",
       "items": {
         "type": "string",

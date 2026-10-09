@@ -407,4 +407,111 @@ describe("YoloAutoEvaluator", () => {
       }),
     );
   });
+
+  describe("Bash inner commands", () => {
+    const shellHeads = (benign: number): YoloAutoHeads => ({
+      ...heads,
+      threat: Object.fromEntries(Object.keys(heads.threat).map((k) => [k, k === "benign" ? benign : (1 - benign) / 6])),
+      tool_action: oneHot(YOLO_AUTO_LABEL_SCHEMA.tool_action, "exec"),
+      tool_class: oneHot(YOLO_AUTO_LABEL_SCHEMA.tool_class, "shell"),
+    });
+    const { workspaceRelativePath: _path, ...base } = request;
+    // The whole text is what a 256-token window would keep: its tail is cut off.
+    const execRequest = {
+      ...base,
+      operation: "exec" as const,
+      toolName: "bash",
+      text: "tool=bash command=cd src && echo hi",
+      units: ["cd src", "rm -rf build"],
+      opaque: false,
+    };
+    const classify = (benignFor: (text: string) => number) =>
+      vi.fn(async (text: string) => ({ ...safeResult, evaluationId: `eval-${text.length}`, heads: shellHeads(benignFor(text)) }));
+    const rmIsRisky = (text: string) => (text.includes("rm -rf") ? 0.1 : 0.99);
+
+    it("classifies the whole command and every inner command; one risky unit prompts", async () => {
+      const evaluate = classify(rmIsRisky);
+      const writeReviewLog = vi.fn();
+      const evaluator = new YoloAutoEvaluator({ client: { evaluate }, writeReviewLog, random: () => 0.99 });
+
+      await expect(evaluator.evaluate(execRequest)).resolves.toMatchObject({ action: "prompt", reason: "threat_not_benign" });
+      expect(evaluate.mock.calls.map(([text]) => text)).toEqual([
+        "tool=bash command=cd src && echo hi",
+        "tool=bash command=cd src",
+        "tool=bash command=rm -rf build",
+      ]);
+      expect(writeReviewLog).toHaveBeenLastCalledWith("yolo_auto.evaluation", expect.objectContaining({
+        unitCount: 3, decidingUnit: 2, opaque: false,
+      }));
+    });
+
+    it("allows only when every unit allows, and stores the least benign unit", async () => {
+      const recordEvaluation = vi.fn();
+      const evaluate = classify((text) => (text.endsWith("cd src") ? 0.95 : 0.99));
+      const evaluator = new YoloAutoEvaluator({ client: { evaluate }, recordEvaluation, random: () => 0.99 });
+
+      await expect(evaluator.evaluate({ ...execRequest, scope: "ws:abc", patternKey: "bash:cd *|rm *" }))
+        .resolves.toMatchObject({ action: "allow", reason: "model_allow" });
+      expect(recordEvaluation).toHaveBeenCalledOnce();
+      expect(recordEvaluation).toHaveBeenCalledWith(expect.objectContaining({ heads: shellHeads(0.95), modelAction: "allow" }));
+    });
+
+    it("uses a single call for a plain command", async () => {
+      const evaluate = classify(() => 0.99);
+      const evaluator = new YoloAutoEvaluator({ client: { evaluate }, random: () => 0.99 });
+
+      await evaluator.evaluate({ ...execRequest, text: "tool=bash command=ls -la", units: ["ls -la"] });
+      expect(evaluate).toHaveBeenCalledOnce();
+    });
+
+    it.each([
+      ["too_many_units", Array.from({ length: 9 }, (_, i) => `echo ${i}`)],
+      ["unit_too_long", ["echo " + "x".repeat(200)]],
+      ["unit_too_long", ["echo " + "é".repeat(100)]],
+    ])("prompts with %s without contacting the worker", async (reason, units) => {
+      const evaluate = classify(() => 0.99);
+      const evaluator = new YoloAutoEvaluator({ client: { evaluate }, random: () => 0.99 });
+
+      await expect(evaluator.evaluate({ ...execRequest, units })).resolves.toMatchObject({ action: "prompt", reason, attempted: false });
+      expect(evaluate).not.toHaveBeenCalled();
+    });
+
+    it("prompts instead of throwing when several inputs return malformed heads", async () => {
+      const evaluate = vi.fn(async () => ({ ...safeResult, heads: {} as unknown as YoloAutoHeads }));
+      const evaluator = new YoloAutoEvaluator({ client: { evaluate }, random: () => 0.99 });
+
+      await expect(evaluator.evaluate(execRequest)).resolves.toMatchObject({ action: "prompt", reason: "invalid_model_output" });
+    });
+
+    it("fingerprints the input that decided in the calibration record", async () => {
+      const writeCalibrationLog = vi.fn();
+      const evaluator = new YoloAutoEvaluator({ client: { evaluate: classify(rmIsRisky) }, writeCalibrationLog, random: () => 0.99 });
+
+      await evaluator.evaluate(execRequest);
+      await vi.waitFor(() => expect(writeCalibrationLog).toHaveBeenCalled());
+      const decidingText = "tool=bash command=rm -rf build";
+      expect(writeCalibrationLog).toHaveBeenCalledWith(expect.objectContaining({
+        textLength: decidingText.length,
+        textSha256: createHash("sha256").update(decidingText).digest("hex"),
+      }));
+    });
+
+    it("lets history convert only a single low-confidence unit, never two blocking units", async () => {
+      const strongHistory = () => neighbours({ approvals: 3, approvalWeight: 2.8, approvalDays: 2 });
+      const lowIf = (match: (text: string) => boolean) => classify((text) => (match(text) ? 0.6 : 0.99));
+      const request1 = { ...execRequest, scope: "ws:abc", patternKey: "bash:cd *|rm *" };
+
+      const one = new YoloAutoEvaluator({
+        client: { evaluate: lowIf((text) => text.endsWith("rm -rf build")) },
+        summarizeNeighbours: strongHistory, random: () => 0.99,
+      });
+      await expect(one.evaluate(request1)).resolves.toMatchObject({ action: "allow", reason: "neighbour_workspace_approved" });
+
+      const two = new YoloAutoEvaluator({
+        client: { evaluate: lowIf((text) => !text.endsWith("echo hi")) },
+        summarizeNeighbours: strongHistory, random: () => 0.99,
+      });
+      await expect(two.evaluate(request1)).resolves.toMatchObject({ action: "prompt", reason: "threat_benign_low_confidence" });
+    });
+  });
 });

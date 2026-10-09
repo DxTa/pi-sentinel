@@ -8,6 +8,7 @@ import { chmodSync, closeSync, mkdirSync, openSync } from "node:fs";
 import { dirname, extname } from "node:path";
 import { DatabaseSync } from "node:sqlite";
 
+import { bashInnerCommands } from "./bash-segments";
 import { suggestBashPattern } from "./pattern-suggest";
 import { YOLO_AUTO_LABEL_SCHEMA, type YoloAutoHeadName } from "./yolo-auto-label-schema";
 import type { YoloAutoHeads } from "./yolo-auto-policy";
@@ -67,12 +68,22 @@ const MIN_HUMAN_DENIAL_MS = 1_000;
 const LIST_TOOLS = new Set(["ls", "find", "grep"]);
 
 /** Coarse, low-leakage key: bash command prefix or tool + top-level dir + extension. */
+/*
+ * Bash keys list every inner command, so a pattern approved for `cd *` never
+ * covers `cd x && rm y`. Code that cannot be read gets no key: history must not
+ * convert it.
+ */
 export function patternKeyFor(input: {
   toolName: string;
   command?: string;
   workspaceRelativePath?: string;
-}): string {
-  if (input.toolName === "bash") return `bash:${suggestBashPattern(input.command ?? "") || "*"}`;
+}): string | undefined {
+  if (input.toolName === "bash") {
+    const inner = bashInnerCommands(input.command ?? "");
+    if (!inner || inner.opaque) return undefined;
+    const patterns = new Set(inner.commands.map((command) => suggestBashPattern(command) || "*"));
+    return `bash:${[...patterns].sort().join("|") || "*"}`;
+  }
   const path = input.workspaceRelativePath;
   if (!path) return `${input.toolName}:*`;
   const segments = path.split("/").filter(Boolean);
