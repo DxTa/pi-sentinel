@@ -7,6 +7,7 @@ import { type SettingItem, SettingsList } from "@earendil-works/pi-tui";
 
 import {
   DEFAULT_EXTENSION_CONFIG,
+  type ModeScope,
   type PermissionMode,
   type PermissionSystemExtensionConfig,
 } from "./extension-config";
@@ -18,6 +19,7 @@ interface PermissionSystemConfigController {
     next: PermissionSystemExtensionConfig,
     ctx: ExtensionCommandContext,
     modeWasExplicitlySelected: boolean,
+    modeScope: ModeScope,
   ): boolean;
   resetConfig?(ctx: ExtensionCommandContext): void;
   getConfigPath(cwd?: string | null): string;
@@ -32,6 +34,7 @@ interface PermissionSystemConfigController {
 
 const ON_OFF = ["on", "off"];
 const MODES: PermissionMode[] = ["manual", "yolo", "yolo-auto"];
+const MODE_SCOPES: ModeScope[] = ["session", "project", "global"];
 const COMMAND_ARGUMENTS = [
   {
     value: "show",
@@ -102,6 +105,7 @@ function summarizeConfig(
 export function buildSettingItems(
   config: PermissionSystemExtensionConfig,
   sandboxEnabled?: boolean,
+  modeScope: ModeScope = "global",
 ): SettingItem[] {
   const sandboxItem: SettingItem[] = sandboxEnabled === undefined ? [] : [{
     id: "sandbox",
@@ -119,6 +123,14 @@ export function buildSettingItems(
         "Manual prompts; yolo auto-approves safe checks; yolo-auto uses model-backed workspace read/list approval with classic yolo elsewhere",
       currentValue: config.mode,
       values: MODES,
+    },
+    {
+      id: "modeScope",
+      label: "Mode scope",
+      description:
+        "Where the next mode change is stored: this session only, this project's .pi/permissions.json, or the global config",
+      currentValue: modeScope,
+      values: MODE_SCOPES,
     },
     {
       id: "permissionReviewLog",
@@ -207,8 +219,9 @@ async function openSettingsModal(
     (_tui, _theme, _keybindings, done) => {
       let current = controller.getConfig();
       let selectedMode = current.mode;
+      let modeScope: ModeScope = "global";
       const settingsList = new SettingsList(
-        buildSettingItems(current, controller.getSandboxEnabled?.()),
+        buildSettingItems(current, controller.getSandboxEnabled?.(), modeScope),
         10,
         getSettingsListTheme(),
         (id, newValue) => {
@@ -218,9 +231,13 @@ async function openSettingsModal(
             if (enabled !== undefined) settingsList.updateValue("sandbox", toOnOff(enabled));
             return;
           }
+          if (id === "modeScope") {
+            modeScope = newValue as ModeScope;
+            return;
+          }
           const next = applySetting(current, id, newValue);
           const modeWasExplicitlySelected = id === "mode";
-          const saved = controller.setConfig(next, ctx, modeWasExplicitlySelected);
+          const saved = controller.setConfig(next, ctx, modeWasExplicitlySelected, modeScope);
           const effectiveConfig = controller.getConfig();
           if (modeWasExplicitlySelected) {
             selectedMode = saved ? next.mode : effectiveConfig.mode;
@@ -268,7 +285,7 @@ function handleArgs(
     if (controller.resetConfig) {
       controller.resetConfig(ctx);
     } else {
-      controller.setConfig(cloneDefaultConfig(), ctx, true);
+      controller.setConfig(cloneDefaultConfig(), ctx, true, "global");
     }
     ctx.ui.notify("Permission system settings reset to defaults.", "info");
     return true;

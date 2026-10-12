@@ -745,8 +745,8 @@ export default function piPermissionSystemExtension(pi: ExtensionAPI): void {
 
   registerPermissionSystemCommand(pi, {
     getConfig: () => runtime.config,
-    setConfig: (next, ctx, modeWasExplicitlySelected) =>
-      saveExtensionConfig(runtime, next, ctx, modeWasExplicitlySelected),
+    setConfig: (next, ctx, modeWasExplicitlySelected, modeScope) =>
+      saveExtensionConfig(runtime, next, ctx, modeWasExplicitlySelected, modeScope),
     resetConfig: (ctx) => resetExtensionConfig(runtime, ctx),
     getConfigPath: (cwd) =>
       [
@@ -906,6 +906,7 @@ export default function piPermissionSystemExtension(pi: ExtensionAPI): void {
     clearSessionNetworkApprovals();
     clearMaskedAuthSessionGrants();
     sandboxRuntime.clearGrants();
+    runtime.sessionMode = undefined;
     recordInteractiveSession(runtime, ctx);
     return lifecycle.handleSessionStart(event, ctx);
   });

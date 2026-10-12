@@ -8,6 +8,9 @@ export const EXTENSION_ID = "pi-sentinel";
 
 export type PermissionMode = "manual" | "yolo" | "yolo-auto";
 
+/** Where an explicit mode choice is stored. */
+export type ModeScope = "session" | "project" | "global";
+
 export interface PermissionSystemExtensionConfig {
   debugLog: boolean;
   permissionReviewLog: boolean;

@@ -6,6 +6,11 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 
 import piPermissionSystemExtension from "./index";
 
+vi.mock("@earendil-works/pi-coding-agent", async (importOriginal) => ({
+  ...(await importOriginal<Record<string, unknown>>()),
+  getSettingsListTheme: () => ({}),
+}));
+
 const tempPaths: string[] = [];
 
 async function makeTempDir(prefix: string): Promise<string> {
@@ -144,5 +149,47 @@ describe("piPermissionSystemExtension workspace config", () => {
 
     expect(result).toBeUndefined();
     expect(event.input.command).toBe("pwd");
+  });
+});
+
+describe("piPermissionSystemExtension session mode", () => {
+  it("drops a session-scope mode when a new session starts", { timeout: 30_000 }, async () => {
+    const agentDir = await makeTempDir("pi-agent-");
+    const projectDir = await makeTempDir("pi-project-");
+    process.env.PI_CODING_AGENT_DIR = agentDir;
+    await writeFile(path.join(agentDir, "permissions.json"), JSON.stringify({ mode: "manual" }), "utf8");
+
+    const pi = createFakePi();
+    piPermissionSystemExtension(pi as never);
+    const notify = vi.fn();
+    const chooseSessionYolo = async (factory: (...args: unknown[]) => { handleInput(data: string): void }) => {
+      const list = factory({}, {}, {}, () => undefined);
+      list.handleInput("\x1b[B"); // sandbox row -> mode row
+      list.handleInput("\x1b[B"); // select scope row
+      list.handleInput(" "); // global -> session
+      list.handleInput("\x1b[A"); // select mode row
+      list.handleInput(" "); // manual -> yolo
+    };
+    const ctx = {
+      cwd: projectDir,
+      hasUI: true,
+      ui: { notify, setStatus: vi.fn(), custom: chooseSessionYolo },
+      sessionManager: { getEntries: () => [], getSessionDir: () => null },
+    };
+    const modePattern = new RegExp("mode=([a-z-]+)");
+    const lastShownMode = async () => {
+      notify.mockClear();
+      await pi.commands.get("sentinel")?.handler("show", ctx);
+      return modePattern.exec(String(notify.mock.calls[0]?.[0]))?.[1];
+    };
+
+    await pi.handlers.get("session_start")?.({ reason: "startup" }, ctx);
+    expect(await lastShownMode()).toBe("manual");
+
+    await pi.commands.get("sentinel")?.handler("", ctx);
+    expect(await lastShownMode()).toBe("yolo");
+
+    await pi.handlers.get("session_start")?.({ reason: "new" }, ctx);
+    expect(await lastShownMode()).toBe("manual");
   });
 });

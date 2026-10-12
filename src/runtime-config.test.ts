@@ -5,7 +5,12 @@ import path from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
 import { getLegacyGlobalPolicyPath } from "./config-paths";
-import { resetExtensionConfig, saveExtensionConfig, saveSandboxEnabled } from "./runtime";
+import {
+  refreshExtensionConfig,
+  resetExtensionConfig,
+  saveExtensionConfig,
+  saveSandboxEnabled,
+} from "./runtime";
 
 const tempPaths: string[] = [];
 
@@ -189,6 +194,212 @@ describe("saveExtensionConfig", () => {
     }
   });
 
+  it("saves an explicit mode choice to the project file only when scope is project", async () => {
+    const agentDir = await mkdtemp(path.join(tmpdir(), "pi-runtime-project-scope-"));
+    const projectDir = await mkdtemp(path.join(tmpdir(), "pi-runtime-project-scope-cwd-"));
+    tempPaths.push(agentDir, projectDir);
+    const globalPath = path.join(agentDir, "permissions.json");
+    const projectPath = path.join(projectDir, ".pi", "permissions.json");
+    await writeFile(globalPath, JSON.stringify({ mode: "manual" }), "utf8");
+    await mkdir(path.dirname(projectPath), { recursive: true });
+    await writeFile(projectPath, JSON.stringify({ permission: { write: "deny" } }), "utf8");
+
+    const runtime = {
+      agentDir,
+      runtimeContext: { cwd: projectDir },
+      config: { mode: "manual" },
+      writeDebugLog: vi.fn(),
+    };
+    const ctx = { cwd: projectDir, ui: { setStatus: vi.fn(), notify: vi.fn() } };
+
+    const saved = saveExtensionConfig(
+      runtime as never,
+      { debugLog: false, permissionReviewLog: false, mode: "yolo", yoloAskBashPatterns: [] },
+      ctx as never,
+      true,
+      "project",
+    );
+
+    expect(saved).toBe(true);
+    expect(JSON.parse(await readFile(projectPath, "utf8"))).toEqual({
+      permission: { write: "deny" },
+      mode: "yolo",
+    });
+    expect(JSON.parse(await readFile(globalPath, "utf8")).mode).toBe("manual");
+    expect(runtime.config).toMatchObject({ mode: "yolo" });
+  });
+
+  it("keeps a session-scope mode in memory and writes no files", async () => {
+    const agentDir = await mkdtemp(path.join(tmpdir(), "pi-runtime-session-scope-"));
+    const projectDir = await mkdtemp(path.join(tmpdir(), "pi-runtime-session-scope-cwd-"));
+    tempPaths.push(agentDir, projectDir);
+    const globalPath = path.join(agentDir, "permissions.json");
+    await writeFile(globalPath, JSON.stringify({ mode: "manual" }), "utf8");
+
+    const previousMode = process.env.PI_SENTINEL_MODE;
+    process.env.PI_SENTINEL_MODE = "yolo-auto";
+    try {
+      const runtime: Record<string, unknown> = {
+        agentDir,
+        runtimeContext: { cwd: projectDir },
+        config: { mode: "yolo-auto" },
+        writeDebugLog: vi.fn(),
+      };
+      const ctx = { cwd: projectDir, ui: { setStatus: vi.fn(), notify: vi.fn() } };
+
+      saveExtensionConfig(
+        runtime as never,
+        { debugLog: false, permissionReviewLog: false, mode: "yolo", yoloAskBashPatterns: [] },
+        ctx as never,
+        true,
+        "session",
+      );
+
+      expect(runtime.sessionMode).toBe("yolo");
+      expect(runtime.config).toMatchObject({ mode: "yolo" });
+      expect(JSON.parse(await readFile(globalPath, "utf8")).mode).toBe("manual");
+      await expect(readFile(path.join(projectDir, ".pi", "permissions.json"), "utf8")).rejects.toThrow();
+    } finally {
+      if (previousMode === undefined) delete process.env.PI_SENTINEL_MODE;
+      else process.env.PI_SENTINEL_MODE = previousMode;
+    }
+  });
+
+  it("clears the session mode when a persistent scope is chosen", async () => {
+    const agentDir = await mkdtemp(path.join(tmpdir(), "pi-runtime-session-clear-"));
+    const projectDir = await mkdtemp(path.join(tmpdir(), "pi-runtime-session-clear-cwd-"));
+    tempPaths.push(agentDir, projectDir);
+    const runtime: Record<string, unknown> = {
+      agentDir,
+      runtimeContext: { cwd: projectDir },
+      config: { mode: "yolo" },
+      sessionMode: "yolo",
+      writeDebugLog: vi.fn(),
+    };
+    const ctx = { cwd: projectDir, ui: { setStatus: vi.fn(), notify: vi.fn() } };
+
+    saveExtensionConfig(
+      runtime as never,
+      { debugLog: false, permissionReviewLog: false, mode: "manual", yoloAskBashPatterns: [] },
+      ctx as never,
+      true,
+      "global",
+    );
+
+    expect(runtime.sessionMode).toBeUndefined();
+    expect(runtime.config).toMatchObject({ mode: "manual" });
+  });
+
+  it("warns with the project path when a project mode shadows an explicit global save", async () => {
+    const agentDir = await mkdtemp(path.join(tmpdir(), "pi-runtime-shadow-"));
+    const projectDir = await mkdtemp(path.join(tmpdir(), "pi-runtime-shadow-cwd-"));
+    tempPaths.push(agentDir, projectDir);
+    const projectPath = path.join(projectDir, ".pi", "permissions.json");
+    await mkdir(path.dirname(projectPath), { recursive: true });
+    await writeFile(projectPath, JSON.stringify({ mode: "manual" }), "utf8");
+    const runtime = {
+      agentDir,
+      runtimeContext: { cwd: projectDir },
+      config: { mode: "manual" },
+      writeDebugLog: vi.fn(),
+    };
+    const ctx = { cwd: projectDir, ui: { setStatus: vi.fn(), notify: vi.fn() } };
+
+    saveExtensionConfig(
+      runtime as never,
+      { debugLog: false, permissionReviewLog: false, mode: "yolo", yoloAskBashPatterns: [] },
+      ctx as never,
+      true,
+      "global",
+    );
+
+    expect(ctx.ui.notify).toHaveBeenCalledWith(
+      expect.stringContaining(projectPath),
+      "warning",
+    );
+    expect(runtime.config).toMatchObject({ mode: "manual" });
+  });
+
+  it("does not persist an active session mode when another setting is saved", async () => {
+    const agentDir = await mkdtemp(path.join(tmpdir(), "pi-runtime-session-leak-"));
+    const projectDir = await mkdtemp(path.join(tmpdir(), "pi-runtime-session-leak-cwd-"));
+    tempPaths.push(agentDir, projectDir);
+    const globalPath = path.join(agentDir, "permissions.json");
+    await writeFile(globalPath, JSON.stringify({ mode: "manual" }), "utf8");
+    const runtime = {
+      agentDir,
+      runtimeContext: { cwd: projectDir },
+      config: { mode: "yolo" },
+      sessionMode: "yolo",
+      writeDebugLog: vi.fn(),
+    };
+    const ctx = { cwd: projectDir, ui: { setStatus: vi.fn(), notify: vi.fn() } };
+
+    saveExtensionConfig(
+      runtime as never,
+      { debugLog: true, permissionReviewLog: false, mode: "yolo", yoloAskBashPatterns: [] },
+      ctx as never,
+    );
+
+    expect(JSON.parse(await readFile(globalPath, "utf8"))).toMatchObject({ mode: "manual", debugLog: true });
+    expect(runtime.config).toMatchObject({ mode: "yolo" });
+  });
+
+  it("applies a session-scope mode without reading or writing config files", async () => {
+    const agentDir = await mkdtemp(path.join(tmpdir(), "pi-runtime-session-nofile-"));
+    tempPaths.push(agentDir);
+    const globalPath = path.join(agentDir, "permissions.json");
+    await writeFile(globalPath, "{ not json", "utf8");
+    const runtime: Record<string, unknown> = {
+      agentDir,
+      runtimeContext: { cwd: agentDir },
+      config: { mode: "manual" },
+      writeDebugLog: vi.fn(),
+    };
+    const ctx = { cwd: agentDir, ui: { setStatus: vi.fn(), notify: vi.fn() } };
+
+    const saved = saveExtensionConfig(
+      runtime as never,
+      { debugLog: true, permissionReviewLog: true, mode: "yolo", yoloAskBashPatterns: [] },
+      ctx as never,
+      true,
+      "session",
+    );
+
+    expect(saved).toBe(true);
+    expect(runtime.sessionMode).toBe("yolo");
+    expect(await readFile(globalPath, "utf8")).toBe("{ not json");
+  });
+
+  it("saves a project-scope mode without touching the global file", async () => {
+    const agentDir = await mkdtemp(path.join(tmpdir(), "pi-runtime-project-only-"));
+    const projectDir = await mkdtemp(path.join(tmpdir(), "pi-runtime-project-only-cwd-"));
+    tempPaths.push(agentDir, projectDir);
+    const globalPath = path.join(agentDir, "permissions.json");
+    await writeFile(globalPath, "{ not json", "utf8");
+    const runtime: Record<string, unknown> = {
+      agentDir,
+      runtimeContext: { cwd: projectDir },
+      config: { mode: "yolo" },
+      sessionMode: "yolo",
+      writeDebugLog: vi.fn(),
+    };
+    const ctx = { cwd: projectDir, ui: { setStatus: vi.fn(), notify: vi.fn() } };
+
+    const saved = saveExtensionConfig(
+      runtime as never,
+      { debugLog: false, permissionReviewLog: false, mode: "manual", yoloAskBashPatterns: [] },
+      ctx as never,
+      true,
+      "project",
+    );
+
+    expect(saved).toBe(true);
+    expect(runtime.sessionMode).toBeUndefined();
+    expect(runtime.config).toMatchObject({ mode: "manual" });
+    expect(await readFile(globalPath, "utf8")).toBe("{ not json");
+  });
+
   it("keeps project runtime overrides after global reset", async () => {
     const agentDir = await mkdtemp(path.join(tmpdir(), "pi-runtime-reset-global-"));
     const projectDir = await mkdtemp(path.join(tmpdir(), "pi-runtime-reset-project-"));
@@ -255,6 +466,27 @@ describe("saveExtensionConfig", () => {
       mode: "yolo-auto",
       yoloAskBashPatterns: [],
     });
+  });
+});
+
+describe("refreshExtensionConfig", () => {
+  it("keeps the session mode over file config", async () => {
+    const agentDir = await mkdtemp(path.join(tmpdir(), "pi-runtime-refresh-session-"));
+    const projectDir = await mkdtemp(path.join(tmpdir(), "pi-runtime-refresh-session-cwd-"));
+    tempPaths.push(agentDir, projectDir);
+    await writeFile(path.join(agentDir, "permissions.json"), JSON.stringify({ mode: "yolo" }), "utf8");
+    const runtime = {
+      agentDir,
+      runtimeContext: { cwd: projectDir, hasUI: false },
+      config: { mode: "yolo" },
+      sessionMode: "manual",
+      lastConfigWarning: null,
+      writeDebugLog: vi.fn(),
+    };
+
+    refreshExtensionConfig(runtime as never);
+
+    expect(runtime.config).toMatchObject({ mode: "manual" });
   });
 });
 

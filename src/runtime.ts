@@ -24,6 +24,8 @@ import {
   EXTENSION_ROOT,
   ensurePermissionSystemLogsDirectory,
   normalizePermissionSystemConfig,
+  type ModeScope,
+  type PermissionMode,
   type PermissionSystemExtensionConfig,
 } from "./extension-config";
 import { computeExtensionPaths, type ExtensionPaths } from "./extension-paths";
@@ -73,6 +75,8 @@ interface SessionState {
 export interface ExtensionRuntime extends ExtensionPaths, SessionState {
   // ── Mutable state (beyond SessionState) ───────────────────────────────────
   config: PermissionSystemExtensionConfig;
+  /** In-memory mode choice for this session; overrides file config and PI_SENTINEL_MODE. */
+  sessionMode?: PermissionMode;
   lastConfigWarning: string | null;
   /** Most recent interactive (UI) session id observed in this process. */
   lastKnownInteractiveSessionId: string | null;
@@ -129,6 +133,13 @@ export function createPermissionManagerForCwd(
   });
 }
 
+function withSessionMode(
+  runtime: Pick<ExtensionRuntime, "sessionMode">,
+  config: PermissionSystemExtensionConfig,
+): PermissionSystemExtensionConfig {
+  return runtime.sessionMode ? { ...config, mode: runtime.sessionMode } : config;
+}
+
 /**
  * Reload merged config from disk into the runtime.
  * If `ctx` is provided, updates `runtime.runtimeContext` first.
@@ -146,7 +157,10 @@ export function refreshExtensionConfig(
     cwd ?? "",
     EXTENSION_ROOT,
   );
-  const runtimeConfig = normalizePermissionSystemConfig(mergeResult.merged);
+  const runtimeConfig = withSessionMode(
+    runtime,
+    normalizePermissionSystemConfig(mergeResult.merged),
+  );
   runtime.config = runtimeConfig;
 
   if (runtime.runtimeContext?.hasUI) {
@@ -201,17 +215,70 @@ export function saveSandboxEnabled(
   return false;
 }
 
-export function saveExtensionConfig(
+/** Write `mode` to the project permissions file; true when saved. */
+function saveProjectMode(
   runtime: ExtensionRuntime,
-  next: PermissionSystemExtensionConfig,
+  mode: PermissionMode,
   ctx: ExtensionCommandContext,
-  modeWasExplicitlySelected = false,
 ): boolean {
-  const normalized = normalizePermissionSystemConfig(next);
-  const modeOverride = normalizeUnifiedConfig({
-    mode: process.env.PI_SENTINEL_MODE,
-  }).config.mode;
-  const shouldPersistMode = modeOverride === undefined || modeWasExplicitlySelected;
+  const cwd = runtime.runtimeContext?.cwd ?? ctx.cwd;
+  if (!cwd) {
+    ctx.ui.notify("Cannot save project mode: no project directory.", "error");
+    return false;
+  }
+  const projectPath = getScopedConfigPath(runtime.agentDir, cwd, "workspace");
+  try {
+    const next: Record<string, unknown> = { ...readConfigFile(projectPath), mode };
+    delete next.yoloMode;
+    delete next.yoloAutoMode;
+    if (writeConfigFile(projectPath, next, cwd)) {
+      ctx.ui.notify(`Saved mode '${mode}' to project config '${projectPath}'.`, "info");
+      return true;
+    }
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    ctx.ui.notify(`Failed to save project mode at '${projectPath}': ${message}`, "error");
+    return false;
+  }
+  ctx.ui.notify(`Failed to save project mode at '${projectPath}'.`, "error");
+  return false;
+}
+
+/** Tell the user when the project file's mode will override a global choice. */
+function warnIfProjectModeShadows(
+  runtime: ExtensionRuntime,
+  chosenMode: PermissionMode,
+  ctx: ExtensionCommandContext,
+): void {
+  const cwd = runtime.runtimeContext?.cwd ?? ctx.cwd;
+  if (!cwd) return;
+  const projectMode = loadAndMergeConfigs(runtime.agentDir, cwd, EXTENSION_ROOT).project.mode;
+  if (projectMode === undefined || projectMode === chosenMode) return;
+  const projectPath = getScopedConfigPath(runtime.agentDir, cwd, "workspace");
+  ctx.ui.notify(
+    `Project config '${projectPath}' sets mode '${projectMode}', which overrides the global '${chosenMode}' on next start. Choose scope 'project' to change it.`,
+    "warning",
+  );
+}
+
+/** Mode from the merged config files and PI_SENTINEL_MODE, ignoring any session mode. */
+function loadConfiguredMode(
+  runtime: ExtensionRuntime,
+  ctx: ExtensionCommandContext,
+): PermissionMode {
+  const cwd = runtime.runtimeContext?.cwd ?? ctx.cwd ?? "";
+  return normalizePermissionSystemConfig(
+    loadAndMergeConfigs(runtime.agentDir, cwd, EXTENSION_ROOT).merged,
+  ).mode;
+}
+
+/** Persist logging settings, and the mode when `persistMode`, to the global file. */
+function saveGlobalSettings(
+  runtime: ExtensionRuntime,
+  normalized: PermissionSystemExtensionConfig,
+  persistMode: boolean,
+  ctx: ExtensionCommandContext,
+): boolean {
   const globalPath = getGlobalConfigPath(runtime.agentDir);
 
   let existing: ReturnType<typeof readConfigFile>;
@@ -230,12 +297,12 @@ export function saveExtensionConfig(
     ...existing,
     debugLog: normalized.debugLog,
     permissionReviewLog: normalized.permissionReviewLog,
-    ...(shouldPersistMode ? { mode: normalized.mode } : {}),
+    ...(persistMode ? { mode: normalized.mode } : {}),
     yoloAskBashPatterns: normalized.yoloAskBashPatterns,
   };
 
   stripLegacyYoloAutoMaxLevel(merged);
-  if (shouldPersistMode) {
+  if (persistMode) {
     delete merged.yoloMode;
     delete merged.yoloAutoMode;
   }
@@ -247,24 +314,72 @@ export function saveExtensionConfig(
     );
     return false;
   }
+  return true;
+}
 
-  const effectiveConfig = { ...normalized, mode: modeOverride ?? normalized.mode };
+function applySavedConfig(
+  runtime: ExtensionRuntime,
+  ctx: ExtensionCommandContext,
+  normalized: PermissionSystemExtensionConfig,
+  mode: PermissionMode,
+): void {
+  const effectiveConfig = withSessionMode(runtime, { ...normalized, mode });
   runtime.config = effectiveConfig;
   syncPermissionSystemStatus(ctx, effectiveConfig);
   runtime.lastConfigWarning = null;
-  if (modeOverride !== undefined && shouldPersistMode) {
-    ctx.ui.notify(
-      `Saved mode '${normalized.mode}' for future processes; PI_SENTINEL_MODE keeps this process at '${modeOverride}'.`,
-      "info",
-    );
-  }
-
   runtime.writeDebugLog("config.saved", {
     debugLog: effectiveConfig.debugLog,
     permissionReviewLog: effectiveConfig.permissionReviewLog,
     mode: effectiveConfig.mode,
     yoloAskBashPatterns: effectiveConfig.yoloAskBashPatterns,
   });
+}
+
+/**
+ * Save settings from the /sentinel modal. An explicit Mode choice goes to
+ * `modeScope`: session (memory only), project, or global. Persistent scopes
+ * replace any session mode. Other settings always save to the global file.
+ */
+export function saveExtensionConfig(
+  runtime: ExtensionRuntime,
+  next: PermissionSystemExtensionConfig,
+  ctx: ExtensionCommandContext,
+  modeWasExplicitlySelected = false,
+  modeScope: ModeScope = "global",
+): boolean {
+  const normalized = normalizePermissionSystemConfig(next);
+
+  if (modeWasExplicitlySelected && modeScope === "session") {
+    runtime.sessionMode = normalized.mode;
+    applySavedConfig(runtime, ctx, normalized, normalized.mode);
+    return true;
+  }
+
+  const modeOverride = normalizeUnifiedConfig({
+    mode: process.env.PI_SENTINEL_MODE,
+  }).config.mode;
+  const saved = modeWasExplicitlySelected && modeScope === "project"
+    ? saveProjectMode(runtime, normalized.mode, ctx)
+    : saveGlobalSettings(
+      runtime,
+      normalized,
+      modeWasExplicitlySelected
+        || (modeOverride === undefined && runtime.sessionMode === undefined),
+      ctx,
+    );
+  if (!saved) return false;
+
+  if (modeWasExplicitlySelected) {
+    runtime.sessionMode = undefined;
+    if (modeScope === "global") warnIfProjectModeShadows(runtime, normalized.mode, ctx);
+  }
+  applySavedConfig(runtime, ctx, normalized, loadConfiguredMode(runtime, ctx));
+  if (modeWasExplicitlySelected && modeOverride !== undefined) {
+    ctx.ui.notify(
+      `Saved mode '${normalized.mode}' for future processes; PI_SENTINEL_MODE keeps this process at '${modeOverride}'.`,
+      "info",
+    );
+  }
   return true;
 }
 
