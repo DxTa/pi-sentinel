@@ -18,6 +18,17 @@ describe("permission mode settings", () => {
     });
   });
 
+  it("keeps the selected mode visible when effective config is env-overridden", async () => {
+    const { buildSettingItems, mergeEffectiveConfigWithSelectedMode } = await import("./config-modal");
+    const effectiveConfig = { ...DEFAULT_EXTENSION_CONFIG, mode: "yolo", debugLog: true };
+
+    const modalConfig = mergeEffectiveConfigWithSelectedMode(effectiveConfig, "yolo-auto");
+
+    expect(modalConfig).toMatchObject({ mode: "yolo-auto", debugLog: true });
+    expect(buildSettingItems(modalConfig).find((item) => item.id === "mode"))
+      .toMatchObject({ currentValue: "yolo-auto" });
+  });
+
   it("applies mode changes without separate yolo flags", async () => {
     const modal = await import("./config-modal") as unknown as Record<string, unknown>;
     expect(typeof modal.applySetting).toBe("function");

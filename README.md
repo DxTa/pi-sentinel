@@ -140,6 +140,8 @@ Bundled defaults live in [`config.json`](config.json). Precedence, lowest to hig
 
 Use [`schemas/permissions.schema.json`](schemas/permissions.schema.json) for the complete schema. Runtime settings merge from bundled defaults, global `~/.pi/agent/permissions.json`, and trusted project `<project>/.pi/permissions.json`, with project settings highest. Permission rules additionally merge from global/project agent frontmatter and the active security-profile overlay; those layers do not override general runtime settings.
 
+Set `PI_SENTINEL_MODE` to `manual`, `yolo`, or `yolo-auto` to override the effective mode for that process only. It does not change config files or the reported global/project configs. Invalid values are ignored and reported as config issues. Child processes inherit the override unless their environment removes it. Explicitly changing Mode in settings still saves that choice for future processes; the current process continues to use the environment override.
+
 For stronger Bash isolation:
 
 ```json

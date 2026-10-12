@@ -745,7 +745,8 @@ export default function piPermissionSystemExtension(pi: ExtensionAPI): void {
 
   registerPermissionSystemCommand(pi, {
     getConfig: () => runtime.config,
-    setConfig: (next, ctx) => saveExtensionConfig(runtime, next, ctx),
+    setConfig: (next, ctx, modeWasExplicitlySelected) =>
+      saveExtensionConfig(runtime, next, ctx, modeWasExplicitlySelected),
     resetConfig: (ctx) => resetExtensionConfig(runtime, ctx),
     getConfigPath: (cwd) =>
       [

@@ -315,6 +315,8 @@ export interface MergedConfigResult {
   global: UnifiedPermissionConfig;
   project: UnifiedPermissionConfig;
   merged: UnifiedPermissionConfig;
+  /** Merged file-config mode before the process-local environment override. */
+  configuredMode: PermissionMode | undefined;
   issues: string[];
 }
 
@@ -336,18 +338,19 @@ export interface MergedConfigResult {
  */
 export function loadAndMergeConfigs(
   agentDir: string,
-  cwd: string,
+  cwd: string | null,
   extensionRoot: string,
 ): MergedConfigResult {
   const allIssues: string[] = [];
 
   const bundledPath = getBundledConfigPath(extensionRoot);
   const newGlobalPath = getGlobalConfigPath(agentDir);
-  const newProjectPath = getProjectConfigPath(cwd);
-  const legacyProjectConfigPath = getLegacyProjectConfigPath(cwd);
+  const projectRoot = cwd || null;
+  const newProjectPath = getProjectConfigPath(projectRoot ?? "");
+  const legacyProjectConfigPath = getLegacyProjectConfigPath(projectRoot ?? "");
   const legacyGlobalPolicyPath = getLegacyGlobalPolicyPath(agentDir);
-  const legacyProjectPolicyPath = getLegacyProjectPolicyPath(cwd);
-  const legacyProjectExtensionPath = getLegacyProjectExtensionConfigPath(cwd);
+  const legacyProjectPolicyPath = getLegacyProjectPolicyPath(projectRoot ?? "");
+  const legacyProjectExtensionPath = getLegacyProjectExtensionConfigPath(projectRoot ?? "");
 
   let merged: UnifiedPermissionConfig = {};
 
@@ -375,7 +378,7 @@ export function loadAndMergeConfigs(
   const globalConfig = globalResult.config;
   merged = mergeLoadedConfig(merged, globalResult);
 
-  if (existsSync(legacyProjectPolicyPath)) {
+  if (projectRoot && existsSync(legacyProjectPolicyPath)) {
     const legacy = loadUnifiedConfig(legacyProjectPolicyPath);
     allIssues.push(
       `Legacy project policy found at '${legacyProjectPolicyPath}'. ` +
@@ -385,7 +388,7 @@ export function loadAndMergeConfigs(
     merged = mergeLoadedConfig(merged, legacy);
   }
 
-  if (existsSync(legacyProjectExtensionPath)) {
+  if (projectRoot && existsSync(legacyProjectExtensionPath)) {
     const legacy = loadUnifiedConfig(legacyProjectExtensionPath);
     allIssues.push(
       `Legacy project extension config found at '${legacyProjectExtensionPath}'. ` +
@@ -395,19 +398,34 @@ export function loadAndMergeConfigs(
     merged = mergeLoadedConfig(merged, legacy);
   }
 
-  const legacyProjectResult = loadUnifiedConfig(legacyProjectConfigPath);
+  const legacyProjectResult = projectRoot
+    ? loadUnifiedConfig(legacyProjectConfigPath)
+    : { config: {}, issues: [] };
   allIssues.push(...legacyProjectResult.issues);
   merged = mergeLoadedConfig(merged, legacyProjectResult);
 
-  const projectResult = loadUnifiedConfig(newProjectPath);
+  const projectResult = projectRoot
+    ? loadUnifiedConfig(newProjectPath)
+    : { config: {}, issues: [] };
   allIssues.push(...projectResult.issues);
   const projectConfig = mergeLoadedConfig(legacyProjectResult.config, projectResult);
   merged = mergeLoadedConfig(merged, projectResult);
+  const configuredMode = merged.mode;
+
+  const modeOverride = normalizeUnifiedConfig({
+    mode: process.env.PI_SENTINEL_MODE,
+  }).config.mode;
+  if (modeOverride !== undefined) {
+    merged.mode = modeOverride;
+  } else if (process.env.PI_SENTINEL_MODE !== undefined) {
+    allIssues.push("Ignoring invalid PI_SENTINEL_MODE; expected 'manual', 'yolo', or 'yolo-auto'.");
+  }
 
   return {
     global: globalConfig,
     project: projectConfig,
     merged,
+    configuredMode,
     issues: [...new Set(allIssues)],
   };
 }

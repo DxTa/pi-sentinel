@@ -17,7 +17,8 @@ interface PermissionSystemConfigController {
   setConfig(
     next: PermissionSystemExtensionConfig,
     ctx: ExtensionCommandContext,
-  ): void;
+    modeWasExplicitlySelected: boolean,
+  ): boolean;
   resetConfig?(ctx: ExtensionCommandContext): void;
   getConfigPath(cwd?: string | null): string;
   /** Optional: returns the composed config-layer ruleset for origin display. */
@@ -157,6 +158,13 @@ export function applySetting(
   }
 }
 
+export function mergeEffectiveConfigWithSelectedMode(
+  effectiveConfig: PermissionSystemExtensionConfig,
+  selectedMode: PermissionMode,
+): PermissionSystemExtensionConfig {
+  return { ...effectiveConfig, mode: selectedMode };
+}
+
 function syncSettingValues(
   settingsList: SettingsList,
   config: PermissionSystemExtensionConfig,
@@ -198,6 +206,7 @@ async function openSettingsModal(
   await ctx.ui.custom<void>(
     (_tui, _theme, _keybindings, done) => {
       let current = controller.getConfig();
+      let selectedMode = current.mode;
       const settingsList = new SettingsList(
         buildSettingItems(current, controller.getSandboxEnabled?.()),
         10,
@@ -209,9 +218,14 @@ async function openSettingsModal(
             if (enabled !== undefined) settingsList.updateValue("sandbox", toOnOff(enabled));
             return;
           }
-          current = applySetting(current, id, newValue);
-          controller.setConfig(current, ctx);
-          current = controller.getConfig();
+          const next = applySetting(current, id, newValue);
+          const modeWasExplicitlySelected = id === "mode";
+          const saved = controller.setConfig(next, ctx, modeWasExplicitlySelected);
+          const effectiveConfig = controller.getConfig();
+          if (modeWasExplicitlySelected) {
+            selectedMode = saved ? next.mode : effectiveConfig.mode;
+          }
+          current = mergeEffectiveConfigWithSelectedMode(effectiveConfig, selectedMode);
           syncSettingValues(settingsList, current);
         },
         () => done(),
@@ -254,7 +268,7 @@ function handleArgs(
     if (controller.resetConfig) {
       controller.resetConfig(ctx);
     } else {
-      controller.setConfig(cloneDefaultConfig(), ctx);
+      controller.setConfig(cloneDefaultConfig(), ctx, true);
     }
     ctx.ui.notify("Permission system settings reset to defaults.", "info");
     return true;

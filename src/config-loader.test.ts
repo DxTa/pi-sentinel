@@ -61,6 +61,43 @@ describe("permission mode config", () => {
     )).toEqual({ mode: "manual" });
   });
 
+  it("overrides only the merged mode and reports invalid PI_SENTINEL_MODE values", async () => {
+    const root = await mkdtemp(path.join(tmpdir(), "pi-mode-env-"));
+    tempPaths.push(root);
+    const agentDir = path.join(root, "agent");
+    const projectDir = path.join(root, "project");
+    const extensionRoot = path.join(root, "extension");
+    await mkdir(extensionRoot, { recursive: true });
+    await writeFile(
+      path.join(extensionRoot, "config.json"),
+      JSON.stringify({ mode: "manual" }),
+      "utf8",
+    );
+
+    const previousMode = process.env.PI_SENTINEL_MODE;
+    process.env.PI_SENTINEL_MODE = "yolo";
+    try {
+      const result = loadAndMergeConfigs(agentDir, projectDir, extensionRoot);
+
+      expect(result).toMatchObject({
+        global: {},
+        project: {},
+        merged: { mode: "yolo" },
+        configuredMode: "manual",
+      });
+
+      process.env.PI_SENTINEL_MODE = "unsafe";
+      const invalidResult = loadAndMergeConfigs(agentDir, projectDir, extensionRoot);
+      expect(invalidResult.merged.mode).toBe("manual");
+      expect(invalidResult.issues).toContain(
+        "Ignoring invalid PI_SENTINEL_MODE; expected 'manual', 'yolo', or 'yolo-auto'.",
+      );
+    } finally {
+      if (previousMode === undefined) delete process.env.PI_SENTINEL_MODE;
+      else process.env.PI_SENTINEL_MODE = previousMode;
+    }
+  });
+
   it("warns once and drops the removed setting across config layers", async () => {
     const root = await mkdtemp(path.join(tmpdir(), "pi-removed-yolo-level-"));
     tempPaths.push(root);

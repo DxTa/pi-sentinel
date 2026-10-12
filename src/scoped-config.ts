@@ -17,7 +17,7 @@ import { basename, dirname, join, relative, resolve, sep } from "node:path";
 
 import { isPathWithinDirectory } from "./path-utils";
 
-import { stripJsonComments } from "./config-loader";
+import { loadAndMergeConfigs, stripJsonComments } from "./config-loader";
 import {
   getBundledConfigPath,
   getGlobalConfigPath,
@@ -166,7 +166,11 @@ function resolveEffectiveModeForWrite(
     ? process.env.PI_CODING_AGENT_DIR || join(homedir(), ".pi", "agent")
     : dirname(configPath);
   try {
-    return loadMergedScopedConfig(agentDir, workspaceRoot ?? null).merged.mode;
+    return loadAndMergeConfigs(
+      agentDir,
+      workspaceRoot ?? null,
+      EXTENSION_ROOT,
+    ).configuredMode;
   } catch {
     return undefined;
   }

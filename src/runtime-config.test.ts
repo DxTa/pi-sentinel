@@ -4,6 +4,7 @@ import path from "node:path";
 
 import { afterEach, describe, expect, it, vi } from "vitest";
 
+import { getLegacyGlobalPolicyPath } from "./config-paths";
 import { resetExtensionConfig, saveExtensionConfig, saveSandboxEnabled } from "./runtime";
 
 const tempPaths: string[] = [];
@@ -58,6 +59,134 @@ describe("saveExtensionConfig", () => {
       mode: "yolo",
     });
     expect(saved).not.toHaveProperty("yoloAutoMaxLevel");
+  });
+
+  it("does not persist the process mode override when saving another setting", async () => {
+    const agentDir = await mkdtemp(path.join(tmpdir(), "pi-runtime-mode-override-"));
+    const projectDir = await mkdtemp(path.join(tmpdir(), "pi-runtime-mode-project-"));
+    tempPaths.push(agentDir, projectDir);
+    const configPath = path.join(agentDir, "permissions.json");
+    await writeFile(
+      getLegacyGlobalPolicyPath(agentDir),
+      JSON.stringify({ yoloMode: false, yoloAutoMode: false }),
+      "utf8",
+    );
+    await writeFile(configPath, JSON.stringify({ yoloMode: false }), "utf8");
+
+    const previousMode = process.env.PI_SENTINEL_MODE;
+    process.env.PI_SENTINEL_MODE = "yolo";
+    try {
+      const runtime = {
+        agentDir,
+        runtimeContext: { cwd: projectDir },
+        config: { mode: "yolo" },
+        writeDebugLog: vi.fn(),
+      };
+      const ctx = {
+        cwd: projectDir,
+        ui: { setStatus: vi.fn(), notify: vi.fn() },
+      };
+
+      saveExtensionConfig(
+        runtime as never,
+        {
+          debugLog: true,
+          permissionReviewLog: true,
+          mode: "yolo",
+          yoloAskBashPatterns: [],
+        },
+        ctx as never,
+      );
+
+      const saved = JSON.parse(await readFile(configPath, "utf8"));
+      expect(saved.mode).toBe("manual");
+      expect(runtime.config).toMatchObject({ mode: "yolo" });
+    } finally {
+      if (previousMode === undefined) delete process.env.PI_SENTINEL_MODE;
+      else process.env.PI_SENTINEL_MODE = previousMode;
+    }
+  });
+
+  it("persists an explicit mode choice that matches the process override", async () => {
+    const agentDir = await mkdtemp(path.join(tmpdir(), "pi-runtime-matching-mode-"));
+    const projectDir = await mkdtemp(path.join(tmpdir(), "pi-runtime-matching-mode-project-"));
+    tempPaths.push(agentDir, projectDir);
+    const configPath = path.join(agentDir, "permissions.json");
+    await writeFile(configPath, JSON.stringify({ mode: "manual" }), "utf8");
+
+    const previousMode = process.env.PI_SENTINEL_MODE;
+    process.env.PI_SENTINEL_MODE = "yolo";
+    try {
+      const runtime = {
+        agentDir,
+        runtimeContext: { cwd: projectDir },
+        config: { mode: "yolo" },
+        writeDebugLog: vi.fn(),
+      };
+      const ctx = {
+        cwd: projectDir,
+        ui: { setStatus: vi.fn(), notify: vi.fn() },
+      };
+
+      saveExtensionConfig(
+        runtime as never,
+        {
+          debugLog: true,
+          permissionReviewLog: true,
+          mode: "yolo",
+          yoloAskBashPatterns: [],
+        },
+        ctx as never,
+        true,
+      );
+
+      expect(JSON.parse(await readFile(configPath, "utf8")).mode).toBe("yolo");
+      expect(runtime.config).toMatchObject({ mode: "yolo" });
+    } finally {
+      if (previousMode === undefined) delete process.env.PI_SENTINEL_MODE;
+      else process.env.PI_SENTINEL_MODE = previousMode;
+    }
+  });
+
+  it("persists an explicit mode change while keeping the process override active", async () => {
+    const agentDir = await mkdtemp(path.join(tmpdir(), "pi-runtime-explicit-mode-"));
+    const projectDir = await mkdtemp(path.join(tmpdir(), "pi-runtime-explicit-mode-project-"));
+    tempPaths.push(agentDir, projectDir);
+    const configPath = path.join(agentDir, "permissions.json");
+    await writeFile(configPath, JSON.stringify({ mode: "yolo-auto" }), "utf8");
+
+    const previousMode = process.env.PI_SENTINEL_MODE;
+    process.env.PI_SENTINEL_MODE = "yolo";
+    try {
+      const runtime = {
+        agentDir,
+        runtimeContext: { cwd: projectDir },
+        config: { mode: "yolo" },
+        writeDebugLog: vi.fn(),
+      };
+      const ctx = {
+        cwd: projectDir,
+        ui: { setStatus: vi.fn(), notify: vi.fn() },
+      };
+
+      saveExtensionConfig(
+        runtime as never,
+        {
+          debugLog: true,
+          permissionReviewLog: true,
+          mode: "manual",
+          yoloAskBashPatterns: [],
+        },
+        ctx as never,
+        true,
+      );
+
+      expect(JSON.parse(await readFile(configPath, "utf8")).mode).toBe("manual");
+      expect(runtime.config).toMatchObject({ mode: "yolo" });
+    } finally {
+      if (previousMode === undefined) delete process.env.PI_SENTINEL_MODE;
+      else process.env.PI_SENTINEL_MODE = previousMode;
+    }
   });
 
   it("keeps project runtime overrides after global reset", async () => {
@@ -130,6 +259,36 @@ describe("saveExtensionConfig", () => {
 });
 
 describe("saveSandboxEnabled", () => {
+  it("preserves effective legacy mode while toggling sandbox", async () => {
+    const agentDir = await mkdtemp(path.join(tmpdir(), "pi-sandbox-mode-"));
+    tempPaths.push(agentDir);
+    const configPath = path.join(agentDir, "permissions.json");
+    await writeFile(
+      getLegacyGlobalPolicyPath(agentDir),
+      JSON.stringify({ yoloMode: false, yoloAutoMode: false }),
+      "utf8",
+    );
+    await writeFile(
+      configPath,
+      JSON.stringify({ yoloMode: false, sandbox: { enabled: true } }),
+      "utf8",
+    );
+
+    const previousMode = process.env.PI_SENTINEL_MODE;
+    process.env.PI_SENTINEL_MODE = "yolo";
+    try {
+      const ctx = { ui: { setStatus: vi.fn(), notify: vi.fn() } };
+      expect(saveSandboxEnabled({ agentDir, writeDebugLog: vi.fn() } as never, false, ctx as never)).toBe(true);
+
+      const saved = JSON.parse(await readFile(configPath, "utf8"));
+      expect(saved.mode).toBe("manual");
+      expect(saved.sandbox).toMatchObject({ enabled: false });
+    } finally {
+      if (previousMode === undefined) delete process.env.PI_SENTINEL_MODE;
+      else process.env.PI_SENTINEL_MODE = previousMode;
+    }
+  });
+
   it("toggles sandbox.enabled and keeps other sandbox keys", async () => {
     const agentDir = await mkdtemp(path.join(tmpdir(), "pi-sandbox-toggle-"));
     tempPaths.push(agentDir);

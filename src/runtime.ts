@@ -6,7 +6,7 @@ import {
   getAgentDir,
 } from "@earendil-works/pi-coding-agent";
 
-import { loadAndMergeConfigs, stripLegacyYoloAutoMaxLevel } from "./config-loader";
+import { loadAndMergeConfigs, normalizeUnifiedConfig, stripLegacyYoloAutoMaxLevel } from "./config-loader";
 import {
   DEBUG_LOG_FILENAME,
   getBundledConfigPath,
@@ -205,8 +205,13 @@ export function saveExtensionConfig(
   runtime: ExtensionRuntime,
   next: PermissionSystemExtensionConfig,
   ctx: ExtensionCommandContext,
-): void {
+  modeWasExplicitlySelected = false,
+): boolean {
   const normalized = normalizePermissionSystemConfig(next);
+  const modeOverride = normalizeUnifiedConfig({
+    mode: process.env.PI_SENTINEL_MODE,
+  }).config.mode;
+  const shouldPersistMode = modeOverride === undefined || modeWasExplicitlySelected;
   const globalPath = getGlobalConfigPath(runtime.agentDir);
 
   let existing: ReturnType<typeof readConfigFile>;
@@ -218,39 +223,49 @@ export function saveExtensionConfig(
       `Failed to save pi-sentinel config at '${globalPath}': ${message}`,
       "error",
     );
-    return;
+    return false;
   }
 
   const merged: Record<string, unknown> = {
     ...existing,
     debugLog: normalized.debugLog,
     permissionReviewLog: normalized.permissionReviewLog,
-    mode: normalized.mode,
+    ...(shouldPersistMode ? { mode: normalized.mode } : {}),
     yoloAskBashPatterns: normalized.yoloAskBashPatterns,
   };
 
   stripLegacyYoloAutoMaxLevel(merged);
-  delete merged.yoloMode;
-  delete merged.yoloAutoMode;
+  if (shouldPersistMode) {
+    delete merged.yoloMode;
+    delete merged.yoloAutoMode;
+  }
 
   if (!writeConfigFile(globalPath, merged)) {
     ctx.ui.notify(
       `Failed to save pi-sentinel config at '${globalPath}'.`,
       "error",
     );
-    return;
+    return false;
   }
 
-  runtime.config = normalized;
-  syncPermissionSystemStatus(ctx, normalized);
+  const effectiveConfig = { ...normalized, mode: modeOverride ?? normalized.mode };
+  runtime.config = effectiveConfig;
+  syncPermissionSystemStatus(ctx, effectiveConfig);
   runtime.lastConfigWarning = null;
+  if (modeOverride !== undefined && shouldPersistMode) {
+    ctx.ui.notify(
+      `Saved mode '${normalized.mode}' for future processes; PI_SENTINEL_MODE keeps this process at '${modeOverride}'.`,
+      "info",
+    );
+  }
 
   runtime.writeDebugLog("config.saved", {
-    debugLog: normalized.debugLog,
-    permissionReviewLog: normalized.permissionReviewLog,
-    mode: normalized.mode,
-    yoloAskBashPatterns: normalized.yoloAskBashPatterns,
+    debugLog: effectiveConfig.debugLog,
+    permissionReviewLog: effectiveConfig.permissionReviewLog,
+    mode: effectiveConfig.mode,
+    yoloAskBashPatterns: effectiveConfig.yoloAskBashPatterns,
   });
+  return true;
 }
 
 /**
