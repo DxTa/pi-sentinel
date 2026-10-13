@@ -6,6 +6,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 
 import { getLegacyGlobalPolicyPath } from "./config-paths";
 import {
+  applySessionModeEvent,
   refreshExtensionConfig,
   resetExtensionConfig,
   saveExtensionConfig,
@@ -531,5 +532,43 @@ describe("saveSandboxEnabled", () => {
     expect(saveSandboxEnabled({ agentDir, writeDebugLog: vi.fn() } as never, false, ctx as never)).toBe(true);
 
     expect(JSON.parse(await readFile(file, "utf8"))).toEqual({ mode: "yolo", sandbox: { enabled: false, network: true, roBinds: ["a"] } });
+  });
+});
+
+describe("applySessionModeEvent", () => {
+  it("sets runtime.sessionMode to yolo and refreshes config without touching disk", async () => {
+    const agentDir = await mkdtemp(path.join(tmpdir(), "pi-runtime-session-mode-"));
+    tempPaths.push(agentDir);
+    await writeFile(
+      path.join(agentDir, "permissions.json"),
+      JSON.stringify({ mode: "manual" }),
+      "utf8",
+    );
+    const runtime = {
+      agentDir,
+      writeDebugLog: vi.fn(),
+      runtimeContext: { cwd: agentDir, hasUI: false },
+    };
+
+    applySessionModeEvent(runtime as never, { mode: "yolo" });
+
+    expect((runtime as never as { config: { mode: string } }).config.mode).toBe("yolo");
+    expect((runtime as never as { sessionMode: string }).sessionMode).toBe("yolo");
+    expect(JSON.parse(await readFile(path.join(agentDir, "permissions.json"), "utf8"))).toEqual({ mode: "manual" });
+  });
+
+  it("ignores events with an invalid mode", async () => {
+    const agentDir = await mkdtemp(path.join(tmpdir(), "pi-runtime-session-mode-invalid-"));
+    tempPaths.push(agentDir);
+    const runtime = {
+      agentDir,
+      writeDebugLog: vi.fn(),
+      runtimeContext: { cwd: agentDir, hasUI: false },
+      sessionMode: undefined,
+    };
+
+    applySessionModeEvent(runtime as never, { mode: "not-a-mode" });
+
+    expect((runtime as never as { sessionMode?: string }).sessionMode).toBeUndefined();
   });
 });

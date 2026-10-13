@@ -187,6 +187,26 @@ export function refreshExtensionConfig(
 }
 
 /**
+ * Apply a `pi-sentinel:set-session-mode` event from another extension
+ * (e.g. `/implement --yolo` without `--worktree`). Mirrors the `/sentinel`
+ * modal's session-scope mode choice: in-memory only, never written to disk.
+ */
+export function applySessionModeEvent(
+  runtime: ExtensionRuntime,
+  event: unknown,
+): void {
+  const requestedMode = (event as { mode?: unknown } | null)?.mode;
+  const normalized = normalizeUnifiedConfig({ mode: requestedMode }).config.mode;
+  if (normalized === undefined) {
+    runtime.writeDebugLog("session_mode_event.invalid", { requestedMode });
+    return;
+  }
+  runtime.sessionMode = normalized;
+  refreshExtensionConfig(runtime);
+  runtime.writeDebugLog("session_mode_event.applied", { mode: normalized });
+}
+
+/**
  * Save updated runtime knobs (debugLog, permissionReviewLog, mode,
  * yoloAskBashPatterns) to the global config file, then update runtime.config
  * and sync UI status.

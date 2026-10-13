@@ -55,6 +55,7 @@ import { isPathWithinDirectory } from "./path-utils";
 import { PermissionSession } from "./permission-session";
 import { matchTrustedPiRequest } from "./handlers/gates/trusted-pi-dirs";
 import {
+  applySessionModeEvent,
   createExtensionRuntime,
   logResolvedConfigPaths,
   persistPermissionRule,
@@ -799,6 +800,10 @@ export default function piPermissionSystemExtension(pi: ExtensionAPI): void {
   publishPermissionsService(permissionsService);
 
   emitReadyEvent(pi.events);
+
+  pi.events.on("pi-sentinel:set-session-mode", (data) => {
+    applySessionModeEvent(runtime, data);
+  });
 
   const toolRegistry = {
     getAll: () => pi.getAllTools(),
