@@ -1,4 +1,4 @@
-import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 
@@ -103,6 +103,54 @@ describe("piPermissionSystemExtension workspace config", () => {
     expect(message).toContain("Denied: api.example.com");
   });
 
+
+  it("warns once when a project mode shadows a global mode save", { timeout: 30_000 }, async () => {
+    const agentDir = await makeTempDir("pi-agent-mode-shadow-");
+    const projectDir = await makeTempDir("pi-project-mode-shadow-");
+    const previousMode = process.env.PI_SENTINEL_MODE;
+    delete process.env.PI_SENTINEL_MODE;
+    process.env.PI_CODING_AGENT_DIR = agentDir;
+
+    const globalConfigPath = path.join(agentDir, "permissions.json");
+    const workspaceConfigPath = path.join(projectDir, ".pi", "permissions.json");
+    await mkdir(path.dirname(workspaceConfigPath), { recursive: true });
+    await writeFile(globalConfigPath, JSON.stringify({ mode: "manual" }), "utf8");
+    await writeFile(workspaceConfigPath, JSON.stringify({ mode: "manual" }), "utf8");
+
+    try {
+      const pi = createFakePi();
+      piPermissionSystemExtension(pi as never);
+      const notify = vi.fn();
+      const chooseYolo = async (factory: (...args: unknown[]) => { handleInput(data: string): void }) => {
+        const component = factory({ requestRender: vi.fn() }, {}, {}, () => undefined);
+        component.handleInput("\x1b[B"); // sandbox row -> mode row
+        component.handleInput(" "); // manual -> yolo
+      };
+      const ctx = {
+        cwd: projectDir,
+        hasUI: true,
+        ui: { notify, setStatus: vi.fn(), custom: chooseYolo },
+        sessionManager: { getEntries: () => [], getSessionDir: () => null },
+      };
+
+      notify.mockClear();
+      await pi.commands.get("sentinel")?.handler("", ctx);
+
+      expect(notify).toHaveBeenCalledTimes(1);
+      expect(notify).toHaveBeenCalledWith(
+        expect.stringContaining("Saved mode 'yolo' → global (" + globalConfigPath + ")"),
+        "warning",
+      );
+      expect(notify.mock.calls[0]?.[0]).toContain(
+        "Effective: manual (from project, which overrides the saved global value)",
+      );
+      expect(JSON.parse(await readFile(globalConfigPath, "utf8")).mode).toBe("yolo");
+    } finally {
+      if (previousMode === undefined) delete process.env.PI_SENTINEL_MODE;
+      else process.env.PI_SENTINEL_MODE = previousMode;
+    }
+  });
+
   it("keeps commands host-accessible while ignoring legacy project-grants", { timeout: 30_000 }, async () => {
     const agentDir = await makeTempDir("pi-agent-");
     const projectDir = await makeTempDir("pi-project-");
@@ -163,7 +211,7 @@ describe("piPermissionSystemExtension session mode", () => {
     piPermissionSystemExtension(pi as never);
     const notify = vi.fn();
     const chooseSessionYolo = async (factory: (...args: unknown[]) => { handleInput(data: string): void }) => {
-      const list = factory({}, {}, {}, () => undefined);
+      const list = factory({ requestRender: vi.fn() }, {}, {}, () => undefined);
       list.handleInput("\x1b[B"); // sandbox row -> mode row
       list.handleInput("\x1b[B"); // select scope row
       list.handleInput(" "); // global -> session

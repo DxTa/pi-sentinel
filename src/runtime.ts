@@ -6,7 +6,14 @@ import {
   getAgentDir,
 } from "@earendil-works/pi-coding-agent";
 
-import { loadAndMergeConfigs, normalizeUnifiedConfig, stripLegacyYoloAutoMaxLevel } from "./config-loader";
+import {
+  loadAndMergeConfigs,
+  normalizeUnifiedConfig,
+  stripLegacyYoloAutoMaxLevel,
+  type ConfigModeLayer,
+  type MergedConfigResult,
+  type ModeLayerId,
+} from "./config-loader";
 import {
   DEBUG_LOG_FILENAME,
   getBundledConfigPath,
@@ -61,6 +68,13 @@ interface SessionState {
   lastPromptStateCacheKey: string | null;
 }
 
+interface RuntimeModeResolution {
+  cwd: string;
+  layers: ConfigModeLayer[];
+  configuredMode: PermissionMode;
+  source: ModeLayerId;
+}
+
 /**
  * Runtime context object created once inside `piPermissionSystemExtension()`.
  *
@@ -77,6 +91,8 @@ export interface ExtensionRuntime extends ExtensionPaths, SessionState {
   config: PermissionSystemExtensionConfig;
   /** In-memory mode choice for this session; overrides file config and PI_SENTINEL_MODE. */
   sessionMode?: PermissionMode;
+  /** Mode provenance from the same config load that produced `config`. */
+  modeResolution: RuntimeModeResolution | null;
   lastConfigWarning: string | null;
   /** Most recent interactive (UI) session id observed in this process. */
   lastKnownInteractiveSessionId: string | null;
@@ -140,6 +156,18 @@ function withSessionMode(
   return runtime.sessionMode ? { ...config, mode: runtime.sessionMode } : config;
 }
 
+function createModeResolution(
+  cwd: string | null | undefined,
+  mergeResult: MergedConfigResult,
+): RuntimeModeResolution {
+  return {
+    cwd: cwd ?? "",
+    layers: mergeResult.modeLayers,
+    configuredMode: normalizePermissionSystemConfig(mergeResult.merged).mode,
+    source: mergeResult.modeSource,
+  };
+}
+
 /**
  * Reload merged config from disk into the runtime.
  * If `ctx` is provided, updates `runtime.runtimeContext` first.
@@ -157,10 +185,9 @@ export function refreshExtensionConfig(
     cwd ?? "",
     EXTENSION_ROOT,
   );
-  const runtimeConfig = withSessionMode(
-    runtime,
-    normalizePermissionSystemConfig(mergeResult.merged),
-  );
+  const configuredConfig = normalizePermissionSystemConfig(mergeResult.merged);
+  runtime.modeResolution = createModeResolution(cwd, mergeResult);
+  const runtimeConfig = withSessionMode(runtime, configuredConfig);
   runtime.config = runtimeConfig;
 
   if (runtime.runtimeContext?.hasUI) {
@@ -252,7 +279,6 @@ function saveProjectMode(
     delete next.yoloMode;
     delete next.yoloAutoMode;
     if (writeConfigFile(projectPath, next, cwd)) {
-      ctx.ui.notify(`Saved mode '${mode}' to project config '${projectPath}'.`, "info");
       return true;
     }
   } catch (error) {
@@ -264,32 +290,45 @@ function saveProjectMode(
   return false;
 }
 
-/** Tell the user when the project file's mode will override a global choice. */
-function warnIfProjectModeShadows(
-  runtime: ExtensionRuntime,
-  chosenMode: PermissionMode,
-  ctx: ExtensionCommandContext,
-): void {
-  const cwd = runtime.runtimeContext?.cwd ?? ctx.cwd;
-  if (!cwd) return;
-  const projectMode = loadAndMergeConfigs(runtime.agentDir, cwd, EXTENSION_ROOT).project.mode;
-  if (projectMode === undefined || projectMode === chosenMode) return;
-  const projectPath = getScopedConfigPath(runtime.agentDir, cwd, "workspace");
-  ctx.ui.notify(
-    `Project config '${projectPath}' sets mode '${projectMode}', which overrides the global '${chosenMode}' on next start. Choose scope 'project' to change it.`,
-    "warning",
-  );
+export interface ModeLayer extends ConfigModeLayer {
+  /** Actual project save target; it may reuse the legacy project config file. */
+  savePath?: string;
 }
 
-/** Mode from the merged config files and PI_SENTINEL_MODE, ignoring any session mode. */
-function loadConfiguredMode(
-  runtime: ExtensionRuntime,
-  ctx: ExtensionCommandContext,
-): PermissionMode {
-  const cwd = runtime.runtimeContext?.cwd ?? ctx.cwd ?? "";
-  return normalizePermissionSystemConfig(
-    loadAndMergeConfigs(runtime.agentDir, cwd, EXTENSION_ROOT).merged,
-  ).mode;
+export interface ModeLayers {
+  layers: ModeLayer[];
+  effective: PermissionMode;
+  source: ModeLayerId;
+}
+
+export function getModeLayers(
+  runtime: Pick<ExtensionRuntime, "agentDir" | "sessionMode"> &
+    Partial<Pick<ExtensionRuntime, "config" | "modeResolution">>,
+  cwd?: string | null,
+): ModeLayers {
+  const resolution = runtime.modeResolution;
+  const mergedConfig = resolution
+    ? undefined
+    : loadAndMergeConfigs(runtime.agentDir, cwd ?? "", EXTENSION_ROOT);
+  const configuredMode = resolution?.configuredMode
+    ?? normalizePermissionSystemConfig(mergedConfig!.merged).mode;
+  const effective = runtime.config?.mode ?? runtime.sessionMode ?? configuredMode;
+  const projectCwd = cwd ?? resolution?.cwd ?? "";
+  const projectSavePath = projectCwd
+    ? getScopedConfigPath(runtime.agentDir, projectCwd, "workspace")
+    : undefined;
+  const modeLayers = (resolution?.layers ?? mergedConfig!.modeLayers).map((layer) =>
+    layer.id === "project" && projectSavePath ? { ...layer, savePath: projectSavePath } : { ...layer }
+  );
+
+  return {
+    layers: [
+      { id: "session", name: "session", mode: runtime.sessionMode, path: "memory" },
+      ...modeLayers,
+    ],
+    effective,
+    source: runtime.sessionMode ? "session" : resolution?.source ?? mergedConfig!.modeSource,
+  };
 }
 
 /** Persist logging settings, and the mode when `persistMode`, to the global file. */
@@ -391,15 +430,16 @@ export function saveExtensionConfig(
 
   if (modeWasExplicitlySelected) {
     runtime.sessionMode = undefined;
-    if (modeScope === "global") warnIfProjectModeShadows(runtime, normalized.mode, ctx);
   }
-  applySavedConfig(runtime, ctx, normalized, loadConfiguredMode(runtime, ctx));
-  if (modeWasExplicitlySelected && modeOverride !== undefined) {
-    ctx.ui.notify(
-      `Saved mode '${normalized.mode}' for future processes; PI_SENTINEL_MODE keeps this process at '${modeOverride}'.`,
-      "info",
-    );
-  }
+  const cwd = runtime.runtimeContext?.cwd ?? ctx.cwd ?? "";
+  const mergeResult = loadAndMergeConfigs(runtime.agentDir, cwd, EXTENSION_ROOT);
+  runtime.modeResolution = createModeResolution(cwd, mergeResult);
+  applySavedConfig(
+    runtime,
+    ctx,
+    normalized,
+    normalizePermissionSystemConfig(mergeResult.merged).mode,
+  );
   return true;
 }
 
@@ -440,12 +480,13 @@ export function resetExtensionConfig(
     return;
   }
 
-  const mergeResult = loadAndMergeConfigs(
-    runtime.agentDir,
-    runtime.runtimeContext?.cwd ?? ctx.cwd ?? "",
-    EXTENSION_ROOT,
+  const cwd = runtime.runtimeContext?.cwd ?? ctx.cwd ?? "";
+  const mergeResult = loadAndMergeConfigs(runtime.agentDir, cwd, EXTENSION_ROOT);
+  runtime.modeResolution = createModeResolution(cwd, mergeResult);
+  runtime.config = withSessionMode(
+    runtime,
+    normalizePermissionSystemConfig(mergeResult.merged),
   );
-  runtime.config = normalizePermissionSystemConfig(mergeResult.merged);
   runtime.lastConfigWarning =
     mergeResult.issues.length > 0 ? mergeResult.issues.join("\n") : null;
   syncPermissionSystemStatus(ctx, runtime.config);
@@ -625,6 +666,7 @@ export function createExtensionRuntime(options?: {
   const runtime: ExtensionRuntime = {
     ...paths,
     config: { ...DEFAULT_EXTENSION_CONFIG },
+    modeResolution: null,
     runtimeContext: null,
     permissionManager: createPermissionManagerForCwd(agentDir, undefined),
     activeSkillEntries: [],

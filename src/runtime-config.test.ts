@@ -4,9 +4,18 @@ import path from "node:path";
 
 import { afterEach, describe, expect, it, vi } from "vitest";
 
-import { getLegacyGlobalPolicyPath } from "./config-paths";
+import {
+  getGlobalConfigPath,
+  getLegacyGlobalPolicyPath,
+  getLegacyProjectConfigPath,
+  getLegacyProjectExtensionConfigPath,
+  getLegacyProjectPolicyPath,
+  getProjectConfigPath,
+} from "./config-paths";
 import {
   applySessionModeEvent,
+  createExtensionRuntime,
+  getModeLayers,
   refreshExtensionConfig,
   resetExtensionConfig,
   saveExtensionConfig,
@@ -17,6 +26,242 @@ const tempPaths: string[] = [];
 
 afterEach(async () => {
   await Promise.all(tempPaths.splice(0).map((dir) => rm(dir, { recursive: true, force: true })));
+});
+
+describe("getModeLayers", () => {
+
+  it("keeps displayed effective mode and source aligned with the active runtime until refresh", async () => {
+    const agentDir = await mkdtemp(path.join(tmpdir(), "pi-mode-layers-runtime-snapshot-"));
+    const projectDir = await mkdtemp(path.join(tmpdir(), "pi-mode-layers-runtime-cwd-"));
+    tempPaths.push(agentDir, projectDir);
+    const projectPath = getProjectConfigPath(projectDir);
+    await mkdir(path.dirname(projectPath), { recursive: true });
+    await writeFile(projectPath, JSON.stringify({ mode: "manual" }), "utf8");
+
+    const previousMode = process.env.PI_SENTINEL_MODE;
+    delete process.env.PI_SENTINEL_MODE;
+    try {
+      const runtime = createExtensionRuntime({ agentDir });
+      runtime.runtimeContext = { cwd: projectDir, hasUI: false } as never;
+      refreshExtensionConfig(runtime);
+      expect(runtime.config.mode).toBe("manual");
+
+      await writeFile(projectPath, JSON.stringify({ mode: "yolo" }), "utf8");
+      const layers = getModeLayers(runtime, projectDir);
+
+      expect(layers).toMatchObject({
+        effective: runtime.config.mode,
+        source: "project",
+      });
+      expect(layers.layers.find((layer) => layer.id === "project")?.mode).toBe("manual");
+
+      refreshExtensionConfig(runtime);
+      expect(runtime.config.mode).toBe("yolo");
+      expect(getModeLayers(runtime, projectDir)).toMatchObject({
+        effective: runtime.config.mode,
+        source: "project",
+      });
+    } finally {
+      if (previousMode === undefined) delete process.env.PI_SENTINEL_MODE;
+      else process.env.PI_SENTINEL_MODE = previousMode;
+    }
+  });
+
+  it("reports every configured mode layer in precedence order", async () => {
+    const agentDir = await mkdtemp(path.join(tmpdir(), "pi-mode-layers-"));
+    const projectDir = await mkdtemp(path.join(tmpdir(), "pi-mode-layers-project-"));
+    tempPaths.push(agentDir, projectDir);
+
+    const files = [
+      [getLegacyGlobalPolicyPath(agentDir), "yolo-auto"],
+      [getGlobalConfigPath(agentDir), "yolo"],
+      [getLegacyProjectPolicyPath(projectDir), "manual"],
+      [getLegacyProjectExtensionConfigPath(projectDir), "yolo-auto"],
+      [getLegacyProjectConfigPath(projectDir), "yolo"],
+      [getProjectConfigPath(projectDir), "manual"],
+    ] as const;
+    for (const [configPath, mode] of files) {
+      await mkdir(path.dirname(configPath), { recursive: true });
+      await writeFile(configPath, JSON.stringify({ mode }), "utf8");
+    }
+
+    const previousMode = process.env.PI_SENTINEL_MODE;
+    process.env.PI_SENTINEL_MODE = "yolo-auto";
+    try {
+      const runtime: Record<string, unknown> = { agentDir, sessionMode: "yolo" };
+      const result = getModeLayers(runtime as never, projectDir);
+      expect(result.layers.map(({ name, mode }) => [name, mode])).toEqual([
+        ["session", "yolo"],
+        ["env", "yolo-auto"],
+        ["project", "manual"],
+        ["project (legacy)", "yolo"],
+        ["project (legacy)", "yolo-auto"],
+        ["project (legacy)", "manual"],
+        ["global", "yolo"],
+        ["global (legacy)", "yolo-auto"],
+        ["bundled", "yolo-auto"],
+      ]);
+      expect(result.layers[2].path).toBe(getProjectConfigPath(projectDir));
+      expect(result.effective).toBe("yolo");
+      expect(result.source).toBe("session");
+
+      runtime.sessionMode = undefined;
+      expect(getModeLayers(runtime as never, projectDir)).toMatchObject({
+        effective: "yolo-auto",
+        source: "environment",
+      });
+
+      delete process.env.PI_SENTINEL_MODE;
+      expect(getModeLayers(runtime as never, projectDir)).toMatchObject({
+        effective: "manual",
+        source: "project",
+      });
+
+      await rm(getProjectConfigPath(projectDir), { force: true });
+      expect(getModeLayers(runtime as never, projectDir)).toMatchObject({
+        effective: "yolo",
+        source: "project-config-legacy",
+      });
+
+      await rm(getLegacyProjectConfigPath(projectDir), { force: true });
+      await rm(getLegacyProjectExtensionConfigPath(projectDir), { force: true });
+      await rm(getLegacyProjectPolicyPath(projectDir), { force: true });
+      expect(getModeLayers(runtime as never, projectDir)).toMatchObject({
+        effective: "yolo",
+        source: "global",
+      });
+
+      await rm(getGlobalConfigPath(agentDir), { force: true });
+      expect(getModeLayers(runtime as never, projectDir)).toMatchObject({
+        effective: "yolo-auto",
+        source: "global-policy-legacy",
+      });
+
+      await rm(getLegacyGlobalPolicyPath(agentDir), { force: true });
+      expect(getModeLayers(runtime as never, projectDir)).toMatchObject({ effective: "yolo-auto", source: "bundled" });
+    } finally {
+      if (previousMode === undefined) delete process.env.PI_SENTINEL_MODE;
+      else process.env.PI_SENTINEL_MODE = previousMode;
+    }
+  });
+
+  it("reports the loader-selected source for partial legacy mode flags", async () => {
+    const agentDir = await mkdtemp(path.join(tmpdir(), "pi-mode-layers-legacy-flags-"));
+    const projectDir = await mkdtemp(path.join(tmpdir(), "pi-mode-layers-legacy-flags-cwd-"));
+    tempPaths.push(agentDir, projectDir);
+    const legacyPath = getLegacyGlobalPolicyPath(agentDir);
+    await writeFile(legacyPath, JSON.stringify({ yoloMode: false }), "utf8");
+
+    const previousMode = process.env.PI_SENTINEL_MODE;
+    delete process.env.PI_SENTINEL_MODE;
+    try {
+      const result = getModeLayers({ agentDir } as never, projectDir);
+      expect(result.effective).toBe("yolo-auto");
+      expect(result.source).toBe("bundled");
+      expect(result.layers.find((layer) => layer.name === "global (legacy)")).toMatchObject({
+        mode: undefined,
+        legacyMode: { yoloMode: false },
+      });
+    } finally {
+      if (previousMode === undefined) delete process.env.PI_SENTINEL_MODE;
+      else process.env.PI_SENTINEL_MODE = previousMode;
+    }
+  });
+
+
+  it("attributes decisive same-value legacy selections to their layer", async () => {
+    const agentDir = await mkdtemp(path.join(tmpdir(), "pi-mode-layers-legacy-source-"));
+    const projectDir = await mkdtemp(path.join(tmpdir(), "pi-mode-layers-legacy-source-cwd-"));
+    tempPaths.push(agentDir, projectDir);
+    const legacyPath = getLegacyGlobalPolicyPath(agentDir);
+    const previousMode = process.env.PI_SENTINEL_MODE;
+    delete process.env.PI_SENTINEL_MODE;
+    try {
+      for (const flags of [
+        { yoloAutoMode: true },
+        { yoloMode: true, yoloAutoMode: true },
+      ]) {
+        await writeFile(legacyPath, JSON.stringify(flags), "utf8");
+        const result = getModeLayers({ agentDir } as never, projectDir);
+        expect(result.effective).toBe("yolo-auto");
+        expect(result.source).toBe("global-policy-legacy");
+      }
+    } finally {
+      if (previousMode === undefined) delete process.env.PI_SENTINEL_MODE;
+      else process.env.PI_SENTINEL_MODE = previousMode;
+    }
+  });
+
+
+  it("omits legacy layers that do not configure a mode", async () => {
+    const agentDir = await mkdtemp(path.join(tmpdir(), "pi-mode-layers-no-legacy-"));
+    const projectDir = await mkdtemp(path.join(tmpdir(), "pi-mode-layers-no-legacy-cwd-"));
+    tempPaths.push(agentDir, projectDir);
+    const previousMode = process.env.PI_SENTINEL_MODE;
+    delete process.env.PI_SENTINEL_MODE;
+    try {
+      const result = getModeLayers({ agentDir } as never, projectDir);
+      expect(result.layers.map((layer) => layer.name)).toEqual([
+        "session",
+        "env",
+        "project",
+        "global",
+        "bundled",
+      ]);
+    } finally {
+      if (previousMode === undefined) delete process.env.PI_SENTINEL_MODE;
+      else process.env.PI_SENTINEL_MODE = previousMode;
+    }
+  });
+
+
+  it("reports the project's legacy fallback as its project save target", async () => {
+    const agentDir = await mkdtemp(path.join(tmpdir(), "pi-mode-layers-project-write-"));
+    const projectDir = await mkdtemp(path.join(tmpdir(), "pi-mode-layers-project-write-cwd-"));
+    tempPaths.push(agentDir, projectDir);
+    const legacyPath = getLegacyProjectConfigPath(projectDir);
+    await mkdir(path.dirname(legacyPath), { recursive: true });
+    await writeFile(legacyPath, JSON.stringify({ mode: "yolo" }), "utf8");
+    const previousMode = process.env.PI_SENTINEL_MODE;
+    delete process.env.PI_SENTINEL_MODE;
+    try {
+      const result = getModeLayers({ agentDir } as never, projectDir);
+      expect(result.layers.find((layer) => layer.name === "project")).toMatchObject({
+        path: getProjectConfigPath(projectDir),
+        savePath: legacyPath,
+      });
+    } finally {
+      if (previousMode === undefined) delete process.env.PI_SENTINEL_MODE;
+      else process.env.PI_SENTINEL_MODE = previousMode;
+    }
+  });
+
+  it("shows unreadable legacy files instead of treating them as absent", async () => {
+    const agentDir = await mkdtemp(path.join(tmpdir(), "pi-mode-layers-unreadable-"));
+    const projectDir = await mkdtemp(path.join(tmpdir(), "pi-mode-layers-unreadable-cwd-"));
+    tempPaths.push(agentDir, projectDir);
+    const projectLegacyPath = getLegacyProjectConfigPath(projectDir);
+    const globalLegacyPath = getLegacyGlobalPolicyPath(agentDir);
+    await mkdir(path.dirname(projectLegacyPath), { recursive: true });
+    await writeFile(projectLegacyPath, "{ invalid", "utf8");
+    await writeFile(globalLegacyPath, "{ invalid", "utf8");
+
+    const result = getModeLayers({ agentDir } as never, projectDir);
+    expect(result.layers).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          name: "project (legacy)",
+          path: projectLegacyPath,
+          error: "unreadable",
+        }),
+        expect.objectContaining({
+          name: "global (legacy)",
+          path: globalLegacyPath,
+          error: "unreadable",
+        }),
+      ]),
+    );
+  });
 });
 
 describe("saveExtensionConfig", () => {
@@ -291,7 +536,7 @@ describe("saveExtensionConfig", () => {
     expect(runtime.config).toMatchObject({ mode: "manual" });
   });
 
-  it("warns with the project path when a project mode shadows an explicit global save", async () => {
+  it("leaves shadow notices to the settings modal", async () => {
     const agentDir = await mkdtemp(path.join(tmpdir(), "pi-runtime-shadow-"));
     const projectDir = await mkdtemp(path.join(tmpdir(), "pi-runtime-shadow-cwd-"));
     tempPaths.push(agentDir, projectDir);
@@ -314,10 +559,7 @@ describe("saveExtensionConfig", () => {
       "global",
     );
 
-    expect(ctx.ui.notify).toHaveBeenCalledWith(
-      expect.stringContaining(projectPath),
-      "warning",
-    );
+    expect(ctx.ui.notify).not.toHaveBeenCalled();
     expect(runtime.config).toMatchObject({ mode: "manual" });
   });
 

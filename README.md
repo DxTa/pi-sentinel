@@ -142,11 +142,11 @@ Use [`schemas/permissions.schema.json`](schemas/permissions.schema.json) for the
 
 Set `PI_SENTINEL_MODE` to `manual`, `yolo`, or `yolo-auto` to override the effective mode for that process only. It does not change config files or the reported global/project configs. Invalid values are ignored and reported as config issues. Child processes inherit the override unless their environment removes it. Explicitly changing Mode in settings still saves that choice for future processes; the current process continues to use the environment override.
 
-In `/sentinel`, the **Mode scope** row picks where the next Mode change is stored:
+In `/sentinel`, the **Mode saves to** row picks where the next Mode change is stored. The header shows the full mode precedence chain (session, `PI_SENTINEL_MODE`, project, legacy project files, global, legacy global, bundled), the selected scope's configured value and file, and the effective session mode and source. An unset scope inherits the effective mode; unreadable legacy files are shown as unreadable. After saving, the notice names the destination and effective source, and warns when a higher-precedence layer overrides the saved value. Logs and sandbox settings always write to the global file.
 
 - `session`: in memory only, until the next session starts. It overrides `PI_SENTINEL_MODE` and file config.
 - `project`: `<project>/.pi/permissions.json`. A committed file changes the mode for everyone who uses the repository.
-- `global` (default): `~/.pi/agent/permissions.json`. A project `mode` still overrides it; pi-sentinel warns when that happens.
+- `global` (default): `~/.pi/agent/permissions.json`. A higher-precedence project mode still overrides it.
 
 Choosing `project` or `global` replaces an active session mode.
 

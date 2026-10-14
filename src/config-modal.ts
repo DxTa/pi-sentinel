@@ -1,9 +1,18 @@
+import { relative, sep } from "node:path";
+
 import {
   type ExtensionAPI,
   type ExtensionCommandContext,
   getSettingsListTheme,
 } from "@earendil-works/pi-coding-agent";
-import { type SettingItem, SettingsList } from "@earendil-works/pi-tui";
+import {
+  matchesKey,
+  type SettingItem,
+  SettingsList,
+  Text,
+  visibleWidth,
+  wrapTextWithAnsi,
+} from "@earendil-works/pi-tui";
 
 import {
   DEFAULT_EXTENSION_CONFIG,
@@ -12,6 +21,7 @@ import {
   type PermissionSystemExtensionConfig,
 } from "./extension-config";
 import type { Ruleset } from "./rule";
+import type { ModeLayer, ModeLayers } from "./runtime";
 
 interface PermissionSystemConfigController {
   getConfig(): PermissionSystemExtensionConfig;
@@ -23,6 +33,7 @@ interface PermissionSystemConfigController {
   ): boolean;
   resetConfig?(ctx: ExtensionCommandContext): void;
   getConfigPath(cwd?: string | null): string;
+  getModeLayers?(cwd?: string | null): ModeLayers;
   /** Optional: returns the composed config-layer ruleset for origin display. */
   getComposedRules?(): Ruleset;
   /** Optional runtime state for model-backed yolo-auto worker diagnostics. */
@@ -106,11 +117,27 @@ export function buildSettingItems(
   config: PermissionSystemExtensionConfig,
   sandboxEnabled?: boolean,
   modeScope: ModeScope = "global",
+  modeLayers?: ModeLayers,
 ): SettingItem[] {
+  const selectedModeLayer = modeLayers ? getSelectedModeLayer(modeLayers, modeScope) : undefined;
+  const legacyFlags = selectedModeLayer ? formatLegacyModeFlags(selectedModeLayer) : undefined;
+  const modeValue = !modeLayers
+    ? config.mode
+    : selectedModeLayer?.error
+      ? "unreadable"
+      : selectedModeLayer?.mode ?? (legacyFlags
+        ? "legacy flags: " + legacyFlags
+        : "inherits: " + modeLayers.effective);
+  const inheritedModeIndex = modeValue.startsWith("inherits: ") && modeLayers
+    ? MODES.indexOf(modeLayers.effective)
+    : -1;
+  const modeValues = inheritedModeIndex < 0
+    ? MODES
+    : [...MODES.slice(inheritedModeIndex + 1), ...MODES.slice(0, inheritedModeIndex + 1)];
   const sandboxItem: SettingItem[] = sandboxEnabled === undefined ? [] : [{
     id: "sandbox",
     label: "Bash sandbox",
-    description: "Run Bash inside the SRT sandbox. Off keeps permission prompts but drops OS-level isolation",
+    description: "Run Bash in SRT sandbox. Off keeps permission prompts, not OS isolation.",
     currentValue: toOnOff(sandboxEnabled),
     values: ON_OFF,
   }];
@@ -121,14 +148,14 @@ export function buildSettingItems(
       label: "Mode",
       description:
         "Manual prompts; yolo auto-approves safe checks; yolo-auto uses model-backed workspace read/list approval with classic yolo elsewhere",
-      currentValue: config.mode,
-      values: MODES,
+      currentValue: modeValue,
+      values: modeValues,
     },
     {
       id: "modeScope",
-      label: "Mode scope",
+      label: "Mode saves to",
       description:
-        "Where the next mode change is stored: this session only, this project's .pi/permissions.json, or the global config",
+        "Where the next mode change is stored: this session only, this project's permissions file (reuses the legacy file when present), or the global config",
       currentValue: modeScope,
       values: MODE_SCOPES,
     },
@@ -149,6 +176,122 @@ export function buildSettingItems(
       values: ON_OFF,
     },
   ];
+}
+
+
+function formatLegacyModeFlags(layer: ModeLayer): string | undefined {
+  if (!layer.legacyMode) return undefined;
+  return Object.entries(layer.legacyMode)
+    .map(([name, value]) => name + "=" + value)
+    .join(", ");
+}
+
+function getSelectedModeLayer(
+  modeLayers: ModeLayers,
+  selectedScope: ModeScope,
+): ModeLayer | undefined {
+  const scopeLayer = modeLayers.layers.find((layer) => layer.id === selectedScope);
+  if (selectedScope !== "project" || !scopeLayer?.savePath) return scopeLayer;
+  return modeLayers.layers.find((layer) => layer.path === scopeLayer.savePath) ?? scopeLayer;
+}
+
+function getModeSaveShadowingLayer(
+  modeLayers: ModeLayers,
+  selectedScope: ModeScope,
+): ModeLayer | undefined {
+  const selectedLayer = getSelectedModeLayer(modeLayers, selectedScope);
+  const scopeIndex = selectedLayer ? modeLayers.layers.indexOf(selectedLayer) : -1;
+  const sourceIndex = modeLayers.layers.findIndex((layer) => layer.id === modeLayers.source);
+  return sourceIndex >= 0 && scopeIndex >= 0 && sourceIndex < scopeIndex
+    ? modeLayers.layers[sourceIndex]
+    : undefined;
+}
+
+export function formatModeSaveNotice(
+  mode: PermissionMode,
+  scope: ModeScope,
+  modeLayers: ModeLayers,
+): string {
+  const selectedLayer = getSelectedModeLayer(modeLayers, scope);
+  const target = scope === "session"
+    ? "memory only; lost on exit"
+    : selectedLayer?.savePath ?? selectedLayer?.path ?? "path unavailable";
+  const shadowingLayer = getModeSaveShadowingLayer(modeLayers, scope);
+  const sourceName = modeLayers.layers.find((layer) => layer.id === modeLayers.source)?.name
+    ?? modeLayers.source;
+  const effectiveSource = shadowingLayer
+    ? "from " + sourceName + ", which overrides the saved " + scope + " value"
+    : "from " + sourceName;
+  return "Saved mode '" + mode + "' → " + scope + " (" + target + "). Effective: " +
+    modeLayers.effective + " (" + effectiveSource + ").";
+}
+
+function buildModeChainLines(
+  modeLayers: ModeLayers,
+  selectedScope: ModeScope,
+  maxWidth?: number,
+  cwd?: string,
+) {
+  const selectedLayer = getSelectedModeLayer(modeLayers, selectedScope);
+  const compactPath = (id: ModeLayer["id"], path: string): string => {
+    if (maxWidth === undefined || !id.startsWith("project") || !cwd) return path;
+    const projectPath = relative(cwd, path);
+    return projectPath && projectPath !== ".." && !projectPath.startsWith(".." + sep)
+      ? "./" + projectPath
+      : path;
+  };
+  const fitPath = (prefix: string, path: string): string => {
+    if (maxWidth === undefined) return prefix + path;
+    return wrapTextWithAnsi(prefix + path, maxWidth).join("\n");
+  };
+  const rows = modeLayers.layers.flatMap((layer) => {
+    const legacyFlags = formatLegacyModeFlags(layer);
+    const value = layer.error
+      ? "— unreadable"
+      : layer.mode !== undefined
+        ? legacyFlags ? layer.mode + " (" + legacyFlags + ")" : layer.mode
+        : legacyFlags ? "legacy flags: " + legacyFlags : "— not set";
+    const selected = layer === selectedLayer ? " ← selected" : "";
+    const row = "  " + layer.name + " " + value +
+      " (" + compactPath(layer.id, layer.path) + ")" + selected;
+    return maxWidth === undefined ? [row] : wrapTextWithAnsi(row, maxWidth);
+  });
+  const saveTarget = selectedScope === "session"
+    ? "memory only (lost on exit)"
+    : selectedLayer
+      ? compactPath(selectedLayer.id, selectedLayer.savePath ?? selectedLayer.path)
+      : "(no project directory)";
+  const globalPath = modeLayers.layers.find((layer) => layer.id === "global")?.path
+    ?? "(global config unavailable)";
+  const sourceName = modeLayers.layers.find((layer) => layer.id === modeLayers.source)?.name
+    ?? modeLayers.source;
+
+  const effective = "Effective this session: " + modeLayers.effective + " (from " + sourceName + ")";
+  return {
+    rows,
+    effective: maxWidth !== undefined && visibleWidth(effective) > maxWidth
+      ? "Effective: " + modeLayers.effective + " ← " + sourceName
+      : effective,
+    selected: "Selected: " + (selectedLayer?.name ?? selectedScope) + " ← selected",
+    save: fitPath("Saving Mode writes: ", saveTarget),
+    global: fitPath("Logs & sandbox always write: ", globalPath),
+  };
+}
+
+export function formatModeChain(
+  modeLayers: ModeLayers,
+  selectedScope: ModeScope,
+  maxWidth?: number,
+  cwd?: string,
+): string {
+  const chain = buildModeChainLines(modeLayers, selectedScope, maxWidth, cwd);
+  return [
+    "Mode chain (top wins):",
+    ...chain.rows,
+    chain.effective,
+    chain.save,
+    chain.global,
+  ].join("\n");
 }
 
 export function applySetting(
@@ -181,7 +324,6 @@ function syncSettingValues(
   settingsList: SettingsList,
   config: PermissionSystemExtensionConfig,
 ): void {
-  settingsList.updateValue("mode", config.mode);
   settingsList.updateValue(
     "permissionReviewLog",
     toOnOff(config.permissionReviewLog),
@@ -210,18 +352,30 @@ async function openSettingsModal(
   const overlayOptions = {
     anchor: "center" as const,
     width: 82,
-    maxHeight: "85%" as const,
-    margin: 1,
+    maxHeight: "100%" as const,
+    margin: 0,
   };
 
   // eslint-disable-next-line @typescript-eslint/no-invalid-void-type -- ctx.ui.custom<void> is valid; rule does not allow void in generic fn call type args
   await ctx.ui.custom<void>(
-    (_tui, _theme, _keybindings, done) => {
+    (tui, _theme, _keybindings, done) => {
       let current = controller.getConfig();
       let selectedMode = current.mode;
       let modeScope: ModeScope = "global";
+      let modeLayers = controller.getModeLayers?.(ctx.cwd);
+      const modeChainText = new Text("", 0, 0);
+      let chainOffset = 0;
+      let chainPageSize = 1;
+      let chainRowCount = 0;
+
+      const settingItems = buildSettingItems(
+        current,
+        controller.getSandboxEnabled?.(),
+        modeScope,
+        modeLayers,
+      );
       const settingsList = new SettingsList(
-        buildSettingItems(current, controller.getSandboxEnabled?.(), modeScope),
+        settingItems,
         10,
         getSettingsListTheme(),
         (id, newValue) => {
@@ -233,6 +387,7 @@ async function openSettingsModal(
           }
           if (id === "modeScope") {
             modeScope = newValue as ModeScope;
+            refreshModeDisplay();
             return;
           }
           const next = applySetting(current, id, newValue);
@@ -244,11 +399,88 @@ async function openSettingsModal(
           }
           current = mergeEffectiveConfigWithSelectedMode(effectiveConfig, selectedMode);
           syncSettingValues(settingsList, current);
+          modeLayers = controller.getModeLayers?.(ctx.cwd);
+          if (modeWasExplicitlySelected && saved && modeLayers) {
+            ctx.ui.notify(
+              formatModeSaveNotice(next.mode, modeScope, modeLayers),
+              getModeSaveShadowingLayer(modeLayers, modeScope) ? "warning" : "info",
+            );
+          }
+          refreshModeDisplay();
         },
         () => done(),
       );
 
-      return settingsList;
+      const refreshModeDisplay = (): void => {
+        const modeItem = buildSettingItems(
+          current,
+          controller.getSandboxEnabled?.(),
+          modeScope,
+          modeLayers,
+        ).find((item) => item.id === "mode");
+        if (modeItem) {
+          const settingModeItem = settingItems.find((item) => item.id === "mode");
+          if (settingModeItem) settingModeItem.values = modeItem.values;
+          settingsList.updateValue("mode", modeItem.currentValue);
+        }
+        chainOffset = 0;
+        settingsList.invalidate();
+        modeChainText.invalidate();
+      };
+
+      return {
+        render(width: number) {
+          let settingsLines = settingsList.render(width);
+          if (!modeLayers) return settingsLines;
+          const height = tui.terminal?.rows ?? 24;
+          const chain = buildModeChainLines(modeLayers, modeScope, width, ctx.cwd);
+          const title = "Mode chain (top wins) · PgUp/PgDn";
+          // Reserve the longest page indicator, including any wrapping at narrow widths.
+          const budgetTitle = title + " " + chain.rows.length + "/" + chain.rows.length;
+          modeChainText.setText([
+            budgetTitle, chain.effective, chain.selected, chain.save, chain.global,
+          ].join("\n"));
+          const fixedHeaderHeight = modeChainText.render(width).length;
+          if (settingsLines.length + fixedHeaderHeight + 1 > height) {
+            // Descriptions are supplementary; never let them push controls off-screen.
+            const descriptions = settingItems.map((item) => item.description);
+            for (const item of settingItems) item.description = undefined;
+            settingsLines = settingsList.render(width);
+            settingItems.forEach((item, index) => { item.description = descriptions[index]; });
+          }
+          chainPageSize = Math.max(1, height - settingsLines.length - fixedHeaderHeight);
+          chainRowCount = chain.rows.length;
+          const lastPage = Math.max(0, Math.ceil(chainRowCount / chainPageSize) - 1);
+          chainOffset = Math.min(Math.floor(chainOffset / chainPageSize), lastPage) * chainPageSize;
+          const pageTitle = chainRowCount > chainPageSize
+            ? title + " " + (Math.floor(chainOffset / chainPageSize) + 1) + "/" + (lastPage + 1)
+            : "Mode chain (top wins):";
+          modeChainText.setText([
+            pageTitle,
+            chain.effective,
+            chain.selected,
+            ...chain.rows.slice(chainOffset, chainOffset + chainPageSize),
+            chain.save,
+            chain.global,
+          ].join("\n"));
+          return [...modeChainText.render(width), ...settingsLines];
+        },
+        invalidate() {
+          settingsList.invalidate();
+          modeChainText.invalidate();
+        },
+        handleInput(data: string) {
+          if (matchesKey(data, "pageUp")) {
+            chainOffset = Math.max(0, chainOffset - chainPageSize);
+          } else if (matchesKey(data, "pageDown")) {
+            const lastPage = Math.max(0, Math.ceil(chainRowCount / chainPageSize) - 1);
+            chainOffset = Math.min(lastPage * chainPageSize, chainOffset + chainPageSize);
+          } else {
+            settingsList.handleInput(data);
+          }
+          tui.requestRender();
+        },
+      };
     },
     { overlay: true, overlayOptions },
   );

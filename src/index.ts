@@ -57,6 +57,7 @@ import { matchTrustedPiRequest } from "./handlers/gates/trusted-pi-dirs";
 import {
   applySessionModeEvent,
   createExtensionRuntime,
+  getModeLayers,
   logResolvedConfigPaths,
   persistPermissionRule,
   recordInteractiveSession,
@@ -749,6 +750,7 @@ export default function piPermissionSystemExtension(pi: ExtensionAPI): void {
     setConfig: (next, ctx, modeWasExplicitlySelected, modeScope) =>
       saveExtensionConfig(runtime, next, ctx, modeWasExplicitlySelected, modeScope),
     resetConfig: (ctx) => resetExtensionConfig(runtime, ctx),
+    getModeLayers: (cwd) => getModeLayers(runtime, runtime.runtimeContext?.cwd ?? cwd),
     getConfigPath: (cwd) =>
       [
         `bundled: ${getBundledConfigPath(EXTENSION_ROOT)}`,
