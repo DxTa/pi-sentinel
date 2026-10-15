@@ -13,6 +13,7 @@ import { summarizeEnvironmentSizes } from "../spawn-diagnostics.js";
 import {
   checkSrtStatus,
   defaultSrtHelperPath,
+  helperRuntimePath,
   isCommandAvailable,
   isSrtPackageAvailable,
   type SrtStatus,
@@ -121,7 +122,7 @@ async function createHelperInputTransport(input: SrtHelperInput): Promise<Helper
 
 const DEFAULT_DEPS: SrtBackendDeps = {
   helperPath: () => defaultSrtHelperPath(null),
-  processExecPath: () => process.execPath,
+  processExecPath: () => helperRuntimePath(),
   platform: () => process.platform,
   packageAvailable: isSrtPackageAvailable,
   commandAvailable: isCommandAvailable,

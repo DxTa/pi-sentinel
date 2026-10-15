@@ -1,6 +1,10 @@
+import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import path from "node:path";
+
 import { describe, expect, it } from "vitest";
 
-import { checkSrtStatus } from "./srt-status.js";
+import { checkSrtStatus, helperRuntimePath } from "./srt-status.js";
 
 describe("checkSrtStatus", () => {
   it("fails closed when SRT package is unavailable", () => {
@@ -127,5 +131,29 @@ describe("checkSrtStatus", () => {
       dependencyChecks: [],
       error: "SRT entrypoint not found at /tmp/sandbox-run.sh.",
     });
+  });
+});
+
+describe("helperRuntimePath", () => {
+  it.each(["/usr/local/bin/node", "/opt/homebrew/bin/node", "/usr/local/bin/bun", "C:\\Program Files\\nodejs\\node.exe"])(
+    "keeps a real Node or Bun runtime: %s",
+    (execPath) => {
+      expect(helperRuntimePath(execPath, "/nowhere")).toBe(execPath);
+    },
+  );
+
+  it("replaces a compiled host binary with node from PATH", () => {
+    const dir = mkdtempSync(path.join(tmpdir(), "pi-helper-runtime-"));
+    const fakeNode = path.join(dir, "node");
+    writeFileSync(fakeNode, "");
+    try {
+      expect(helperRuntimePath("/Users/me/.pi-bolt/pi-bolt", `/nonexistent${path.delimiter}${dir}`)).toBe(fakeNode);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("falls back to bare node when PATH has none", () => {
+    expect(helperRuntimePath("/Users/me/.pi-bolt/pi-bolt", "/nonexistent")).toBe("node");
   });
 });

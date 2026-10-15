@@ -2,7 +2,7 @@ import { existsSync } from "node:fs";
 import { execSync } from "node:child_process";
 import { createRequire } from "node:module";
 import { fileURLToPath } from "node:url";
-import { resolve } from "node:path";
+import { basename, delimiter, join, resolve } from "node:path";
 
 const require = createRequire(import.meta.url);
 
@@ -41,6 +41,15 @@ export function isSrtPackageAvailable(): boolean {
   } catch {
     return false;
   }
+}
+
+/**
+ * Runtime that launches the sandbox helper script. A compiled host (for example pi-bolt)
+ * has a `process.execPath` that treats the script path as a prompt, so use `node` from PATH.
+ */
+export function helperRuntimePath(execPath = process.execPath, pathEnv = process.env.PATH ?? ""): string {
+  if (/^(?:node|bun)(?:\.exe)?$/i.test(basename(execPath.replaceAll("\\", "/")))) return execPath;
+  return pathEnv.split(delimiter).map((dir) => join(dir, "node")).find((candidate) => existsSync(candidate)) ?? "node";
 }
 
 export function isCommandAvailable(command: string): boolean {
