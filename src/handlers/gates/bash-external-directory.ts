@@ -1,6 +1,8 @@
-import { isReadOnlyBashCommand } from "#src/bash-command-safety";
+import { isReadOnlyBashChain, isReadOnlyBashCommand } from "#src/bash-command-safety";
 import { getNonEmptyString, toRecord } from "#src/common";
 import { isPathWithinDirectory, normalizePathForComparison } from "#src/path-utils";
+import { isPiClipboardTempFile } from "#src/clipboard-temp-cleanup";
+import { protectedBashReadPaths } from "#src/protected-read";
 import type { Rule } from "#src/rule";
 import { deriveApprovalPattern } from "#src/session-rules";
 import type { PermissionCheckResult } from "#src/types";
@@ -93,6 +95,27 @@ export async function describeBashExternalDirectoryGate(
     tcc.cwd,
   );
   if (externalPaths.length === 0) return null;
+
+  // Read-only reads of clipboard temp files or protected credential paths are allowed;
+  // protected-path output is fully redacted by the tool_result hook.
+  const readsOnlyClipboardFiles = isReadOnlyBashChain(command, tcc.cwd)
+    && externalPaths.every(isPiClipboardTempFile);
+  if (readsOnlyClipboardFiles || (await protectedBashReadPaths(command, tcc.cwd)).length > 0) {
+    return {
+      action: "allow",
+      log: {
+        event: "permission_request.protected_read_auto_allowed",
+        details: {
+          source: "tool_call",
+          toolCallId: tcc.toolCallId,
+          toolName: tcc.toolName,
+          agentName: tcc.agentName,
+          command,
+          resolution: "protected_read_auto_allowed",
+        },
+      },
+    };
+  }
 
   const unsafeMutationPaths = getHardBlockedBashMutationPaths(
     command,

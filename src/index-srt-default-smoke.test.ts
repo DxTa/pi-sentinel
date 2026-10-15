@@ -3,6 +3,7 @@ import { existsSync, readFileSync, rmSync, statSync } from "node:fs";
 import { chmod, mkdir, mkdtemp, realpath, readFile, rename, rm, symlink, writeFile } from "node:fs/promises";
 import { homedir, tmpdir } from "node:os";
 import path from "node:path";
+import { pathToFileURL } from "node:url";
 
 import { afterEach, describe, expect, it, vi } from "vitest";
 
@@ -155,6 +156,249 @@ function extractHelperInput(command: string) {
 }
 
 describe("piPermissionSystemExtension SRT default smoke", () => {
+  it("masks dotenv read results but leaves .env.example unchanged", async () => {
+    const agentDir = await makeTempDir("pi-permission-agent-");
+    const projectDir = await makeTempDir("pi-permission-project-");
+    process.env.PI_CODING_AGENT_DIR = agentDir;
+    await writeExtensionConfig(agentDir);
+
+    const pi = createFakePi();
+    piPermissionSystemExtension(pi as never);
+    const toolResult = pi.handlers.get("tool_result");
+    const envPath = path.join(projectDir, ".env");
+    await writeFile(envPath, "TOKEN=secret-value\nMODE=dev", "utf8");
+    const result = await toolResult?.({
+      toolCallId: "env-read",
+      toolName: "read",
+      input: { path: envPath },
+      content: [{ type: "text", text: "TOKEN=secret-value\nMODE=dev" }],
+      isError: false,
+    }, createContext(projectDir));
+
+    expect(result).toEqual({
+      content: [{ type: "text", text: "TOKEN=****\nMODE=****" }],
+    });
+
+    const throwingMetadata = new Proxy({}, {
+      get(_target, property) {
+        if (property === "truncation") throw new Error("metadata access failed");
+        return undefined;
+      },
+    });
+    const exceptionResult = await toolResult?.({
+      toolCallId: "env-read-mask-exception",
+      toolName: "read",
+      input: { path: envPath },
+      content: [{ type: "text", text: "TOKEN=secret-value\nMODE=dev" }],
+      details: throwingMetadata,
+      isError: false,
+    }, createContext(projectDir));
+    expect(exceptionResult).toEqual({ content: [{ type: "text", text: "****" }] });
+
+    const encodedEnvUrl = pathToFileURL(envPath).href.replace(".env", "%2Eenv");
+    const encodedPathResult = await toolResult?.({
+      toolCallId: "env-read-file-url",
+      toolName: "read",
+      input: { path: encodedEnvUrl },
+      content: [{ type: "text", text: "TOKEN=secret-value\nMODE=dev" }],
+      isError: false,
+    }, createContext(projectDir));
+    expect(encodedPathResult).toEqual({
+      content: [{ type: "text", text: "TOKEN=****\nMODE=****" }],
+    });
+    const imageResult = await toolResult?.({
+      toolCallId: "env-read-image",
+      toolName: "read",
+      input: { path: envPath },
+      content: [{ type: "image", data: "raw-image-secret", mimeType: "image/png" }],
+      isError: false,
+    }, createContext(projectDir));
+    expect(imageResult).toEqual({
+      content: [{ type: "text", text: "****" }],
+    });
+
+    const exampleResult = await toolResult?.({
+      toolCallId: "env-example-read",
+      toolName: "read",
+      input: { path: path.join(projectDir, ".env.example") },
+      content: [{ type: "text", text: "TOKEN=placeholder-value" }],
+      isError: false,
+    }, createContext(projectDir));
+    expect(exampleResult).toBeUndefined();
+
+    const mixedCaseExamplePath = path.join(projectDir, ".ENV.EXAMPLE");
+    await writeFile(mixedCaseExamplePath, "TOKEN=placeholder-value", "utf8");
+    const mixedCaseExampleResult = await toolResult?.({
+      toolCallId: "env-example-case-read",
+      toolName: "read",
+      input: { path: mixedCaseExamplePath },
+      content: [{ type: "text", text: "TOKEN=placeholder-value" }],
+      isError: false,
+    }, createContext(projectDir));
+    expect(mixedCaseExampleResult).toBeUndefined();
+
+    const mixedCaseEnvPath = path.join(projectDir, ".Env.local");
+    const dotenvAliasPath = path.join(projectDir, "plain-config");
+    await writeFile(mixedCaseEnvPath, "TOKEN=case-sensitive-secret", "utf8");
+    await symlink(mixedCaseEnvPath, dotenvAliasPath);
+    for (const requestPath of [mixedCaseEnvPath, `@${mixedCaseEnvPath}`, dotenvAliasPath]) {
+      const caseResult = await toolResult?.({
+        toolCallId: `env-read-${requestPath}`,
+        toolName: "read",
+        input: { path: requestPath },
+        content: [{ type: "text", text: "TOKEN=case-sensitive-secret" }],
+        isError: false,
+      }, createContext(projectDir));
+      expect(caseResult).toEqual({
+        content: [{ type: "text", text: "TOKEN=****" }],
+      });
+    }
+
+    const trailingSpaceAlias = path.join(projectDir, "notes ");
+    const curlyQuoteAlias = path.join(projectDir, "it’s");
+    await symlink(envPath, trailingSpaceAlias);
+    await symlink(envPath, curlyQuoteAlias);
+    const trailingSpaceResult = await toolResult?.({
+      toolCallId: "env-read-trailing-space-alias",
+      toolName: "read",
+      input: { path: trailingSpaceAlias },
+      content: [{ type: "text", text: "TOKEN=secret-value\nMODE=dev" }],
+      isError: false,
+    }, createContext(projectDir));
+    expect(trailingSpaceResult).toEqual({
+      content: [{ type: "text", text: "TOKEN=****\nMODE=****" }],
+    });
+
+    const curlyQuoteResult = await toolResult?.({
+      toolCallId: "env-read-curly-quote-alias",
+      toolName: "read",
+      input: { path: path.join(projectDir, "it's") },
+      content: [{ type: "text", text: "TOKEN=secret-value\nMODE=dev" }],
+      isError: false,
+    }, createContext(projectDir));
+    expect(curlyQuoteResult).toEqual({ content: [{ type: "text", text: "TOKEN=****\nMODE=****" }] });
+
+    await writeFile(envPath, 'TOKEN="first-part\nsecret-middle\nlast-part"\n', "utf8");
+    const partialResult = await toolResult?.({
+      toolCallId: "env-read-offset",
+      toolName: "read",
+      input: { path: ".env", offset: 2, limit: 1 },
+      content: [{
+        type: "text",
+        text: "secret-middle\n\n[2 more lines in file. Use offset=3 to continue.]",
+      }],
+      isError: false,
+    }, createContext(projectDir));
+    expect(partialResult).toEqual({
+      content: [{
+        type: "text",
+        text: "****\n\n[2 more lines in file. Use offset=3 to continue.]",
+      }],
+    });
+
+    const truncatedResult = await toolResult?.({
+      toolCallId: "env-read-truncated",
+      toolName: "read",
+      input: { path: envPath },
+      content: [{
+        type: "text",
+        text: 'TOKEN="first-part\nsecret-middle\n\n[Showing lines 1-2 of 4 (50.0KB limit). Use offset=3 to continue.]',
+      }],
+      details: {
+        truncation: {
+          content: 'TOKEN="first-part\nsecret-middle',
+          truncated: true,
+          truncatedBy: "lines",
+          totalLines: 4,
+          totalBytes: 50,
+          outputLines: 2,
+          outputBytes: 30,
+          lastLinePartial: false,
+          firstLineExceedsLimit: false,
+          maxLines: 2,
+          maxBytes: 50 * 1024,
+        },
+      },
+      isError: false,
+    }, createContext(projectDir));
+    expect(truncatedResult).toEqual({
+      content: [{
+        type: "text",
+        text: 'TOKEN=****\n****\n\n[Showing lines 1-2 of 4 (50.0KB limit). Use offset=3 to continue.]',
+      }],
+      details: {
+        truncation: {
+          content: "TOKEN=****\n****",
+          truncated: true,
+          truncatedBy: "lines",
+          totalLines: 4,
+          totalBytes: 50,
+          outputLines: 2,
+          outputBytes: 30,
+          lastLinePartial: false,
+          firstLineExceedsLimit: false,
+          maxLines: 2,
+          maxBytes: 50 * 1024,
+        },
+      },
+    });
+
+    const unavailableSourceResult = await toolResult?.({
+      toolCallId: "env-read-source-unavailable",
+      toolName: "read",
+      input: { path: path.join(projectDir, ".env-raced") },
+      content: [{ type: "text", text: "TOKEN=secret-value" }],
+      details: { truncation: { content: "TOKEN=secret-value" } },
+      isError: false,
+    }, createContext(projectDir));
+    expect(unavailableSourceResult).toEqual({
+      content: [{ type: "text", text: "****" }],
+      details: { truncation: { content: "****" } },
+    });
+  });
+
+  it("auto-allows protected credential reads and fully redacts their output", async () => {
+    const agentDir = await makeTempDir("pi-permission-agent-");
+    const projectDir = await makeTempDir("pi-permission-project-");
+    process.env.PI_CODING_AGENT_DIR = agentDir;
+    await writeExtensionConfig(agentDir, {
+      permission: { "*": "allow", bash: { "*": "allow" }, external_directory: { "*": "ask" } },
+      sandbox: {
+        enabled: true,
+        backend: "srt",
+        defaultProfile: "offline-dev",
+        profiles: { "offline-dev": { network: false, env: { allow: [], deny: [] }, maskedPaths: [] } },
+      },
+    });
+
+    const pi = createFakePi();
+    piPermissionSystemExtension(pi as never);
+    const context = createContext(projectDir);
+    const redacted = { content: [{ type: "text", text: "****" }] };
+
+    for (const secretPath of [path.join(homedir(), ".ssh", "id_ed25519"), path.join(homedir(), ".config", "gh", "hosts.yml")]) {
+      expect(await pi.handlers.get("tool_result")?.({
+        toolCallId: "t-protected-read",
+        toolName: "read",
+        input: { path: secretPath },
+        content: [{ type: "text", text: "super-secret-token" }],
+        isError: false,
+      }, context as never)).toEqual(redacted);
+    }
+
+    const bashPath = path.join(homedir(), ".config", "gh", "hosts.yml");
+    const event = { toolName: "bash", toolCallId: "t-protected-bash", input: { command: `cat ${bashPath}` } };
+    expect(await pi.handlers.get("tool_call")?.(event, context as never)).toBeUndefined();
+    expect(context.ui.select).not.toHaveBeenCalled();
+    expect(await pi.handlers.get("tool_result")?.({
+      toolCallId: "t-protected-bash",
+      toolName: "bash",
+      input: event.input,
+      content: [{ type: "text", text: "super-secret-token" }],
+      isError: false,
+    }, context as never)).toEqual(redacted);
+  });
+
   it("captures E2BIG result metadata from final wrapped Bash input", async () => {
     const agentDir = await makeTempDir("pi-permission-agent-");
     const projectDir = await makeTempDir("pi-permission-project-");
@@ -598,7 +842,7 @@ describe("piPermissionSystemExtension SRT default smoke", () => {
     )).resolves.toMatchObject({ block: true });
   });
 
-  it("keeps .env reads and selectors gated by path rules", async () => {
+  it("auto-allows workspace .env reads but keeps selectors gated by path rules", async () => {
     const agentDir = await makeTempDir("pi-permission-agent-");
     const projectDir = await makeTempDir("pi-permission-project-");
     const envPath = path.join(projectDir, ".env.local");
@@ -621,7 +865,7 @@ describe("piPermissionSystemExtension SRT default smoke", () => {
     await expect(pi.handlers.get("tool_call")?.(
       { toolName: "read", input: { path: envPath } },
       context as never,
-    )).resolves.toMatchObject({ block: true });
+    )).resolves.toEqual({});
     await expect(pi.handlers.get("tool_call")?.(
       { toolName: "grep", input: { path: projectDir, glob: ".env*", pattern: "." } },
       context as never,
@@ -656,6 +900,99 @@ describe("piPermissionSystemExtension SRT default smoke", () => {
         { toolName: "edit", input: { path: path.join(projectDir, envName), oldText: "TOKEN=old", newText: "TOKEN=new" } },
         context as never,
       )).resolves.toMatchObject({ block: true });
+    }
+  });
+
+  it("auto-allows read-only workspace Bash reads of dotenv files", async () => {
+    const agentDir = await makeTempDir("pi-permission-agent-");
+    const projectDir = await makeTempDir("pi-permission-project-");
+    const envPath = path.join(projectDir, ".env.local");
+    await writeFile(envPath, "TOKEN=secret-value\n# short\n", "utf8");
+    process.env.PI_CODING_AGENT_DIR = agentDir;
+    await writeExtensionConfig(agentDir, {
+      permission: {
+        "*": "allow",
+        bash: { "*": "allow" },
+        external_directory: { "*": "allow" },
+      },
+      sandbox: {
+        enabled: true,
+        backend: "srt",
+        defaultProfile: "offline-dev",
+        profiles: {
+          "offline-dev": {
+            network: false,
+            env: { allow: [], deny: [] },
+            maskedPaths: ["**/.env", "**/.env.*"],
+          },
+        },
+      },
+    });
+
+    const pi = createFakePi();
+    piPermissionSystemExtension(pi as never);
+    const context = createContext(projectDir);
+    const event = {
+      toolName: "bash",
+      toolCallId: "t-dotenv-read",
+      input: { command: `cat ${envPath}` },
+    };
+    const result = await pi.handlers.get("tool_call")?.(event, context as never);
+
+    expect(result).toBeUndefined();
+    expect(context.ui.select).not.toHaveBeenCalled();
+    const approvedPath = await realpath(envPath);
+    const helperInput = extractHelperInput(event.input.command);
+    expect(helperInput.runtimeConfig.filesystem.allowRead).toContain(approvedPath);
+    expect(helperInput.runtimeConfig.filesystem.allowWrite).not.toContain(approvedPath);
+
+    const directResult = await pi.handlers.get("tool_result")?.({
+      toolCallId: "t-dotenv-read",
+      toolName: "bash",
+      input: event.input,
+      content: [{ type: "text", text: "TOKEN=secret-value\n# short\n" }],
+      details: {},
+      isError: false,
+    }, context as never);
+    expect(directResult).toMatchObject({
+      content: [{ type: "text", text: "TOKEN=****\n# ****\n" }],
+    });
+
+    const transformedCommand = `cat ${envPath} | sed 's/=/: /'`;
+    const transformedEvent = {
+      toolName: "bash",
+      toolCallId: "t-dotenv-transform",
+      input: { command: transformedCommand },
+    };
+    const transformedGate = await pi.handlers.get("tool_call")?.(transformedEvent, context as never);
+    expect(transformedGate).toBeUndefined();
+    const transformedOutput = await pi.handlers.get("tool_result")?.({
+      toolCallId: "t-dotenv-transform",
+      toolName: "bash",
+      input: transformedEvent.input,
+      content: [{ type: "text", text: "TOKEN: secret-value\n# short\n" }],
+      details: { truncation: { content: "TOKEN: secret-value\n# short\n" } },
+      isError: false,
+    }, context as never);
+    expect(transformedOutput).toMatchObject({
+      content: [{ type: "text", text: "TOKEN: ****\n# ****\n" }],
+      details: { truncation: { content: "TOKEN: ****\n# ****\n" } },
+    });
+
+    for (const command of [
+      `echo changed > ${envPath}`,
+      `rm ${envPath}`,
+      `mv ${envPath} ${path.join(projectDir, "moved.env")}`,
+      `tee ${envPath}`,
+      `sed -i '' ${envPath}`,
+      `cp ${envPath} ${path.join(projectDir, "copy.env")}`,
+      `truncate -s 0 ${envPath}`,
+    ]) {
+      const writeResult = await pi.handlers.get("tool_call")?.(
+        { toolName: "bash", toolCallId: `t-dotenv-write-${command}`, input: { command } },
+        context as never,
+      );
+      expect(writeResult).toMatchObject({ block: true });
     }
   });
 

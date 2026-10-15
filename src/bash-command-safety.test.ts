@@ -2,10 +2,10 @@ import { describe, expect, it } from "vitest";
 import { isReadOnlyBashChain, isReadOnlyBashCommand, isReadOnlyBashDiagnostic } from "./bash-command-safety";
 
 describe("isReadOnlyBashCommand", () => {
-  it.each(["ls -la src", "grep TODO src/index.ts", "find src -name '*.ts'", "docker ps"]) (
+  it.each(["ls -la src", "grep TODO src/index.ts", "find src -name '*.ts'", "docker ps", "sed 's/=/: /' .env"]) (
     "accepts read-only command %s", (command) => expect(isReadOnlyBashCommand(command)).toBe(true),
   );
-  it.each(["find . -exec rm -rf {} \;", "sort -o out", "cat secret && touch x", "ls > out", "python script.py", "cat $HOME/.ssh/id_rsa", "grep TODO src/*.ts", "find -L src -name '*.ts'", "less +!touch x file", "more +!touch x file", "sort --compress-program=sh input"]) (
+  it.each(["find . -exec rm -rf {} \;", "sort -o out", "cat secret && touch x", "ls > out", "python script.py", "cat $HOME/.ssh/id_rsa", "grep TODO src/*.ts", "find -L src -name '*.ts'", "less +!touch x file", "more +!touch x file", "sort --compress-program=sh input", "sed -i s,a,b, .env", "rg --pre=sh x src", "rg --pre sh x src", "rg --hostname-bin=sh x src", "sed 's/=/: /w /tmp/output' .env", "sed 's/=/: /' -i .env"]) (
     "rejects unsafe or mutating command %s", (command) => expect(isReadOnlyBashCommand(command)).toBe(false),
   );
 
@@ -41,6 +41,7 @@ describe("isReadOnlyBashChain", () => {
     "cd src 2>/dev/null && ls && git log --oneline -5 && cat index.ts | head -60",
     "cd src; grep -n TODO index.ts | head; sed -n 1,12p index.ts",
     "git status && git diff --stat",
+    "cat .env | sed 's/=/: /'",
     "wc -l src/index.ts 2>&1",
     'cd src && grep -rn -E "gpt-6-sol|sonnet-5" . | grep -v "sonnet-5\\.5" | head -50; echo; grep -rln -E "gpt-6-sol|sonnet-5([^.]|$)" . | wc -l',
   ])("accepts read-only chain %s", (command) => expect(isReadOnlyBashChain(command, cwd)).toBe(true));

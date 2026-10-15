@@ -906,11 +906,17 @@ const URL_PATTERN = /^[a-z][a-z0-9+.-]*:\/\//i;
  */
 const REGEX_METACHAR_PATTERN = /\.\*|\.\+|\\\||\\\(|\\\)|\[.*?\]|\^\//;
 
+/** Path value of a `NAME=value` / `--opt=value` token when `isPath` accepts it, else null. */
+function assignmentPathValue(token: string, isPath: (value: string) => boolean): string | null {
+  const value = token.slice(token.indexOf("=") + 1);
+  return value && !URL_PATTERN.test(value) && isPath(value) ? value : null;
+}
+
 /**
  * Broader token classification for cross-cutting `path` rules.
  *
  * Accepts the same rejections as `classifyTokenAsPathCandidate` (empty, flags,
- * env assignments, URLs, @scope/package, bare-slash, regex metacharacters),
+ * env assignments, URLs, @scope/package, repeated-slash markers, regex metacharacters),
  * but also accepts:
  * - Tokens starting with `.` (dot-files: `.env`, `./src`)
  * - Tokens containing `/` (relative paths: `src/foo.ts`)
@@ -920,17 +926,13 @@ const REGEX_METACHAR_PATTERN = /\.\*|\.\+|\\\||\\\(|\\\)|\[.*?\]|\^\//;
  */
 function classifyTokenAsRuleCandidate(token: string): string | null {
   if (!token) return null;
-  if (token.startsWith("-")) return null;
 
-  const eqIndex = token.indexOf("=");
-  const slashIndex = token.indexOf("/");
-  if (eqIndex !== -1 && (slashIndex === -1 || eqIndex < slashIndex)) {
-    return null;
-  }
+  if (token.includes("=")) return assignmentPathValue(token, (value) => value.includes("/"));
+  if (token.startsWith("-")) return null;
 
   if (URL_PATTERN.test(token)) return null;
   if (token.startsWith("@") && !token.startsWith("@/")) return null;
-  if (/^\/+$/.test(token)) return null;
+  if (/^\/{2,}$/.test(token)) return null;
   if (REGEX_METACHAR_PATTERN.test(token)) return null;
 
   // Accept: starts with . (dot-files, ./ relative), contains / (paths),
@@ -951,15 +953,12 @@ function classifyTokenAsPathCandidate(token: string): string | null {
   // Skip empty tokens
   if (!token) return null;
 
-  // Skip flags
-  if (token.startsWith("-")) return null;
-
-  // Skip env assignments (FOO=/bar)
-  const eqIndex = token.indexOf("=");
-  const slashIndex = token.indexOf("/");
-  if (eqIndex !== -1 && (slashIndex === -1 || eqIndex < slashIndex)) {
-    return null;
+  if (token.includes("=")) {
+    return assignmentPathValue(token, (value) => /^(\/|~\/|\.\/|\.\.\/)/.test(value));
   }
+
+  // Skip flags without a path value
+  if (token.startsWith("-")) return null;
 
   // Skip URLs
   if (URL_PATTERN.test(token)) return null;
@@ -967,9 +966,8 @@ function classifyTokenAsPathCandidate(token: string): string | null {
   // Skip @scope/package patterns
   if (token.startsWith("@") && !token.startsWith("@/")) return null;
 
-  // Skip bare-slash tokens (// JS comments, lone /, etc.) — they resolve to root
-  // and are never meaningful path arguments in practice.
-  if (/^\/+$/.test(token)) return null;
+  // Preserve `/` as an explicit filesystem-root argument; ignore multi-slash markers.
+  if (/^\/{2,}$/.test(token)) return null;
 
   // Skip tokens that contain regex metacharacter sequences — these are almost
   // certainly grep/sed/awk patterns, not filesystem paths.

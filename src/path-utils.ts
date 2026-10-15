@@ -1,36 +1,49 @@
 import { existsSync, realpathSync } from "node:fs";
+import { fileURLToPath } from "node:url";
 import { homedir } from "node:os";
 import { basename, dirname, join, normalize, resolve, sep } from "node:path";
 
-import { getNonEmptyString, toRecord } from "./common";
+import { toRecord } from "./common";
 import { expandHomePath } from "./expand-home";
 import { wildcardMatch } from "./wildcard-matcher";
 
-export function normalizePathForComparison(
-  pathValue: string,
-  cwd: string,
-): string {
-  const trimmed = pathValue.trim().replace(/^['"]|['"]$/g, "");
-  if (!trimmed) {
-    return "";
-  }
+const UNICODE_PATH_SPACES = /[\u00A0\u2000-\u200A\u202F\u205F\u3000]/g;
+const INVALID_FILE_URL_PATH = "\u0000invalid-file-url/.env";
 
-  let normalizedPath = trimmed.startsWith("@") ? trimmed.slice(1) : trimmed;
+function normalizeWindowsShellPath(filePath: string): string {
+  if (!filePath.startsWith("/") || filePath.startsWith("//") || filePath.includes("\\")) {
+    return filePath;
+  }
+  const match = filePath.match(/^\/(?:mnt\/|cygdrive\/)?([a-z])(?:\/(.*))?$/i);
+  if (!match) return filePath;
+  const suffix = match[2]?.replaceAll("/", "\\");
+  return `${match[1]!.toUpperCase()}:\\${suffix ?? ""}`;
+}
+
+export function normalizePathForComparison(pathValue: string, cwd: string): string {
+  let normalizedPath = pathValue.replace(UNICODE_PATH_SPACES, " ");
+  if (normalizedPath.startsWith("@")) normalizedPath = normalizedPath.slice(1);
+
+  if (process.platform === "win32") {
+    normalizedPath = normalizeWindowsShellPath(normalizedPath);
+  }
 
   if (normalizedPath === "~") {
     normalizedPath = homedir();
-  } else if (
-    normalizedPath.startsWith("~/") ||
-    normalizedPath.startsWith("~\\")
-  ) {
+  } else if (normalizedPath.startsWith("~/") || normalizedPath.startsWith("~\\")) {
     normalizedPath = join(homedir(), normalizedPath.slice(2));
   }
 
-  const absolutePath = resolve(cwd, normalizedPath);
-  const normalizedAbsolutePath = normalize(absolutePath);
-  return process.platform === "win32"
-    ? normalizedAbsolutePath.toLowerCase()
-    : normalizedAbsolutePath;
+  if (/^file:\/\//.test(normalizedPath)) {
+    try {
+      normalizedPath = fileURLToPath(normalizedPath);
+    } catch {
+      return INVALID_FILE_URL_PATH;
+    }
+  }
+
+  const absolutePath = normalize(resolve(cwd, normalizedPath));
+  return process.platform === "win32" ? absolutePath.toLowerCase() : absolutePath;
 }
 
 export function isPathWithinDirectory(
@@ -96,7 +109,78 @@ export function getPathBearingToolPath(
     return null;
   }
 
-  return getNonEmptyString(toRecord(input).path);
+  const pathValue = toRecord(input).path;
+  return typeof pathValue === "string" && pathValue.trim() !== "" ? pathValue : null;
+}
+
+/** Match `.env*` filenames, excluding `.env.example` templates. */
+function isSensitiveEnvBasename(pathValue: string): boolean {
+  const fileName = basename(pathValue).toLowerCase();
+  return fileName.startsWith(".env") && !fileName.endsWith(".env.example");
+}
+
+function lowercasePathBasename(pathValue: string): string {
+  const trailingSeparators = pathValue.match(/[\\/]+$/)?.[0] ?? "";
+  const pathWithoutTrailingSeparators = trailingSeparators
+    ? pathValue.slice(0, -trailingSeparators.length)
+    : pathValue;
+  const separatorIndex = Math.max(
+    pathWithoutTrailingSeparators.lastIndexOf("/"),
+    pathWithoutTrailingSeparators.lastIndexOf("\\"),
+  );
+  return `${pathWithoutTrailingSeparators.slice(0, separatorIndex + 1)}${pathWithoutTrailingSeparators.slice(separatorIndex + 1).toLowerCase()}${trailingSeparators}`;
+}
+
+/** Resolve the exact read-path spelling Pi will use, including its file-name fallbacks. */
+export function resolveReadPathForComparison(pathValue: string, cwd: string): string {
+  const resolved = normalizePathForComparison(pathValue, cwd);
+  if (resolved === INVALID_FILE_URL_PATH || existsSync(resolved)) return resolved;
+
+  const nfdVariant = resolved.normalize("NFD");
+  const variants = [
+    resolved.replace(/ (AM|PM)\./gi, "\u202F$1."),
+    nfdVariant,
+    resolved.replace(/'/g, "\u2019"),
+    nfdVariant.replace(/'/g, "\u2019"),
+  ];
+  return variants.find((candidate) => candidate !== resolved && existsSync(candidate)) ?? resolved;
+}
+
+/** Input, normalized, resolved-read, and real paths in both original and case-folded basename forms. */
+export function getPathPolicyCandidates(pathValue: string, cwd: string): string[] {
+  const normalizedPath = normalizePathForComparison(pathValue, cwd);
+  const resolvedReadPath = resolveReadPathForComparison(pathValue, cwd);
+  const candidates = [pathValue, normalizedPath, resolvedReadPath];
+  for (const candidate of new Set([normalizedPath, resolvedReadPath])) {
+    if (!candidate || candidate === INVALID_FILE_URL_PATH) continue;
+    try {
+      candidates.push(realpathSync.native(candidate));
+    } catch {
+      // Keep lexical candidates for missing paths and inaccessible targets.
+    }
+  }
+  const uniqueCandidates = [...new Set(candidates.filter(Boolean))];
+  const caseFoldedSensitivePaths = uniqueCandidates.some(isSensitiveEnvBasename)
+    ? uniqueCandidates.map((candidate) => candidate.toLowerCase())
+    : [];
+  return [...new Set([
+    ...uniqueCandidates,
+    ...uniqueCandidates.map(lowercasePathBasename),
+    ...caseFoldedSensitivePaths,
+  ])];
+}
+
+/** Return a case-normalized path for matching the existing `.env*` path rules. */
+export function sensitiveEnvPathForPolicy(
+  pathValue: string,
+  cwd = process.cwd(),
+): string | null {
+  const candidate = getPathPolicyCandidates(pathValue, cwd).find(isSensitiveEnvBasename);
+  return candidate ? lowercasePathBasename(candidate) : null;
+}
+
+export function isSensitiveEnvPath(pathValue: string, cwd = process.cwd()): boolean {
+  return getPathPolicyCandidates(pathValue, cwd).some(isSensitiveEnvBasename);
 }
 
 /**
@@ -109,13 +193,11 @@ export interface WorkspaceLocalFileOperationOptions {
 }
 
 export function hasProtectedEnvSelector(toolName: string, input: unknown): boolean {
-  if (toolName !== "grep" && toolName !== "find" && toolName !== "ls") {
-    return false;
-  }
+  if (toolName !== "grep" && toolName !== "find" && toolName !== "ls") return false;
 
   const record = toRecord(input);
-  return [record.path, record.glob, record.pattern].some(
-    (value) => typeof value === "string" && value.includes(".env"),
+  return [record.path, record.glob, record.pattern].some((value) =>
+    typeof value === "string" && value.toLowerCase().replaceAll("%2e", ".").includes(".env"),
   );
 }
 
@@ -135,15 +217,22 @@ export function isWorkspaceLocalFileOperation(
   );
   if (!pathValue) return false;
 
-  const normalizedPath = normalizePathForComparison(pathValue, cwd);
+  const lexicalPath = normalizePathForComparison(pathValue, cwd);
+  const normalizedPath = toolName === "read"
+    ? resolveReadPathForComparison(pathValue, cwd)
+    : lexicalPath;
   const normalizedCwd = normalizePathForComparison(cwd, cwd);
   if (!normalizedPath || !normalizedCwd || !existsSync(normalizedCwd)) return false;
 
-  const isEnvPath = basename(normalizedPath).startsWith(".env");
+  const isRequestedEnvPath = isSensitiveEnvBasename(lexicalPath) || isSensitiveEnvBasename(normalizedPath);
   if (toolName === "edit" && !existsSync(normalizedPath)) return false;
 
   try {
     const canonicalCwd = realpathSync.native(normalizedCwd);
+    const canonicalTargetPath = existsSync(normalizedPath)
+      ? realpathSync.native(normalizedPath)
+      : normalizedPath;
+    const isCanonicalEnvTarget = isSensitiveEnvBasename(canonicalTargetPath);
     let candidate = normalizedPath;
     while (!existsSync(candidate)) {
       const parent = dirname(candidate);
@@ -154,8 +243,11 @@ export function isWorkspaceLocalFileOperation(
       realpathSync.native(candidate),
       canonicalCwd,
     );
+    const isAllowedEnvRead = toolName === "read"
+      && options.allowWorkspaceEnvRead === true
+      && isCanonicalEnvTarget;
     return isCanonicalWorkspacePath
-      && (!isEnvPath || (toolName === "read" && options.allowWorkspaceEnvRead === true));
+      && (!(isRequestedEnvPath || isCanonicalEnvTarget) || isAllowedEnvRead);
   } catch {
     return false;
   }
@@ -170,7 +262,7 @@ export function isPathWithinCanonicalWorkingDirectory(
   pathValue: string,
   cwd: string,
 ): boolean {
-  const normalizedPath = normalizePathForComparison(pathValue, cwd);
+  const normalizedPath = resolveReadPathForComparison(pathValue, cwd);
   const normalizedCwd = normalizePathForComparison(cwd, cwd);
   if (!normalizedPath || !normalizedCwd || !existsSync(normalizedCwd)) return false;
   try {
@@ -192,7 +284,7 @@ export function isPathOutsideWorkingDirectory(
   cwd: string,
 ): boolean {
   const normalizedCwd = normalizePathForComparison(cwd, cwd);
-  const normalizedPath = normalizePathForComparison(pathValue, cwd);
+  const normalizedPath = resolveReadPathForComparison(pathValue, cwd);
   if (!normalizedCwd || !normalizedPath) {
     return false;
   }

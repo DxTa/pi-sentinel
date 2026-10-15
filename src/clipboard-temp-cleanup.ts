@@ -11,6 +11,18 @@ export function extractPiClipboardPaths(text: string): string[] {
   return [...text.matchAll(PI_CLIPBOARD_PATH_PATTERN)].map(([path]) => path);
 }
 
+/** A regular (non-symlink) `pi-clipboard-<UUID>.<ext>` file inside the OS temp root. */
+export function isPiClipboardTempFile(path: string): boolean {
+  if (!PI_CLIPBOARD_FILENAME.test(basename(path))) return false;
+  try {
+    const stat = lstatSync(path);
+    if (!stat.isFile() || stat.isSymbolicLink()) return false;
+    return isPathWithinDirectory(realpathSync.native(path), realpathSync.native(tmpdir()));
+  } catch {
+    return false;
+  }
+}
+
 export interface PiClipboardTempCleanup {
   trackText(text: string): void;
   trackInteractiveText(text: string): void;
@@ -40,19 +52,7 @@ export function createPiClipboardTempCleanup(): PiClipboardTempCleanup {
   };
 
   const isTrackedInteractivePath = (path: string): boolean => {
-    if (!interactivePaths.has(path) || !PI_CLIPBOARD_FILENAME.test(basename(path))) {
-      return false;
-    }
-
-    try {
-      const stat = lstatSync(path);
-      if (!stat.isFile() || stat.isSymbolicLink()) return false;
-      const canonicalPath = realpathSync.native(path);
-      const canonicalTempRoot = realpathSync.native(tmpdir());
-      return isPathWithinDirectory(canonicalPath, canonicalTempRoot);
-    } catch {
-      return false;
-    }
+    return interactivePaths.has(path) && isPiClipboardTempFile(path);
   };
 
   return {

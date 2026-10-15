@@ -13,6 +13,7 @@ import { NEIGHBOUR_WINDOW_MS, summarizeNeighbours } from "./yolo-auto-neighbours
 import { openDecisionStore, type DecisionStore } from "./yolo-auto-decision-store";
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
 import type { ChildProcess } from "node:child_process";
+import { toRecord } from "./common";
 
 // ── Extension imports ────────────────────────────────────────────────────
 import { registerPermissionSystemCommand } from "./config-modal";
@@ -51,7 +52,14 @@ import { YOLO_AUTO_BUILD_ID } from "./yolo-auto-build";
 import { PromptWaitTracker } from "./prompt-state";
 import { getHardBlockedBashMutationPaths } from "./handlers/gates/bash-external-directory.js";
 import { extractExternalPathsFromBashCommand } from "./handlers/gates/bash-path-extractor.js";
-import { isPathWithinDirectory } from "./path-utils";
+import { isReadOnlyBashChain } from "./bash-command-safety";
+import {
+  getPathBearingToolPath,
+  isPathWithinDirectory,
+  isSensitiveEnvPath,
+  isWorkspaceLocalFileOperation,
+  resolveReadPathForComparison,
+} from "./path-utils";
 import { PermissionSession } from "./permission-session";
 import { matchTrustedPiRequest } from "./handlers/gates/trusted-pi-dirs";
 import {
@@ -95,6 +103,15 @@ import {
   DEFAULT_SRT_HELPER_INPUT_FILE_ENV,
 } from "./sandbox/backends/srt-backend.js";
 import { summarizeEnvironmentSizes } from "./sandbox/spawn-diagnostics.js";
+import {
+  maskDotenvReadResult,
+  maskDotenvText,
+  maskSecretValues,
+  parseDotenvValues,
+  readDotenvSourceWithinLimit,
+} from "./env-mask";
+import { isProtectedCredentialReadPath, protectedBashReadPaths } from "./protected-read";
+
 import { defaultSrtHelperPath, defaultSrtStatus } from "./sandbox/srt-status.js";
 import { SandboxPolicyManager, type Grant, type GrantDuration } from "./sandbox/policy-manager.js";
 import { createSandboxRuntimeLoader } from "./sandbox/runtime-lazy.js";
@@ -139,6 +156,27 @@ import { existsSync, lstatSync, realpathSync, unlinkSync } from "node:fs";
 import { dirname, isAbsolute, join, resolve } from "node:path";
 import { homedir } from "node:os";
 import { createPiClipboardTempCleanup } from "./clipboard-temp-cleanup.js";
+
+/** Replace a tool result with `****`, including truncation metadata; never throws. */
+function fullyRedactedResult(details: unknown): { content: { type: "text"; text: string }[]; details?: unknown } {
+  const content = [{ type: "text" as const, text: "****" }];
+  try {
+    const masked = maskDotenvReadDetails(details, () => "****");
+    return masked === undefined ? { content } : { content, details: masked };
+  } catch {
+    return { content };
+  }
+}
+
+function maskDotenvReadDetails(details: unknown, maskText: (text: string) => string): unknown {
+  const detailsRecord = toRecord(details);
+  const truncation = toRecord(detailsRecord.truncation);
+  if (typeof truncation.content !== "string") return details;
+  return {
+    ...detailsRecord,
+    truncation: { ...truncation, content: maskText(truncation.content) },
+  };
+}
 
 // ── Config helpers ───────────────────────────────────────────────────────
 
@@ -375,6 +413,34 @@ function approvedMaskedPathsForKinds(
   return approved;
 }
 
+interface MaskedAuthReadOptions {
+  autoAllowWorkspaceDotenvRead?: boolean;
+  /** Read-only protected credential paths approved without a prompt; the caller redacts all output. */
+  autoApprovedReadPaths?: readonly string[];
+}
+
+/** Masked paths unmasked without a prompt: workspace dotenv reads and protected credential reads. */
+function autoApprovedMaskedPaths(input: {
+  command: string;
+  cwd: string;
+  explicitMasked: readonly string[];
+  workspaceDotenvPaths: ReadonlySet<string>;
+  options: MaskedAuthReadOptions;
+  pinPath: (path: string) => string | null;
+}): { dotenv: string[]; all: string[] } {
+  const { command, cwd, explicitMasked, workspaceDotenvPaths, options, pinPath } = input;
+  const dotenv = options.autoAllowWorkspaceDotenvRead
+    && explicitMasked.length > 0
+    && workspaceDotenvPaths.size === explicitMasked.length
+    && isReadOnlyBashChain(command, cwd)
+    ? [...workspaceDotenvPaths]
+    : [];
+  const protectedReads = (options.autoApprovedReadPaths ?? [])
+    .map(pinPath)
+    .filter((path): path is string => path !== null);
+  return { dotenv, all: [...dotenv, ...protectedReads] };
+}
+
 async function resolveMaskedAuthAccess(
   command: string,
   cwd: string,
@@ -384,11 +450,13 @@ async function resolveMaskedAuthAccess(
   ctx: ExtensionContext,
   promptWaitTracker: PromptWaitTracker,
   legacyActiveGrantPaths: Set<string>,
+  readOptions: MaskedAuthReadOptions = {},
 ): Promise<{
   blockReason?: string;
   unmaskedPaths: UnmaskedPath[];
   bypass: boolean;
   authDecision?: ResolvedAuthException;
+  autoAllowedDotenvPaths?: string[];
 }> {
   const explicitMasked = detectMaskedFileAccess(command, profile, cwd);
   const implicitAuth = await detectImplicitAuthAccess(command, repoRoot);
@@ -403,9 +471,17 @@ async function resolveMaskedAuthAccess(
     }
   };
   const kindByPath = new Map<string, MaskedAuthKind>();
+  const workspaceDotenvPaths = new Set<string>();
   for (const path of explicitMasked) {
     const pinnedPath = pinPath(path);
-    if (pinnedPath) kindByPath.set(pinnedPath, classifyMaskedPathKind([pinnedPath]));
+    if (!pinnedPath) continue;
+    kindByPath.set(pinnedPath, classifyMaskedPathKind([pinnedPath]));
+    if (
+      isSensitiveEnvPath(path, cwd)
+      && isWorkspaceLocalFileOperation("read", { path }, repoRoot, { allowWorkspaceEnvRead: true })
+    ) {
+      workspaceDotenvPaths.add(pinnedPath);
+    }
   }
   if (implicitAuth) {
     for (const path of implicitAuth.candidatePaths) {
@@ -433,6 +509,12 @@ async function resolveMaskedAuthAccess(
     hasCandidatePaths: kindByPath.size > 0,
     needsSocketFallback: implicitAuth?.needsSocketFallback ?? false,
   });
+  const autoApproved = implicitAuth == null
+    && authDecision.strategy === "ask-unmask"
+    && authDecision.matchedRule === undefined
+    ? autoApprovedMaskedPaths({ command, cwd, explicitMasked, workspaceDotenvPaths, options: readOptions, pinPath })
+    : { dotenv: [], all: [] };
+  const autoAllowedDotenvPaths = autoApproved.dotenv;
 
   if (authDecision.strategy === "deny") {
     return {
@@ -481,6 +563,7 @@ async function resolveMaskedAuthAccess(
       if (kind === "docker-auth") approved.add(path);
     }
   }
+  for (const path of autoApproved.all) approved.add(path);
   const pendingPaths = [...kindByPath.keys()].filter((path) => !approved.has(path));
 
   const unmaskedPaths: UnmaskedPath[] = [...kindByPath.keys()]
@@ -488,7 +571,7 @@ async function resolveMaskedAuthAccess(
     .map((path) => ({ path, writable: false }));
 
   if (pendingPaths.length === 0) {
-    return { unmaskedPaths, bypass: false, authDecision };
+    return { unmaskedPaths, bypass: false, authDecision, autoAllowedDotenvPaths };
   }
 
   const kind = authDecision.kind;
@@ -573,6 +656,8 @@ export default function piPermissionSystemExtension(pi: ExtensionAPI): void {
     cleanup?: () => void;
     helperPayloadBytes?: number;
     rawCommandBytes?: number;
+    dotenvPaths?: string[];
+    redactOutput?: boolean;
   }>();
 
   refreshExtensionConfig(runtime);
@@ -818,9 +903,7 @@ export default function piPermissionSystemExtension(pi: ExtensionAPI): void {
     unpublishPermissionsService();
   });
   const agentPrep = new AgentPrepHandler(session, toolRegistry);
-  const gates = new PermissionGateHandler(session, pi.events, toolRegistry, {
-    isTrustedClipboardReadPath: clipboardTempCleanup.isTrackedInteractivePath,
-  });
+  const gates = new PermissionGateHandler(session, pi.events, toolRegistry);
 
   type PersistentGrantRecord =
     | { kind: "network"; configPath: string; value: string; scope: PersistentApprovalScope }
@@ -1399,6 +1482,18 @@ export default function piPermissionSystemExtension(pi: ExtensionAPI): void {
       bashPermissionAlreadyChecked = true;
     }
 
+    // Protected credential reads run without a prompt, so their whole output is redacted.
+    let protectedReadPaths: string[] = [];
+    if (e.toolName === "bash" && typeof (e.input as { command?: unknown })?.command === "string") {
+      protectedReadPaths = await protectedBashReadPaths((e.input as { command: string }).command, ctx.cwd);
+      if (protectedReadPaths.length > 0) {
+        if (!e.toolCallId) {
+          return { block: true, reason: "Unable to track output redaction for protected path read; command blocked." };
+        }
+        pendingSrtWraps.set(e.toolCallId, { redactOutput: true });
+      }
+    }
+
     // 2. Sandbox wrapping with dynamic grants (mutates event.input.command)
     if (e.toolName === "bash" && sc.enabled) {
       const command = (e.input as { command?: unknown })?.command;
@@ -1504,6 +1599,7 @@ export default function piPermissionSystemExtension(pi: ExtensionAPI): void {
         // Collect unmasked paths from user grants (either from masked-file gate or policy grants)
         // These override the "(masked)" placeholder with real file content
         const unmaskedPaths: UnmaskedPath[] = [];
+        let autoAllowedDotenvPaths: string[] = [];
 
         // Collect active path grant paths to avoid double-prompting
         const activeGrantPaths = new Set(
@@ -1525,6 +1621,7 @@ export default function piPermissionSystemExtension(pi: ExtensionAPI): void {
             ctx,
             promptWaitTracker,
             activeGrantPaths,
+            { autoAllowWorkspaceDotenvRead: true, autoApprovedReadPaths: protectedReadPaths },
           );
           if (maskedResolution.blockReason) {
             return {
@@ -1534,6 +1631,10 @@ export default function piPermissionSystemExtension(pi: ExtensionAPI): void {
           }
           if (maskedResolution.bypass) {
             return undefined;
+          }
+          autoAllowedDotenvPaths = maskedResolution.autoAllowedDotenvPaths ?? [];
+          if (autoAllowedDotenvPaths.length > 0 && !e.toolCallId) {
+            return { block: true, reason: "Sandbox: unable to track dotenv output redaction; command blocked." };
           }
           for (const entry of maskedResolution.unmaskedPaths) {
             if (!unmaskedPaths.some((u) => u.path === entry.path)) {
@@ -1545,16 +1646,16 @@ export default function piPermissionSystemExtension(pi: ExtensionAPI): void {
         // 2c. External path gate — detect paths outside sandbox scope and prompt user
         if (sc.enabled) {
           const activeProfile = resolved.profile;
-          let externalPaths: ReturnType<typeof detectExternalPaths>;
+          let externalPaths: Awaited<ReturnType<typeof detectExternalPaths>>;
           let externalWritePaths: Awaited<ReturnType<typeof detectExternalWritePaths>>;
           try {
-            externalPaths = detectExternalPaths(
+            externalPaths = await detectExternalPaths(
               command,
               ctx.cwd,
               activeProfile,
               effectiveConfig,
               undefined,
-              unmaskedPaths.map((entry) => entry.path),
+              [...unmaskedPaths.map((entry) => entry.path), ...protectedReadPaths],
             );
             externalWritePaths = await detectExternalWritePaths(
               command, ctx.cwd, activeProfile, effectiveConfig,
@@ -1679,11 +1780,19 @@ export default function piPermissionSystemExtension(pi: ExtensionAPI): void {
         }
         if (result && "command" in result) {
           (e.input as { command: string }).command = result.command;
-          if (e.toolCallId && (result.cleanup || result.helperPayloadBytes !== undefined || result.rawCommandBytes !== undefined)) {
+          if (e.toolCallId && (
+            result.cleanup
+            || result.helperPayloadBytes !== undefined
+            || result.rawCommandBytes !== undefined
+            || autoAllowedDotenvPaths.length > 0
+            || protectedReadPaths.length > 0
+          )) {
             pendingSrtWraps.set(e.toolCallId, {
               cleanup: result.cleanup,
               helperPayloadBytes: result.helperPayloadBytes,
               rawCommandBytes: result.rawCommandBytes,
+              dotenvPaths: autoAllowedDotenvPaths,
+              redactOutput: protectedReadPaths.length > 0,
             });
           }
         }
@@ -1925,7 +2034,7 @@ export default function piPermissionSystemExtension(pi: ExtensionAPI): void {
       const unmaskedPaths: UnmaskedPath[] = maskedResolution.unmaskedPaths;
 
       // External path gate for user_bash
-      const externalPaths = detectExternalPaths(
+      const externalPaths = await detectExternalPaths(
         event.command,
         event.cwd,
         activeProfile,
@@ -2071,11 +2180,96 @@ export default function piPermissionSystemExtension(pi: ExtensionAPI): void {
     return handleUserBash(event, ctx).catch(() => blockedUserBash("Permission authorization failed; command blocked."));
   });
 
-  pi.on("tool_result", (event) => {
+  pi.on("tool_result", async (event, ctx) => {
     const wrapped = pendingSrtWraps.get(event.toolCallId);
     if (wrapped) {
       pendingSrtWraps.delete(event.toolCallId);
       wrapped.cleanup?.();
+    }
+
+    if (event.toolName === "read") {
+      const failClosed = () => {
+        const content = [{ type: "text" as const, text: "****" }];
+        try {
+          const details = maskDotenvReadDetails(event.details, () => "****");
+          return details === undefined ? { content } : { content, details };
+        } catch {
+          return { content };
+        }
+      };
+
+      try {
+        const readPath = getPathBearingToolPath(event.toolName, event.input);
+        if (readPath && isProtectedCredentialReadPath(readPath, ctx.cwd)) {
+          return fullyRedactedResult(event.details);
+        }
+        if (readPath && isSensitiveEnvPath(readPath, ctx.cwd)) {
+          if (event.isError) return failClosed();
+
+          const sourcePath = resolveReadPathForComparison(readPath, ctx.cwd);
+          const sourceText = await readDotenvSourceWithinLimit(sourcePath);
+          if (sourceText === null) return failClosed();
+
+          const mapSensitiveContent = (maskText: (text: string) => string) => event.content.map((item) =>
+            item.type === "text"
+              ? { ...item, text: maskText(item.text) }
+              : { type: "text" as const, text: "****" },
+          );
+          const sourceLines = sourceText.split("\n");
+          const rawOffset = event.input.offset;
+          const startLine = typeof rawOffset === "number" && rawOffset
+            ? Math.max(0, rawOffset - 1)
+            : 0;
+          const startLineIndex = Math.trunc(startLine);
+          const rawLimit = event.input.limit;
+          const selectedLineCount = sourceLines.slice(
+            startLine,
+            typeof rawLimit === "number" ? Math.min(startLine + rawLimit, sourceLines.length) : undefined,
+          ).length;
+          const truncation = toRecord(toRecord(event.details).truncation);
+          const outputLineCount = truncation.truncated === true && typeof truncation.outputLines === "number"
+            ? truncation.outputLines
+            : selectedLineCount;
+
+          const maskResultText = (text: string) =>
+            maskDotenvReadResult(text, sourceText, startLineIndex, outputLineCount);
+          return {
+            content: mapSensitiveContent(maskResultText),
+            details: maskDotenvReadDetails(event.details, maskResultText),
+          };
+        }
+      } catch {
+        return failClosed();
+      }
+    }
+
+    if (wrapped?.redactOutput) return fullyRedactedResult(event.details);
+
+    let dotenvOutputResult: { content: typeof event.content; details?: unknown } | undefined;
+    if (wrapped?.dotenvPaths?.length) {
+      const failClosed = () => ({
+        content: [{ type: "text" as const, text: "****" }],
+        details: maskDotenvReadDetails(event.details, () => "****"),
+      });
+      try {
+        if (event.toolName !== "bash") {
+          dotenvOutputResult = failClosed();
+        } else {
+          const maskingValues = (await Promise.all(wrapped.dotenvPaths.map(parseDotenvValues))).flat();
+          const maskOutputText = (text: string) => {
+            const commentsMasked = text.replace(/^(\uFEFF?[ \t\r]*#)[^\r\n]*/gm, "$1 ****");
+            return maskSecretValues(commentsMasked, maskingValues);
+          };
+          dotenvOutputResult = {
+            content: event.content.map((item) => item.type === "text"
+              ? { ...item, text: maskOutputText(item.text) }
+              : { type: "text" as const, text: "****" }),
+            details: maskDotenvReadDetails(event.details, maskOutputText),
+          };
+        }
+      } catch {
+        dotenvOutputResult = failClosed();
+      }
     }
 
     const text = event.content.length === 1 && event.content[0]?.type === "text"
@@ -2083,7 +2277,9 @@ export default function piPermissionSystemExtension(pi: ExtensionAPI): void {
       : "";
     const isPiSpawnE2Big = /^spawn(?:[ \t]+.+)?[ \t]+E2BIG$/.test(text);
     const isHelperSpawnE2Big = /^sandbox-run error: spawn(?:[ \t]+.+)?[ \t]+E2BIG$/.test(text);
-    if (event.toolName !== "bash" || !event.isError || (!isPiSpawnE2Big && !isHelperSpawnE2Big)) return;
+    if (event.toolName !== "bash" || !event.isError || (!isPiSpawnE2Big && !isHelperSpawnE2Big)) {
+      return dotenvOutputResult;
+    }
 
     const command = event.input.command;
     runtime.writeDebugLog("spawn.e2big", {
@@ -2098,5 +2294,6 @@ export default function piPermissionSystemExtension(pi: ExtensionAPI): void {
       ),
       processEnvironment: summarizeEnvironmentSizes(process.env),
     });
+    return dotenvOutputResult;
   });
 }

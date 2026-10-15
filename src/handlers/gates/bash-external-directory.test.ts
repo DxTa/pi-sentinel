@@ -1,3 +1,5 @@
+import { rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
 import path from "node:path";
 
 import { afterEach, describe, expect, it } from "vitest";
@@ -199,5 +201,53 @@ describe("describeBashExternalDirectoryGate", () => {
     );
 
     expect(result).toMatchObject({ action: "allow" });
+  });
+});
+
+describe("describeBashExternalDirectoryGate protected credential reads", () => {
+  const context = (command: string) => ({
+    toolName: "bash",
+    agentName: null,
+    input: { command },
+    toolCallId: "call-protected",
+    cwd,
+  });
+
+  it.each(["cat ~/.ssh/config", "cat ~/.config/gh/hosts.yml | head -5"])("auto-allows %s", async (command) => {
+    const result = await describeBashExternalDirectoryGate(context(command), () => makeCheckResult(), () => []);
+    expect(result).toMatchObject({ action: "allow" });
+  });
+
+  it.each(["cat ~/.ssh/config > /tmp/out", "cp ~/.ssh/config /tmp/x", "cat ~/.ssh/config /etc/hosts"])(
+    "does not auto-allow %s",
+    async (command) => {
+      const result = await describeBashExternalDirectoryGate(context(command), () => makeCheckResult(), () => []);
+      expect(result).not.toMatchObject({ action: "allow" });
+    },
+  );
+});
+
+describe("describeBashExternalDirectoryGate clipboard temp files", () => {
+  const context = (command: string) => ({
+    toolName: "bash",
+    agentName: null,
+    input: { command },
+    toolCallId: "call-clipboard",
+    cwd,
+  });
+
+  it("auto-allows read-only Bash on a pi-clipboard file but not writes or mixed paths", async () => {
+    const clipboardPath = path.join(tmpdir(), "pi-clipboard-11111111-2222-3333-4444-555555555555.png");
+    writeFileSync(clipboardPath, "png");
+    try {
+      await expect(describeBashExternalDirectoryGate(context(`cat ${clipboardPath} | wc -c`), () => makeCheckResult(), () => []))
+        .resolves.toMatchObject({ action: "allow" });
+      for (const command of [`cp ${clipboardPath} /tmp/project/copy.png`, `cat ${clipboardPath} /etc/hosts`, `cat ${clipboardPath} > /tmp/out`]) {
+        const result = await describeBashExternalDirectoryGate(context(command), () => makeCheckResult(), () => []);
+        expect(result).not.toMatchObject({ action: "allow" });
+      }
+    } finally {
+      rmSync(clipboardPath, { force: true });
+    }
   });
 });

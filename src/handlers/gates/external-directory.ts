@@ -6,6 +6,8 @@ import {
   isSafeSystemPath,
   normalizePathForComparison,
 } from "#src/path-utils";
+import { isPiClipboardTempFile } from "#src/clipboard-temp-cleanup";
+import { isProtectedCredentialReadPath } from "#src/protected-read";
 import { deriveApprovalPattern } from "#src/session-rules";
 import type { GateResult } from "./descriptor";
 import { formatExternalDirectoryAskPrompt } from "./external-directory-messages";
@@ -22,7 +24,7 @@ import type { ToolCallContext } from "./types";
 export function describeExternalDirectoryGate(
   tcc: ToolCallContext,
   infraDirs: string[],
-  isTrustedClipboardReadPath?: (pathValue: string) => boolean,
+  isTrustedClipboardReadPath: (pathValue: string) => boolean = isPiClipboardTempFile,
 ): GateResult {
   if (!tcc.cwd) return null;
 
@@ -41,7 +43,7 @@ export function describeExternalDirectoryGate(
   }
 
   // ── Pi infrastructure read bypass ──────────────────────────────────────
-  if (tcc.toolName === "read" && isTrustedClipboardReadPath?.(normalizedExtPath)) {
+  if (tcc.toolName === "read" && isTrustedClipboardReadPath(normalizedExtPath)) {
     return {
       action: "allow",
       log: {
@@ -51,8 +53,25 @@ export function describeExternalDirectoryGate(
           toolCallId: tcc.toolCallId,
           toolName: tcc.toolName,
           agentName: tcc.agentName,
-          scope: "tracked_pi_clipboard",
+          scope: "pi_clipboard_temp_file",
           resolution: "clipboard_auto_allowed",
+        },
+      },
+    };
+  }
+
+  // Protected credential reads are allowed; the tool_result hook fully redacts the output.
+  if (tcc.toolName === "read" && isProtectedCredentialReadPath(normalizedExtPath, tcc.cwd)) {
+    return {
+      action: "allow",
+      log: {
+        event: "permission_request.protected_read_auto_allowed",
+        details: {
+          source: "tool_call",
+          toolCallId: tcc.toolCallId,
+          toolName: tcc.toolName,
+          agentName: tcc.agentName,
+          resolution: "protected_read_auto_allowed",
         },
       },
     };

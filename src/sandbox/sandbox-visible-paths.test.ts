@@ -179,7 +179,7 @@ describe("detectExternalPaths", () => {
     const profile = makeProfile({ roBinds: [extraDir] });
     const config = makeConfig();
 
-    const externals = detectExternalPaths(
+    const externals = await detectExternalPaths(
       `cat ${extraFile}`,
       cwd,
       profile,
@@ -199,7 +199,7 @@ describe("detectExternalPaths", () => {
     await mkdir(externalDir, { recursive: true });
     await writeFile(externalFile, "hello", "utf8");
 
-    const externals = detectExternalPaths(
+    const externals = await detectExternalPaths(
       `cat ${externalFile}`,
       cwd,
       makeProfile(),

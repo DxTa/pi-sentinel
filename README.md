@@ -18,7 +18,8 @@ Git is the supported distribution path. No build step is required. The npm name 
 - Bash asks by default, except `git status` and `git diff`.
 - Recognized literal network destinations not on the allowlist require approval. Domain preflight uses static command extraction; dynamic or obfuscated destinations may not be identified. Host-bypassed commands have normal host network access after Bash approval.
 - `yolo-auto` evaluates eligible workspace-local reads, listings, writes, and edits, plus already-sandboxed Bash after normal gates. Deterministic path, network, sandbox, and destructive-action gates remain authoritative.
-- Pi clipboard images may be read directly in `manual`, `yolo`, and `yolo-auto` only when they come from an interactive input event and match the current OS temp-root `pi-clipboard-<UUID>.<extension>` shape. Writes, Bash, compound commands, and untracked temp files remain protected.
+- Regular (non-symlink) `pi-clipboard-<UUID>.<extension>` files in the OS temp root can be read through `read` and read-only Bash (no redirects, writes, or other external paths) without a prompt. Writes, other commands, lookalike names, and symlinks remain protected.
+- Reads of `~/.ssh` and `~/.config` through `read` and read-only Bash run without a prompt, but the whole output is replaced with `****`. Writes and other commands remain protected.
 - SRT is enabled with the network-capable `online-dev` profile.
 - **Approved Bash runs on the host by default** because bundled `sandbox.bypassCommands` is `['*']`. Set it to `[]` to require SRT wrapping and fail closed when SRT is unavailable.
 - SRT-wrapped commands can reach local Unix sockets by default. This includes Docker, SSH-agent, and database sockets.
@@ -30,7 +31,7 @@ Git is the supported distribution path. No build step is required. The npm name 
 
 **Untrusted inputs:** model output, tool arguments, MCP and skill requests, project files, shell commands and output, and external worker responses.
 
-**Enforcement boundary:** deterministic gates run before execution and before `yolo-auto`. SRT denies configured credential-path patterns for wrapped commands; `.env*` reads follow permission/path rules. Non-bypassed Bash is wrapped by SRT; bypassed Bash has normal host filesystem and network access after permission and network preflight. A bypass is not a sandbox.
+**Enforcement boundary:** deterministic gates run before execution and before `yolo-auto`. SRT denies configured credential-path patterns for wrapped commands. Workspace-local `.env*` files (except `.env.example`) can be read through `read` and SRT-sandboxed read-only Bash with result masking; matching `*.env` and `*.env.*` deny rules are bypassed only for these reads, while explicit `ask` rules and unrelated restrictions remain enforced. Bash output masking hides comments and literal values of at least six characters; transformed or encoded values can evade this best-effort match. Non-bypassed Bash is wrapped by SRT; bypassed Bash has normal host filesystem and network access after permission and network preflight. A bypass is not a sandbox.
 
 **Model safety:** `yolo-auto` evaluates eligible ask-state workspace-local read/list/write/edit requests and already-sandboxed Bash. The evaluator sends path/tool metadata for reads and listings, up to 800 characters of write/edit content, or a redacted Bash command. Read output is not sent, so prompt injection inside a file cannot be detected before reading. Sensitive paths, external targets, network operations, unsandboxed Bash, and model failures prompt. Fixed thresholds remain authoritative; 5% of would-allow decisions prompt for audit (20% for allows learned from history).
 

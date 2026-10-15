@@ -14,7 +14,7 @@ import { spawnSync } from "node:child_process";
 import type { ResolvedSandboxProfile, SandboxConfig } from "./types.js";
 import { DEFAULT_MASKED_PATTERNS, isPathMasked } from "./masked-file-gate.js";
 import { isPathWithinDirectory } from "#src/path-utils";
-import { extractExternalWritePathsFromBashCommand } from "../handlers/gates/bash-path-extractor.js";
+import { extractExternalWritePathsFromBashCommand, extractTokensForPathRules } from "../handlers/gates/bash-path-extractor.js";
 import { resolveSandboxBindPaths, validateSandboxGrantPath } from "./settings.js";
 import { canonicalPath, createSandboxVisibilityMatcher, expandHomePath } from "./sandbox-visible-paths.js";
 
@@ -88,17 +88,20 @@ export interface ExternalPathInfo {
   displayPath: string;
 }
 
-export function detectExternalPaths(
+export async function detectExternalPaths(
   command: string,
   cwd: string,
   profile: ResolvedSandboxProfile,
   config?: SandboxConfig,
   repoRootResolver: (cwd: string) => string = resolveRepoRoot,
   ignoredPaths: readonly string[] = [],
-): ExternalPathInfo[] {
+): Promise<ExternalPathInfo[]> {
   const repoRoot = repoRootResolver(cwd);
   const isVisible = createSandboxVisibilityMatcher({ repoRoot, cwd, profile, config });
-  const tokens = extractPathTokens(command);
+  const expandedCommand = command
+    .replace(/\$HOME\b/g, homedir())
+    .replace(/\$\{HOME\}/g, homedir());
+  const tokens = await extractTokensForPathRules(expandedCommand);
   const ignored = new Set(ignoredPaths.map(canonicalPath));
   const externals: ExternalPathInfo[] = [];
 

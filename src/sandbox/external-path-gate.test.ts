@@ -20,11 +20,55 @@ describe("detectExternalPaths", () => {
     expect(extractPathTokens("ls /")).toEqual(["/"]);
   });
 
+  it("does not treat sed substitution delimiters as a broad path grant", async () => {
+    const workspace = await mkdtemp(path.join(tmpdir(), "pi-external-workspace-"));
+    tempPaths.push(workspace);
+    const envPath = path.join(workspace, ".env.local");
+    await writeFile(envPath, "TOKEN=secret-value\n", "utf8");
+    const profile = {
+      name: "offline-dev",
+      network: false,
+      roBinds: [],
+      rwBinds: [],
+      env: { allow: [], deny: [] },
+      maskedPaths: [],
+    };
+
+    await expect(Promise.resolve().then(() => detectExternalPaths(
+      `cat ${envPath} | sed 's/=/: /'`,
+      workspace,
+      profile,
+      undefined,
+      () => workspace,
+    ))).resolves.toEqual([]);
+  });
+
+  it("still rejects an explicit filesystem root argument", async () => {
+    const workspace = await mkdtemp(path.join(tmpdir(), "pi-external-workspace-"));
+    tempPaths.push(workspace);
+    const profile = {
+      name: "offline-dev",
+      network: false,
+      roBinds: [],
+      rwBinds: [],
+      env: { allow: [], deny: [] },
+      maskedPaths: [],
+    };
+
+    await expect(Promise.resolve().then(() => detectExternalPaths(
+      "ls /",
+      workspace,
+      profile,
+      undefined,
+      () => workspace,
+    ))).rejects.toThrow(/broad|sensitive/i);
+  });
+
   it("rejects broad system roots instead of offering generic path approval", async () => {
     const workspace = await mkdtemp(path.join("/tmp", "pi-external-workspace-"));
     tempPaths.push(workspace);
 
-    expect(() => detectExternalPaths(
+    await expect(detectExternalPaths(
       "cat /var",
       workspace,
       {
@@ -37,7 +81,7 @@ describe("detectExternalPaths", () => {
       },
       undefined,
       () => workspace,
-    )).toThrow(/broad|sensitive/i);
+    )).rejects.toThrow(/broad|sensitive/i);
   });
 
   it("rejects directories containing privileged socket locations", async () => {
@@ -51,7 +95,7 @@ describe("detectExternalPaths", () => {
     const approvedPath = path.join(outside, ".env");
     await writeFile(approvedPath, "test", "utf8");
 
-    expect(detectExternalPaths(
+    await expect(detectExternalPaths(
       `cat ${approvedPath}`,
       workspace,
       {
@@ -65,7 +109,7 @@ describe("detectExternalPaths", () => {
       undefined,
       () => workspace,
       [approvedPath],
-    )).toEqual([]);
+    )).resolves.toEqual([]);
   });
 
   it("rejects Unix sockets instead of offering generic path approval", async () => {
@@ -81,7 +125,7 @@ describe("detectExternalPaths", () => {
         server.listen(socketPath, resolveListen);
       });
 
-      expect(() => detectExternalPaths(
+      await expect(detectExternalPaths(
         `cat ${socketPath}`,
         workspace,
         {
@@ -94,7 +138,7 @@ describe("detectExternalPaths", () => {
         },
         undefined,
         () => workspace,
-      )).toThrow(/special|socket/i);
+      )).rejects.toThrow(/special|socket/i);
     } finally {
       await new Promise<void>((resolveClose) => server.close(() => resolveClose()));
     }

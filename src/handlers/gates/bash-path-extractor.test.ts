@@ -15,6 +15,21 @@ afterEach(() => {
   delete process.env[FALLBACK_ENV];
 });
 
+describe("bash path extractor path candidates", () => {
+  it("ignores sed substitution scripts while preserving file arguments", async () => {
+    const envPath = "/tmp/project/.env.local";
+
+    await expect(extractTokensForPathRules(
+      `cat ${envPath} | sed 's/=/: /'`,
+    )).resolves.toEqual([envPath]);
+  });
+
+  it("preserves explicit root paths and paths in option values", async () => {
+    await expect(extractTokensForPathRules("ls / && tool --config=/etc/hosts"))
+      .resolves.toEqual(["/", "/etc/hosts"]);
+  });
+});
+
 describe("bash path extractor tokenizer fallback", () => {
   it("extracts path-rule tokens without tree-sitter runtime", async () => {
     process.env[FALLBACK_ENV] = "1";

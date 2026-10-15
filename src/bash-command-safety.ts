@@ -9,6 +9,13 @@ const READ_ONLY_COMMANDS = new Set([
   "diff", "ls", "find", "stat", "du", "df", "echo", "printf", "pwd",
 ]);
 const QUOTE_CHARS = new RegExp("['\"]", "g");
+/** Per-command options that write files or run other programs. */
+const FORBIDDEN_ARGS: Record<string, RegExp> = {
+  find: /^(?:-L|-H|-follow|-(?:exec(?:dir)?|ok(?:dir)?|delete|fprint0?|fprintf|fls))$/,
+  sort: /^(?:-o|--output(?:=|$)|--compress-program(?:=|$))/,
+  diff: /^--output(?:=|$)/,
+  rg: /^--(?:pre|hostname-bin)(?:=|$)/,
+};
 const SAFE_INSPECT_FIELDS = new Set(["{{.State.Status}}", "{{.State.Running}}", "{{.Config.Image}}"]);
 
 /** True only for one simple command with no known write-capable option. */
@@ -16,16 +23,13 @@ export function isReadOnlyBashCommand(command: string): boolean {
   const trimmed = command.trim();
   const scan = scanQuotes(trimmed);
   if (!trimmed || !scan || scan.expands || SHELL_SYNTAX.test(scan.masked)) return false;
-  if (trimmed === "docker ps") return true;
+  if (FIXED_READ_ONLY_COMMAND.test(trimmed)) return true;
 
   const [name, ...quotedArgs] = trimmed.split(/\s+/);
   const args = quotedArgs.map((arg) => arg.replace(QUOTE_CHARS, ""));
   if (!READ_ONLY_COMMANDS.has(name ?? "")) return false;
   if (name !== "find" && ["*", "?", "["].some((char) => scan.masked.includes(char))) return false;
-  if (name === "find" && args.some((arg) => ["-L", "-H", "-follow"].includes(arg) || /^-(?:exec(?:dir)?|ok(?:dir)?|delete|fprint0?|fprintf|fls)$/.test(arg))) return false;
-  if (name === "sort" && args.some((arg) => arg === "-o" || arg.startsWith("-o") || arg === "--output" || arg.startsWith("--output=") || arg === "--compress-program" || arg.startsWith("--compress-program="))) return false;
-  if (name === "diff" && args.some((arg) => arg === "--output" || arg.startsWith("--output="))) return false;
-  return true;
+  return !args.some((arg) => FORBIDDEN_ARGS[name!]?.test(arg));
 }
 
 /** Curated diagnostics safe to allow without repeated approval; no arbitrary inspect output. */
@@ -44,6 +48,8 @@ export function isReadOnlyBashDiagnostic(command: string): boolean {
 const DISCARD_REDIRECT = /\s*(?:[12]?>\s*\/dev\/null|2>&1)(?=\s|$|;|&|\|)/g;
 const GIT_READ = /^git (?:status|log|diff|show)(?:\s|$)/;
 const SED_PRINT = /^sed -n '?\d+(?:,\d+)?p'? [^\s;&|<>]+$/;
+const READ_ONLY_SED_SUBSTITUTION = /^sed\s+(['"])s\/[^/\\'"]*\/[^/\\'"]*\/[0-9gIp]*\1(?:\s+[^-;\s<>|&][^;\s<>|&]*)?$/;
+const FIXED_READ_ONLY_COMMAND = new RegExp(`^docker ps$|${READ_ONLY_SED_SUBSTITUTION.source}`);
 
 /**
  * True for a chain of read-only commands joined by &&, ;, or pipes, where every
