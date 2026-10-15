@@ -64,16 +64,6 @@ export const DEFAULT_MASKED_PATTERNS = [
 ];
 
 /**
- * Extensions that are always masked regardless of path.
- */
-const MASKED_EXTENSIONS = new Set([".pem", ".key"]);
-
-/**
- * Basename patterns that are always masked regardless of path.
- */
-const MASKED_BASENAMES = new Set([".env", ".npmrc", ".pypirc", ".netrc"]);
-
-/**
  * Simple glob-to-regex converter for masked path matching.
  * Supports: *, **, ?, and literal characters.
  */
@@ -134,7 +124,7 @@ export function isPathMasked(filePath: string, patterns: string[]): boolean {
  *
  * This uses a multi-strategy approach:
  * 1. Token splitting: extracts path-like tokens from the command
- * 2. Extension/basename matching: catches filenames like secret.pem, prod.env
+ * 2. Bare relative names such as .env.local or secret.pem, matched against the patterns
  * 3. Environment variable expansion: handles $HOME, ${HOME}
  *
  * Returns the list of masked file paths referenced by the command,
@@ -178,14 +168,8 @@ export function detectMaskedFileAccess(
       candidatePaths.push(resolved);
     }
 
-    // Check if the token is a masked filename (e.g., "secret.pem", ".env", "id_rsa")
-    const ext = token.includes(".") ? "." + token.split(".").pop()!.toLowerCase() : "";
-    const bname = basename(token);
-    if (MASKED_EXTENSIONS.has(ext) || MASKED_BASENAMES.has(bname)) {
-      // Resolve relative to cwd
-      const resolved = resolve(cwd, token.startsWith("./") ? token.slice(2) : token);
-      candidatePaths.push(resolved);
-    }
+    // A bare relative name (".env.local", "token.json") is matched against the patterns too.
+    if (!token.includes("/")) candidatePaths.push(resolve(cwd, token));
   }
 
   // Strategy 3: Environment variable expansion
