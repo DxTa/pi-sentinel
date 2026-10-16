@@ -1,5 +1,5 @@
 import { rmSync, writeFileSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { homedir, tmpdir } from "node:os";
 import path from "node:path";
 
 import { afterEach, describe, expect, it } from "vitest";
@@ -38,6 +38,64 @@ function expectDescriptor(
 }
 
 describe("describeBashExternalDirectoryGate", () => {
+  it("checks explicit external-directory rules for interpreter-embedded credential paths", async () => {
+    const credentialPath = path.join(homedir(), ".aws", "credentials");
+    const checkedPaths: string[] = [];
+    const result = await describeBashExternalDirectoryGate(
+      {
+        toolName: "bash",
+        agentName: "worker",
+        input: { command: `python3 -c "open('${credentialPath}').read()"` },
+        toolCallId: "call-embedded-credential",
+        cwd,
+        sandboxed: true,
+      },
+      (_surface, input) => {
+        const target = (input as { path?: string }).path;
+        if (target === credentialPath) {
+          checkedPaths.push(target);
+          return makeCheckResult({ state: "deny", origin: "project" });
+        }
+        return makeCheckResult({ state: "allow", origin: "project" });
+      },
+      () => [],
+    );
+
+    expect(checkedPaths).toContain(credentialPath);
+    expect(result).toMatchObject({
+      preCheck: { state: "deny", origin: "project" },
+      denialContext: { externalPaths: [credentialPath] },
+    });
+  });
+
+  it("honors exact denies for parenthetical paths embedded in interpreter source", async () => {
+    const credentialPath = path.join(homedir(), ".config", "app", "settings(backup).json");
+    const command = `python3 -c "print(open('${credentialPath}').read())"`;
+    const checkedPaths: string[] = [];
+    const result = await describeBashExternalDirectoryGate(
+      {
+        toolName: "bash",
+        agentName: "worker",
+        input: { command },
+        toolCallId: "call-embedded-parenthetical-deny",
+        cwd,
+        sandboxed: true,
+      },
+      (_surface, input) => {
+        const target = (input as { path?: string }).path;
+        if (target) checkedPaths.push(target);
+        return makeCheckResult({
+          state: target === credentialPath ? "deny" : "ask",
+          origin: target === credentialPath ? "project" : "builtin",
+        });
+      },
+      () => [],
+    );
+
+    expect(checkedPaths).toContain(credentialPath);
+    expect(result).toMatchObject({ preCheck: { state: "deny", origin: "project" } });
+  });
+
   it("neither forces a prompt nor hard-blocks external writes in yolo mode", async () => {
     process.env[FALLBACK_ENV] = "1";
 
@@ -205,26 +263,54 @@ describe("describeBashExternalDirectoryGate", () => {
 });
 
 describe("describeBashExternalDirectoryGate protected credential reads", () => {
-  const context = (command: string) => ({
+  const context = (command: string, sandboxed = true) => ({
     toolName: "bash",
     agentName: null,
     input: { command },
     toolCallId: "call-protected",
     cwd,
+    sandboxed,
   });
 
-  it.each(["cat ~/.ssh/config", "cat ~/.config/gh/hosts.yml | head -5"])("auto-allows %s", async (command) => {
+  it.each([
+    "cat ~/.ssh/config",
+    "cat ~/.config/gh/hosts.yml | head -5",
+    "docker run --env-file ~/.aws/credentials alpine:latest",
+    "docker run --env-file=~/.aws/credentials alpine:latest",
+  ])("auto-allows %s", async (command) => {
     const result = await describeBashExternalDirectoryGate(context(command), () => makeCheckResult(), () => []);
     expect(result).toMatchObject({ action: "allow" });
   });
 
-  it.each(["cat ~/.ssh/config > /tmp/out", "cp ~/.ssh/config /tmp/x", "cat ~/.ssh/config /etc/hosts"])(
+  it.each([
+    "cat ~/.ssh/config > /tmp/out",
+    "cp ~/.ssh/config /tmp/x",
+    "cat ~/.ssh/config /etc/hosts",
+  ])(
     "does not auto-allow %s",
     async (command) => {
       const result = await describeBashExternalDirectoryGate(context(command), () => makeCheckResult(), () => []);
       expect(result).not.toMatchObject({ action: "allow" });
     },
   );
+
+  it("does not auto-allow protected paths outside SRT", async () => {
+    const result = await describeBashExternalDirectoryGate(
+      context("cat ~/.ssh/config", false),
+      () => makeCheckResult(),
+      () => [],
+    );
+    expect(result).not.toMatchObject({ action: "allow" });
+  });
+
+  it("does not bypass an explicit external-directory deny", async () => {
+    const result = await describeBashExternalDirectoryGate(
+      context("cat ~/.ssh/config"),
+      () => makeCheckResult({ state: "deny", source: "special", origin: "project" }),
+      () => [],
+    );
+    expect(result).not.toMatchObject({ action: "allow" });
+  });
 });
 
 describe("describeBashExternalDirectoryGate clipboard temp files", () => {

@@ -1,5 +1,5 @@
-import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { existsSync, mkdtempSync, realpathSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import { homedir, tmpdir } from "node:os";
 import path from "node:path";
 import { pathToFileURL } from "node:url";
 
@@ -139,6 +139,75 @@ describe("describeExternalDirectoryGate protected credential reads", () => {
       ),
     ).toMatchObject({ action: "allow" });
   });
+
+  it.skipIf(!existsSync(path.join(homedir(), ".config"))).each(["ask", "deny"] as const)(
+    "honors a canonical-target %s through a workspace symlink",
+    (state) => {
+      const workspace = mkdtempSync(path.join(tmpdir(), "pi-external-credential-alias-"));
+      const alias = path.join(workspace, "config-link");
+      const target = path.join(homedir(), ".config");
+      symlinkSync(target, alias, "dir");
+      const canonicalTarget = realpathSync.native(target);
+      const checkedPaths: string[] = [];
+
+      try {
+        const result = describeExternalDirectoryGate(
+          {
+            toolName: "read",
+            agentName: null,
+            input: { path: alias },
+            toolCallId: `call-canonical-${state}`,
+            cwd: workspace,
+          },
+          [],
+          undefined,
+          (pathValue) => {
+            checkedPaths.push(pathValue);
+            const isCanonicalTarget = pathValue === canonicalTarget;
+            return {
+              toolName: "external_directory",
+              state: isCanonicalTarget ? state : "allow",
+              matchedPattern: isCanonicalTarget ? canonicalTarget : "*",
+              source: "special",
+              origin: isCanonicalTarget ? "project" : "builtin",
+            };
+          },
+        );
+
+        expect(checkedPaths).toEqual(expect.arrayContaining([alias, canonicalTarget]));
+        expect(result).toMatchObject({ preCheck: { state, matchedPattern: canonicalTarget } });
+      } finally {
+        rmSync(workspace, { recursive: true, force: true });
+      }
+    },
+  );
+
+  it.each(["ask", "deny"] as const)(
+    "preserves an explicit external-directory %s for protected reads",
+    (state) => {
+      const descriptor = expectDescriptor(
+        describeExternalDirectoryGate(
+          {
+            toolName: "read",
+            agentName: null,
+            input: { path: "~/.aws/credentials" },
+            toolCallId: `call-protected-${state}`,
+            cwd,
+          },
+          [],
+          undefined,
+          () => ({
+            toolName: "external_directory",
+            state,
+            matchedPattern: "*",
+            source: "special",
+            origin: "project",
+          }),
+        ),
+      );
+      expect(descriptor.surface).toBe("external_directory");
+    },
+  );
 
   it.each(["write", "edit"] as const)("still prompts for %s of a protected path", (toolName) => {
     expectDescriptor(

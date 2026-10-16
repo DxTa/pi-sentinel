@@ -927,7 +927,9 @@ function assignmentPathValue(token: string, isPath: (value: string) => boolean):
 function classifyTokenAsRuleCandidate(token: string): string | null {
   if (!token) return null;
 
-  if (token.includes("=")) return assignmentPathValue(token, (value) => value.includes("/"));
+  if (token.includes("=")) {
+    return assignmentPathValue(token, (value) => value.startsWith(".") || value.includes("/"));
+  }
   if (token.startsWith("-")) return null;
 
   if (URL_PATTERN.test(token)) return null;

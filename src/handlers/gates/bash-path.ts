@@ -1,5 +1,4 @@
 import { getNonEmptyString, toRecord } from "#src/common";
-import { isReadOnlyBashChain } from "#src/bash-command-safety";
 import { isWorkspaceLocalFileOperation, sensitiveEnvPathForPolicy } from "#src/path-utils";
 import type { Rule } from "#src/rule";
 import { deriveApprovalPattern } from "#src/session-rules";
@@ -17,17 +16,14 @@ type CheckPermissionFn = (
   sessionRules?: Rule[],
 ) => PermissionCheckResult;
 
-/** Sandboxed, read-only Bash whose every path token is a workspace-local dotenv file. */
-function isSandboxedWorkspaceDotenvRead(tcc: ToolCallContext, command: string, tokens: string[]): boolean {
+/** Sandboxed Bash may consume a workspace-local dotenv path through a read-only grant. */
+function isSandboxedWorkspaceDotenvPath(tcc: ToolCallContext, pathToken: string): boolean {
   const cwd = tcc.cwd;
   return Boolean(
     tcc.sandboxed === true
     && cwd
-    && isReadOnlyBashChain(command, cwd)
-    && tokens.every((token) =>
-      sensitiveEnvPathForPolicy(token, cwd) !== null
-      && isWorkspaceLocalFileOperation("read", { path: token }, cwd, { allowWorkspaceEnvRead: true })
-    )
+    && sensitiveEnvPathForPolicy(pathToken, cwd) !== null
+    && isWorkspaceLocalFileOperation("read", { path: pathToken }, cwd, { allowWorkspaceEnvRead: true })
   );
 }
 
@@ -58,7 +54,6 @@ export async function describeBashPathGate(
   const tokens = extractedTokens ?? await extractTokensForPathRules(command);
   if (tokens.length === 0) return null;
   const cwd = tcc.cwd;
-  const canBypassDotenvDeny = isSandboxedWorkspaceDotenvRead(tcc, command, tokens);
 
   // Check each token against path rules with session rules appended.
   const sessionRules = getSessionRuleset();
@@ -87,7 +82,12 @@ export async function describeBashPathGate(
       allSessionCovered = false;
     }
 
-    if (check.state === "deny" && canBypassDotenvDeny && isDotenvPolicyPattern(check.matchedPattern)) {
+    if (
+      check.state === "deny"
+      && check.origin === "bundled"
+      && isDotenvPolicyPattern(check.matchedPattern)
+      && isSandboxedWorkspaceDotenvPath(tcc, token)
+    ) {
       allSessionCovered = false;
       continue;
     }

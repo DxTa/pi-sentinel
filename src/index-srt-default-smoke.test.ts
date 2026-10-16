@@ -5,7 +5,7 @@ import { homedir, tmpdir } from "node:os";
 import path from "node:path";
 import { pathToFileURL } from "node:url";
 
-import { afterEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import piPermissionSystemExtension from "./index.ts";
 import { resolveDockerSocketPaths } from "./sandbox/docker-socket.js";
@@ -14,7 +14,15 @@ import { YOLO_AUTO_LABEL_SCHEMA } from "./yolo-auto-label-schema";
 import type { YoloAutoHeads } from "./yolo-auto-policy";
 import { YoloAutoWorkerServer } from "./yolo-auto-worker";
 
+const mockDockerSocketPaths = vi.hoisted(() => vi.fn((): string[] => []));
+vi.mock("./sandbox/docker-socket.js", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("./sandbox/docker-socket.js")>();
+  return { ...actual, resolveDockerSocketPaths: mockDockerSocketPaths };
+});
+
 const tempPaths: string[] = [];
+let originalPath: string | undefined;
+let fakeSrtBin = "";
 const canSimulateReadOnlyDirectory = process.platform !== "win32" && process.getuid?.() !== 0;
 
 async function makeTempDir(prefix: string): Promise<string> {
@@ -23,9 +31,26 @@ async function makeTempDir(prefix: string): Promise<string> {
   return dir;
 }
 
+beforeEach(async () => {
+  mockDockerSocketPaths.mockReturnValue([]);
+  // Tool-call smoke tests only build wrapper operations; the stub is never executed.
+  originalPath = process.env.PATH;
+  fakeSrtBin = await mkdtemp(path.join(tmpdir(), "pi-srt-test-deps-"));
+  tempPaths.push(fakeSrtBin);
+  const fakeSocat = path.join(fakeSrtBin, "socat");
+  await writeFile(fakeSocat, "#!/bin/sh\nexit 97\n", "utf8");
+  await chmod(fakeSocat, 0o755);
+  process.env.PATH = `${fakeSrtBin}${path.delimiter}${originalPath ?? ""}`;
+});
+
 afterEach(async () => {
   delete process.env.PI_CODING_AGENT_DIR;
   delete process.env.PI_SENTINEL_YOLO_AUTO_SOCKET;
+  if (originalPath === undefined) delete process.env.PATH;
+  else process.env.PATH = originalPath;
+  originalPath = undefined;
+  fakeSrtBin = "";
+  mockDockerSocketPaths.mockReturnValue([]);
   await Promise.all(tempPaths.splice(0).map((dir) => rm(dir, { recursive: true, force: true })));
 });
 
@@ -357,12 +382,15 @@ describe("piPermissionSystemExtension SRT default smoke", () => {
     });
   });
 
-  it("auto-allows protected credential reads and fully redacts their output", async () => {
-    const agentDir = await makeTempDir("pi-permission-agent-");
-    const projectDir = await makeTempDir("pi-permission-project-");
-    process.env.PI_CODING_AGENT_DIR = agentDir;
-    await writeExtensionConfig(agentDir, {
-      permission: { "*": "allow", bash: { "*": "allow" }, external_directory: { "*": "ask" } },
+  it.each(["manual", "yolo", "yolo-auto"] as const)(
+    "auto-allows protected credential reads and fully redacts output in %s mode",
+    async (mode) => {
+      const agentDir = await makeTempDir("pi-permission-agent-");
+      const projectDir = await makeTempDir("pi-permission-project-");
+      process.env.PI_CODING_AGENT_DIR = agentDir;
+      await writeExtensionConfig(agentDir, {
+        mode,
+        permission: { bash: { "*": "allow" } },
       sandbox: {
         enabled: true,
         backend: "srt",
@@ -371,32 +399,221 @@ describe("piPermissionSystemExtension SRT default smoke", () => {
       },
     });
 
-    const pi = createFakePi();
-    piPermissionSystemExtension(pi as never);
-    const context = createContext(projectDir);
-    const redacted = { content: [{ type: "text", text: "****" }] };
+      const pi = createFakePi();
+      piPermissionSystemExtension(pi as never);
+      const context = createContext(projectDir);
+      const redacted = { content: [{ type: "text", text: "****" }] };
 
-    for (const secretPath of [path.join(homedir(), ".ssh", "id_ed25519"), path.join(homedir(), ".config", "gh", "hosts.yml")]) {
+      for (const secretPath of [path.join(homedir(), ".ssh", "id_ed25519"), path.join(homedir(), ".config", "gh", "hosts.yml")]) {
+        expect(await pi.handlers.get("tool_result")?.({
+          toolCallId: "t-protected-read",
+          toolName: "read",
+          input: { path: secretPath },
+          content: [{ type: "text", text: "super-secret-token" }],
+          isError: false,
+        }, context as never)).toEqual(redacted);
+      }
+
+      const bashPath = path.join(homedir(), ".config", "gh", "hosts.yml");
+      const event = { toolName: "bash", toolCallId: "t-protected-bash", input: { command: `cat ${bashPath}` } };
+      expect(await pi.handlers.get("tool_call")?.(event, context as never)).toBeUndefined();
+      expect(context.ui.select).not.toHaveBeenCalled();
       expect(await pi.handlers.get("tool_result")?.({
-        toolCallId: "t-protected-read",
-        toolName: "read",
-        input: { path: secretPath },
+        toolCallId: "t-protected-bash",
+        toolName: "bash",
+        input: event.input,
         content: [{ type: "text", text: "super-secret-token" }],
         isError: false,
       }, context as never)).toEqual(redacted);
-    }
+      const errorEvent = {
+        toolName: "bash",
+        toolCallId: "t-protected-bash-error",
+        input: { command: `cat ${bashPath}` },
+      };
+      expect(await pi.handlers.get("tool_call")?.(errorEvent, context as never)).toBeUndefined();
+      expect(await pi.handlers.get("tool_result")?.({
+        toolCallId: errorEvent.toolCallId,
+        toolName: "bash",
+        input: errorEvent.input,
+        content: [{ type: "text", text: "error: super-secret-token" }],
+        details: { truncation: { content: "error: super-secret-token" } },
+        isError: true,
+      }, context as never)).toEqual({
+        content: [{ type: "text", text: "****" }],
+        details: { truncation: { content: "****" } },
+      });
+    },
+  );
 
-    const bashPath = path.join(homedir(), ".config", "gh", "hosts.yml");
-    const event = { toolName: "bash", toolCallId: "t-protected-bash", input: { command: `cat ${bashPath}` } };
-    expect(await pi.handlers.get("tool_call")?.(event, context as never)).toBeUndefined();
-    expect(context.ui.select).not.toHaveBeenCalled();
-    expect(await pi.handlers.get("tool_result")?.({
-      toolCallId: "t-protected-bash",
-      toolName: "bash",
-      input: event.input,
-      content: [{ type: "text", text: "super-secret-token" }],
-      isError: false,
-    }, context as never)).toEqual(redacted);
+  it.each(["manual", "yolo", "yolo-auto"] as const)(
+    "blocks protected credential reads outside SRT in %s mode",
+    async (mode) => {
+      const agentDir = await makeTempDir("pi-permission-agent-");
+      const projectDir = await makeTempDir("pi-permission-project-");
+      process.env.PI_CODING_AGENT_DIR = agentDir;
+      await writeExtensionConfig(agentDir, {
+        mode,
+        permission: { "*": "allow", bash: { "*": "allow" }, external_directory: { "*": "allow" } },
+        sandbox: { enabled: false, backend: "srt", defaultProfile: "online-dev" },
+      });
+
+      const pi = createFakePi();
+      piPermissionSystemExtension(pi as never);
+      const result = await pi.handlers.get("tool_call")?.(
+        { toolName: "bash", input: { command: "cat ~/.aws/credentials" } },
+        createContext(projectDir) as never,
+      );
+      expect(result).toMatchObject({ block: true, reason: expect.stringContaining("SRT read-only boundary") });
+    },
+  );
+
+  it("blocks credential access through configured and built-in host Git bypasses", async () => {
+    const agentDir = await makeTempDir("pi-permission-agent-");
+    const projectDir = await makeTempDir("pi-permission-project-");
+    const envPath = path.join(projectDir, ".env.local");
+    await mkdir(path.join(projectDir, ".git"));
+    await writeFile(envPath, "TOKEN=synthetic-secret", "utf8");
+    await writeFile(path.join(projectDir, ".git", "config"), '[remote "origin"]\nurl = git@example.test:repo.git\n', "utf8");
+    process.env.PI_CODING_AGENT_DIR = agentDir;
+    await writeExtensionConfig(agentDir, {
+      mode: "yolo",
+      permission: { "*": "allow", bash: { "*": "allow" }, external_directory: { "*": "allow" } },
+      sandbox: {
+        enabled: true,
+        backend: "srt",
+        defaultProfile: "online-dev",
+        bypassCommands: [`docker run --env-file ${envPath} alpine:latest`],
+      },
+    });
+
+    const pi = createFakePi();
+    piPermissionSystemExtension(pi as never);
+    const toolCall = pi.handlers.get("tool_call");
+    const context = createContext(projectDir);
+    await expect(toolCall?.(
+      { toolName: "bash", input: { command: `docker run --env-file ${envPath} alpine:latest` } },
+      context as never,
+    )).resolves.toMatchObject({ block: true, reason: expect.stringContaining("SRT read-only boundary") });
+    await expect(toolCall?.(
+      { toolName: "bash", input: { command: "git push" } },
+      context as never,
+    )).resolves.toMatchObject({ block: true, reason: expect.stringContaining("SRT read-only boundary") });
+  });
+
+  it.each(["tool_call", "user_bash"] as const)(
+    "blocks protected paths from a session-approved GPG bypass in %s",
+    async (surface) => {
+      const agentDir = await makeTempDir("pi-permission-agent-");
+      const projectDir = await makeTempDir("pi-permission-project-");
+      const envPath = path.join(projectDir, ".env.local");
+      await writeFile(envPath, "TOKEN=synthetic-secret\n", "utf8");
+      process.env.PI_CODING_AGENT_DIR = agentDir;
+      await writeExtensionConfig(agentDir, {
+        mode: "manual",
+        permission: { "*": "allow", bash: { "*": "allow" }, external_directory: { "*": "allow" } },
+        sandbox: { enabled: true, backend: "srt", defaultProfile: "online-dev" },
+      });
+
+      const pi = createFakePi();
+      piPermissionSystemExtension(pi as never);
+      const context = createContext(projectDir, { hasUI: true, choices: ["Allow for session"] });
+      await expect(pi.handlers.get("tool_call")?.(
+        { toolName: "bash", input: { command: "gpg --detach-sign artifact" } },
+        context as never,
+      )).resolves.toBeUndefined();
+
+      const command = `cat ${envPath}; gpg --detach-sign artifact`;
+      const result = surface === "tool_call"
+        ? await pi.handlers.get("tool_call")?.(
+            { toolName: "bash", toolCallId: "protected-gpg-bypass", input: { command } },
+            context as never,
+          )
+        : await pi.handlers.get("user_bash")?.({ command, cwd: projectDir }, context as never);
+
+      if (surface === "tool_call") {
+        expect(result).toMatchObject({ block: true, reason: expect.stringContaining("protected") });
+      } else {
+        expect(result).toMatchObject({
+          result: { exitCode: 1, output: expect.stringContaining("protected") },
+        });
+      }
+    },
+  );
+
+  it.each([
+    { mode: "manual", surface: "user_bash" },
+    { mode: "yolo", surface: "tool_call" },
+    { mode: "yolo", surface: "user_bash" },
+    { mode: "yolo-auto", surface: "user_bash" },
+  ] as const)(
+    "blocks shell-quoted protected paths from a GPG bypass in $mode mode through $surface",
+    async ({ mode, surface }) => {
+      const agentDir = await makeTempDir("pi-permission-agent-");
+      const projectDir = await makeTempDir("pi-permission-project-");
+      const envPath = path.join(projectDir, ".env.local");
+      await writeFile(envPath, "TOKEN=synthetic-secret\n", "utf8");
+      process.env.PI_CODING_AGENT_DIR = agentDir;
+      await writeExtensionConfig(agentDir, {
+        mode,
+        permission: {
+          "*": "allow",
+          bash: { "*": "allow" },
+          path: { "*": "allow" },
+          external_directory: { "*": "allow" },
+        },
+        sandbox: { enabled: true, backend: "srt", defaultProfile: "online-dev" },
+      });
+
+      const pi = createFakePi();
+      piPermissionSystemExtension(pi as never);
+      const context = createContext(projectDir, { hasUI: true, choices: ["Allow for session"] });
+      await expect(pi.handlers.get("tool_call")?.(
+        { toolName: "bash", input: { command: "gpg --detach-sign artifact" } },
+        context as never,
+      )).resolves.toBeUndefined();
+
+      const quotedEnvPath = envPath.replace(".env.local", ".en'v.local'");
+      const command = `cat ${quotedEnvPath}; gpg --detach-sign artifact`;
+      const result = surface === "tool_call"
+        ? await pi.handlers.get("tool_call")?.(
+            { toolName: "bash", toolCallId: `quoted-gpg-bypass-${mode}`, input: { command } },
+            context as never,
+          )
+        : await pi.handlers.get("user_bash")?.({ command, cwd: projectDir }, context as never);
+
+      if (surface === "tool_call") {
+        expect(result).toMatchObject({ block: true, reason: expect.stringContaining("protected") });
+      } else {
+        expect(result).toMatchObject({
+          result: { exitCode: 1, output: expect.stringContaining("protected") },
+        });
+      }
+    },
+  );
+
+  it.skipIf(process.platform !== "linux")("blocks credential consumption when SRT dependencies are unavailable", async () => {
+    const agentDir = await makeTempDir("pi-permission-agent-");
+    const projectDir = await makeTempDir("pi-permission-project-");
+    const noSocatBin = await makeTempDir("pi-srt-no-socat-");
+    for (const dependency of ["rg", "bwrap"]) {
+      const stub = path.join(noSocatBin, dependency);
+      await writeFile(stub, "#!/bin/sh\nexit 97\n", "utf8");
+      await chmod(stub, 0o755);
+    }
+    process.env.PATH = noSocatBin;
+    process.env.PI_CODING_AGENT_DIR = agentDir;
+    await writeExtensionConfig(agentDir, {
+      permission: { "*": "allow", bash: { "*": "allow" }, external_directory: { "*": "allow" } },
+      sandbox: { enabled: true, backend: "srt", defaultProfile: "online-dev" },
+    });
+
+    const pi = createFakePi();
+    piPermissionSystemExtension(pi as never);
+    const result = await pi.handlers.get("tool_call")?.(
+      { toolName: "bash", toolCallId: "missing-srt-auth", input: { command: "cat ~/.aws/credentials" } },
+      createContext(projectDir) as never,
+    );
+    expect(result).toMatchObject({ block: true, reason: expect.stringContaining("Missing SRT runtime dependencies: socat") });
   });
 
   it("captures E2BIG result metadata from final wrapped Bash input", async () => {
@@ -903,11 +1120,14 @@ describe("piPermissionSystemExtension SRT default smoke", () => {
     }
   });
 
-  it("auto-allows read-only workspace Bash reads of dotenv files", async () => {
+  it("auto-allows workspace dotenv consumers with SRT write denies", async () => {
     const agentDir = await makeTempDir("pi-permission-agent-");
     const projectDir = await makeTempDir("pi-permission-project-");
     const envPath = path.join(projectDir, ".env.local");
+    const mixedCaseEnvPath = path.join(projectDir, ".Env.local");
+    const missingEnvPath = path.join(projectDir, ".env.new");
     await writeFile(envPath, "TOKEN=secret-value\n# short\n", "utf8");
+    await writeFile(mixedCaseEnvPath, "TOKEN=mixed-case-secret\n", "utf8");
     process.env.PI_CODING_AGENT_DIR = agentDir;
     await writeExtensionConfig(agentDir, {
       permission: {
@@ -979,6 +1199,55 @@ describe("piPermissionSystemExtension SRT default smoke", () => {
       details: { truncation: { content: "TOKEN: ****\n# ****\n" } },
     });
 
+    mockDockerSocketPaths.mockReturnValue([path.join(projectDir, "docker.sock")]);
+    for (const [index, command] of [
+      `docker run --env-file ${envPath} alpine:latest`,
+      `docker run --env-file=${envPath} alpine:latest`,
+    ].entries()) {
+      const dockerEvent = {
+        toolName: "bash",
+        toolCallId: `t-dotenv-docker-${index}`,
+        input: { command },
+      };
+      expect(await pi.handlers.get("tool_call")?.(dockerEvent, context as never)).toBeUndefined();
+      const dockerHelperInput = extractHelperInput(dockerEvent.input.command);
+      expect(dockerHelperInput.runtimeConfig.filesystem.allowRead).toContain(approvedPath);
+      expect(dockerHelperInput.runtimeConfig.filesystem.allowWrite).not.toContain(approvedPath);
+      expect(dockerHelperInput.runtimeConfig.filesystem.denyWrite).toContain(approvedPath);
+      const dockerOutput = await pi.handlers.get("tool_result")?.({
+        toolCallId: dockerEvent.toolCallId,
+        toolName: "bash",
+        input: dockerEvent.input,
+        content: [{ type: "text", text: "TOKEN=secret-value" }],
+        details: {},
+        isError: false,
+      }, context as never);
+      expect(dockerOutput).toMatchObject({
+        content: [{ type: "text", text: "TOKEN=****" }],
+      });
+    }
+
+    for (const [protectedTarget, command] of [
+      [mixedCaseEnvPath, `echo changed > ${mixedCaseEnvPath}`],
+      [mixedCaseEnvPath, `python3 -c "open('${mixedCaseEnvPath}', 'w').write('changed')"`],
+      [missingEnvPath, `echo changed > ${missingEnvPath}`],
+      [missingEnvPath, `python3 -c "open('${missingEnvPath}', 'w').write('changed')"`],
+    ]) {
+      const writeEvent = {
+        toolName: "bash",
+        toolCallId: `t-dotenv-write-edge-${protectedTarget}-${command.startsWith("python3") ? "python" : "redirect"}`,
+        input: { command },
+      };
+      const writeResult = await pi.handlers.get("tool_call")?.(writeEvent, context as never);
+      if (writeResult === undefined) {
+        const writeHelperInput = extractHelperInput(writeEvent.input.command);
+        const expectedTarget = await realpath(protectedTarget).catch(() => path.resolve(protectedTarget));
+        expect(writeHelperInput.runtimeConfig.filesystem.denyWrite).toContain(expectedTarget);
+      } else {
+        expect(writeResult).toMatchObject({ block: true });
+      }
+    }
+
     for (const command of [
       `echo changed > ${envPath}`,
       `rm ${envPath}`,
@@ -987,12 +1256,231 @@ describe("piPermissionSystemExtension SRT default smoke", () => {
       `sed -i '' ${envPath}`,
       `cp ${envPath} ${path.join(projectDir, "copy.env")}`,
       `truncate -s 0 ${envPath}`,
+      `python3 -c "open('${envPath}', 'w').write('changed')"`,
     ]) {
-      const writeResult = await pi.handlers.get("tool_call")?.(
-        { toolName: "bash", toolCallId: `t-dotenv-write-${command}`, input: { command } },
-        context as never,
+      const writeEvent = {
+        toolName: "bash",
+        toolCallId: `t-dotenv-write-${command}`,
+        input: { command },
+      };
+      const writeResult = await pi.handlers.get("tool_call")?.(writeEvent, context as never);
+      if (writeResult === undefined) {
+        const writeHelperInput = extractHelperInput(writeEvent.input.command);
+        expect(writeHelperInput.runtimeConfig.filesystem.denyWrite).toContain(approvedPath);
+      } else {
+        expect(writeResult).toMatchObject({ block: true });
+      }
+    }
+  }, 20_000);
+
+  it.each([
+    ["Docker equals-form option", (envPath: string) => `docker run --env-file=.env.local alpine:latest`],
+    ["interpreter literal", (_envPath: string) => `python3 -c "open('.env.local').read()"`],
+  ])("preserves explicit path denies for %s", async (caseName, makeCommand) => {
+    const agentDir = await makeTempDir("pi-permission-agent-");
+    const projectDir = await makeTempDir("pi-permission-project-");
+    const envPath = path.join(projectDir, ".env.local");
+    await writeFile(envPath, "TOKEN=synthetic-secret\n", "utf8");
+    process.env.PI_CODING_AGENT_DIR = agentDir;
+    await writeExtensionConfig(agentDir, {
+      permission: {
+        "*": "allow",
+        bash: { "*": "allow" },
+        path: { ".env.local": "deny" },
+      },
+      sandbox: {
+        enabled: true,
+        backend: "srt",
+        defaultProfile: "offline-dev",
+        profiles: {
+          "offline-dev": {
+            network: false,
+            env: { allow: [], deny: [] },
+            maskedPaths: ["**/.env", "**/.env.*"],
+          },
+        },
+      },
+    });
+    mockDockerSocketPaths.mockReturnValue([path.join(projectDir, "docker.sock")]);
+
+    const pi = createFakePi();
+    piPermissionSystemExtension(pi as never);
+    const context = createContext(projectDir, { hasUI: true, choices: ["Yes"] });
+    const result = await pi.handlers.get("tool_call")?.({
+      toolName: "bash",
+      toolCallId: `t-explicit-path-deny-${String(caseName).replaceAll(" ", "-")}`,
+      input: { command: makeCommand(envPath) },
+    }, context as never);
+    expect(result).toMatchObject({ block: true });
+    expect(context.ui.select).not.toHaveBeenCalled();
+  });
+
+  it("prompts on explicit path asks before auto-granting a dotenv read", async () => {
+    const agentDir = await makeTempDir("pi-permission-agent-");
+    const projectDir = await makeTempDir("pi-permission-project-");
+    await writeFile(path.join(projectDir, ".env.local"), "TOKEN=synthetic-secret\n", "utf8");
+    process.env.PI_CODING_AGENT_DIR = agentDir;
+    await writeExtensionConfig(agentDir, {
+      permission: {
+        "*": "allow",
+        bash: { "*": "allow" },
+        path: { ".env.local": "ask" },
+      },
+      sandbox: {
+        enabled: true,
+        backend: "srt",
+        defaultProfile: "offline-dev",
+        profiles: {
+          "offline-dev": {
+            network: false,
+            env: { allow: [], deny: [] },
+            maskedPaths: ["**/.env", "**/.env.*"],
+          },
+        },
+      },
+    });
+
+    const pi = createFakePi();
+    piPermissionSystemExtension(pi as never);
+    const context = createContext(projectDir, { hasUI: true, choices: ["No"] });
+    const result = await pi.handlers.get("tool_call")?.({
+      toolName: "bash",
+      toolCallId: "t-explicit-path-ask",
+      input: { command: "docker run --env-file=.env.local alpine:latest" },
+    }, context as never);
+    expect(result).toMatchObject({ block: true });
+    expect(context.ui.select).toHaveBeenCalledOnce();
+  });
+
+  it("value-masks dotenv output after an explicit path ask is approved", async () => {
+    const agentDir = await makeTempDir("pi-permission-agent-");
+    const projectDir = await makeTempDir("pi-permission-project-");
+    const envPath = path.join(projectDir, ".env.local");
+    await writeFile(envPath, "TOKEN=synthetic-secret\n", "utf8");
+    process.env.PI_CODING_AGENT_DIR = agentDir;
+    await writeExtensionConfig(agentDir, {
+      permission: {
+        "*": "allow",
+        bash: { "*": "allow" },
+        path: { ".env.local": "ask" },
+      },
+      sandbox: {
+        enabled: true,
+        backend: "srt",
+        defaultProfile: "offline-dev",
+        profiles: {
+          "offline-dev": {
+            network: false,
+            env: { allow: [], deny: [] },
+            maskedPaths: ["**/.env", "**/.env.*"],
+          },
+        },
+      },
+    });
+
+    const pi = createFakePi();
+    piPermissionSystemExtension(pi as never);
+    const context = createContext(projectDir, { hasUI: true, choices: ["Yes", "Allow once"] });
+    const event = {
+      toolName: "bash",
+      toolCallId: "t-explicit-path-ask-approved",
+      input: { command: `cat ${envPath}` },
+    };
+    expect(await pi.handlers.get("tool_call")?.(event, context as never)).toBeUndefined();
+    expect(context.ui.select).toHaveBeenCalledOnce();
+
+    const result = await pi.handlers.get("tool_result")?.({
+      toolCallId: event.toolCallId,
+      toolName: "bash",
+      input: event.input,
+      content: [{ type: "text", text: "TOKEN=synthetic-secret\n" }],
+      details: { truncation: { content: "TOKEN=synthetic-secret\n" } },
+      isError: false,
+    }, context as never);
+
+    expect(result).toMatchObject({
+      content: [{ type: "text", text: "TOKEN=****\n" }],
+      details: { truncation: { content: "TOKEN=****\n" } },
+    });
+    expect(JSON.stringify(result)).not.toContain("synthetic-secret");
+  });
+
+  it.each([false, true])("redacts custom-profile masked output (error=%s)", async (isError) => {
+    const agentDir = await makeTempDir("pi-permission-agent-");
+    const projectDir = await makeTempDir("pi-permission-project-");
+    const envPath = path.join(projectDir, ".env");
+    const customPath = path.join(projectDir, "private.cfg");
+    await writeFile(envPath, "TOKEN=synthetic-dotenv-secret\n", "utf8");
+    await writeFile(customPath, "KEY=synthetic-custom-secret\n", "utf8");
+    process.env.PI_CODING_AGENT_DIR = agentDir;
+    await writeExtensionConfig(agentDir, {
+      permission: { "*": "allow", bash: { "*": "allow" } },
+      sandbox: {
+        enabled: true,
+        backend: "srt",
+        defaultProfile: "offline-dev",
+        profiles: {
+          "offline-dev": {
+            network: false,
+            env: { allow: [], deny: [] },
+            maskedPaths: ["**/.env", "**/.env.*", "**/private.cfg"],
+          },
+        },
+      },
+    });
+
+    const pi = createFakePi();
+    piPermissionSystemExtension(pi as never);
+    const context = createContext(projectDir, { hasUI: true, choices: ["Allow once"] });
+    const command = `cat ${envPath} ${customPath}`;
+    const event = {
+      toolName: "bash",
+      toolCallId: isError ? "t-mixed-masked-read-error" : "t-mixed-masked-read",
+      input: { command },
+    };
+    expect(await pi.handlers.get("tool_call")?.(event, context as never)).toBeUndefined();
+    expect(context.ui.select).toHaveBeenCalledTimes(1);
+
+    const rawOutput = "TOKEN=synthetic-dotenv-secret\nKEY=synthetic-custom-secret\n";
+    const result = await pi.handlers.get("tool_result")?.({
+      toolCallId: event.toolCallId,
+      toolName: "bash",
+      input: event.input,
+      content: [{ type: "text", text: rawOutput }],
+      details: { truncation: { content: rawOutput } },
+      isError,
+    }, context as never);
+
+    expect(JSON.stringify(result)).not.toContain("synthetic-dotenv-secret");
+    expect(JSON.stringify(result)).not.toContain("synthetic-custom-secret");
+  });
+
+  it("honors explicit external-directory denies for direct protected reads", async () => {
+    const originalHome = process.env.HOME;
+    const agentDir = await makeTempDir("pi-permission-agent-");
+    const projectDir = await makeTempDir("pi-permission-project-");
+    const homeDir = await makeTempDir("pi-permission-home-");
+    const credentialPath = path.join(homeDir, ".aws", "credentials");
+    await mkdir(path.dirname(credentialPath), { recursive: true });
+    await writeFile(credentialPath, "TOKEN=synthetic-secret\n", "utf8");
+    process.env.HOME = homeDir;
+    process.env.PI_CODING_AGENT_DIR = agentDir;
+    await writeExtensionConfig(agentDir, {
+      permission: { read: "allow", external_directory: { "*": "deny" } },
+      sandbox: { enabled: false, backend: "srt", defaultProfile: "online-dev" },
+    });
+
+    try {
+      const pi = createFakePi(["read"]);
+      piPermissionSystemExtension(pi as never);
+      const result = await pi.handlers.get("tool_call")?.(
+        { toolName: "read", toolCallId: "t-denied-protected-read", input: { path: credentialPath } },
+        createContext(projectDir) as never,
       );
-      expect(writeResult).toMatchObject({ block: true });
+      expect(result).toMatchObject({ block: true });
+    } finally {
+      if (originalHome === undefined) delete process.env.HOME;
+      else process.env.HOME = originalHome;
     }
   });
 

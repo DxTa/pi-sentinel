@@ -52,7 +52,7 @@ import { YOLO_AUTO_BUILD_ID } from "./yolo-auto-build";
 import { PromptWaitTracker } from "./prompt-state";
 import { getHardBlockedBashMutationPaths } from "./handlers/gates/bash-external-directory.js";
 import { extractExternalPathsFromBashCommand } from "./handlers/gates/bash-path-extractor.js";
-import { isReadOnlyBashChain } from "./bash-command-safety";
+import { isReadOnlyBashChain, isReadOnlyBashDiagnostic } from "./bash-command-safety";
 import {
   getPathBearingToolPath,
   isPathWithinDirectory,
@@ -423,16 +423,12 @@ interface MaskedAuthReadOptions {
 function autoApprovedMaskedPaths(input: {
   command: string;
   cwd: string;
-  explicitMasked: readonly string[];
   workspaceDotenvPaths: ReadonlySet<string>;
   options: MaskedAuthReadOptions;
   pinPath: (path: string) => string | null;
 }): { dotenv: string[]; all: string[] } {
-  const { command, cwd, explicitMasked, workspaceDotenvPaths, options, pinPath } = input;
-  const dotenv = options.autoAllowWorkspaceDotenvRead
-    && explicitMasked.length > 0
-    && workspaceDotenvPaths.size === explicitMasked.length
-    && isReadOnlyBashChain(command, cwd)
+  const { command, cwd, workspaceDotenvPaths, options, pinPath } = input;
+  const dotenv = options.autoAllowWorkspaceDotenvRead && workspaceDotenvPaths.size > 0
     ? [...workspaceDotenvPaths]
     : [];
   const protectedReads = (options.autoApprovedReadPaths ?? [])
@@ -457,8 +453,9 @@ async function resolveMaskedAuthAccess(
   bypass: boolean;
   authDecision?: ResolvedAuthException;
   autoAllowedDotenvPaths?: string[];
+  redactOutput?: boolean;
 }> {
-  const explicitMasked = detectMaskedFileAccess(command, profile, cwd);
+  const explicitMasked = detectMaskedFileAccess(command, profile, cwd, { includeMissing: true });
   const implicitAuth = await detectImplicitAuthAccess(command, repoRoot);
 
   let canonicalizationFailed = false;
@@ -471,14 +468,29 @@ async function resolveMaskedAuthAccess(
     }
   };
   const kindByPath = new Map<string, MaskedAuthKind>();
+  const explicitMaskedPaths = new Set<string>();
   const workspaceDotenvPaths = new Set<string>();
   for (const path of explicitMasked) {
     const pinnedPath = pinPath(path);
     if (!pinnedPath) continue;
     kindByPath.set(pinnedPath, classifyMaskedPathKind([pinnedPath]));
+    explicitMaskedPaths.add(pinnedPath);
     if (
       isSensitiveEnvPath(path, cwd)
       && isWorkspaceLocalFileOperation("read", { path }, repoRoot, { allowWorkspaceEnvRead: true })
+    ) {
+      workspaceDotenvPaths.add(pinnedPath);
+    }
+  }
+  for (const path of readOptions.autoApprovedReadPaths ?? []) {
+    const pinnedPath = pinPath(path);
+    if (!pinnedPath) continue;
+    if (!kindByPath.has(pinnedPath)) {
+      kindByPath.set(pinnedPath, classifyMaskedPathKind([pinnedPath]));
+    }
+    if (
+      isSensitiveEnvPath(pinnedPath, cwd)
+      && isWorkspaceLocalFileOperation("read", { path: pinnedPath }, repoRoot, { allowWorkspaceEnvRead: true })
     ) {
       workspaceDotenvPaths.add(pinnedPath);
     }
@@ -509,16 +521,30 @@ async function resolveMaskedAuthAccess(
     hasCandidatePaths: kindByPath.size > 0,
     needsSocketFallback: implicitAuth?.needsSocketFallback ?? false,
   });
-  const autoApproved = implicitAuth == null
-    && authDecision.strategy === "ask-unmask"
+  const autoApproved = authDecision.strategy === "ask-unmask"
     && authDecision.matchedRule === undefined
-    ? autoApprovedMaskedPaths({ command, cwd, explicitMasked, workspaceDotenvPaths, options: readOptions, pinPath })
+    ? autoApprovedMaskedPaths({ command, cwd, workspaceDotenvPaths, options: readOptions, pinPath })
     : { dotenv: [], all: [] };
   const autoAllowedDotenvPaths = autoApproved.dotenv;
 
   if (authDecision.strategy === "deny") {
     return {
       blockReason: `Sandbox: ${authDecision.reason}`,
+      unmaskedPaths: [],
+      bypass: false,
+      authDecision,
+    };
+  }
+
+  if (
+    authDecision.strategy === "ask-bypass"
+    && (
+      explicitMaskedPaths.size > 0
+      || (await protectedBashReadPaths(command, cwd)).length > 0
+    )
+  ) {
+    return {
+      blockReason: "Sandbox: protected paths cannot be combined with unsandboxed authentication; split the command.",
       unmaskedPaths: [],
       bypass: false,
       authDecision,
@@ -569,9 +595,17 @@ async function resolveMaskedAuthAccess(
   const unmaskedPaths: UnmaskedPath[] = [...kindByPath.keys()]
     .filter((path) => approved.has(path))
     .map((path) => ({ path, writable: false }));
+  const shouldRedactExplicitMaskedOutput = () => unmaskedPaths.some(({ path }) =>
+    explicitMaskedPaths.has(path) && !workspaceDotenvPaths.has(path));
 
   if (pendingPaths.length === 0) {
-    return { unmaskedPaths, bypass: false, authDecision, autoAllowedDotenvPaths };
+    return {
+      unmaskedPaths,
+      bypass: false,
+      authDecision,
+      autoAllowedDotenvPaths,
+      redactOutput: shouldRedactExplicitMaskedOutput(),
+    };
   }
 
   const kind = authDecision.kind;
@@ -608,7 +642,13 @@ async function resolveMaskedAuthAccess(
     }
   }
 
-  return { unmaskedPaths, bypass: false, authDecision };
+  return {
+    unmaskedPaths,
+    bypass: false,
+    authDecision,
+    autoAllowedDotenvPaths,
+    redactOutput: shouldRedactExplicitMaskedOutput(),
+  };
 }
 
 // ── Main extension ───────────────────────────────────────────────────────
@@ -1466,15 +1506,44 @@ export default function piPermissionSystemExtension(pi: ExtensionAPI): void {
       ...(networkResult?.approvedDomains ?? []),
     ];
 
+    const bashCommand = e.toolName === "bash"
+      ? (e.input as { command?: unknown })?.command
+      : undefined;
+    const sandboxedBash = typeof bashCommand === "string"
+      && sc.enabled
+      && sc.backend === "srt"
+      && !bypassesSandbox(bashCommand, ctx.cwd);
+    let protectedReadPaths: string[] = [];
+    if (typeof bashCommand === "string") {
+      try {
+        protectedReadPaths = await protectedBashReadPaths(bashCommand, ctx.cwd);
+      } catch {
+        return { block: true, reason: "Sandbox: unable to verify credential paths; command blocked." };
+      }
+      if (!sandboxedBash && protectedReadPaths.length > 0) {
+        return { block: true, reason: "Sandbox: credential access requires the SRT read-only boundary; command blocked." };
+      }
+      if (!sandboxedBash) {
+        try {
+          const implicitAuth = await detectImplicitAuthAccess(bashCommand, resolveRepoRoot(ctx.cwd));
+          if (implicitAuth && !isReadOnlyBashDiagnostic(bashCommand)) {
+            return { block: true, reason: "Sandbox: implicit credential access requires the SRT read-only boundary; command blocked." };
+          }
+        } catch {
+          return { block: true, reason: "Sandbox: unable to verify implicit credential access; command blocked." };
+        }
+      }
+    }
+
     let bashPermissionAlreadyChecked = false;
     if (e.toolName === "bash") {
-      const command = (e.input as { command?: unknown })?.command;
-      const sandboxedForYoloAuto = typeof command === "string"
-        && sc.enabled
-        && sc.backend === "srt"
-        && !bypassesSandbox(command, ctx.cwd);
       try {
-        const upstreamResult = await gates.handleToolCall(event, ctx, sandboxedForYoloAuto);
+        const upstreamResult = await gates.handleToolCall(
+          event,
+          ctx,
+          sandboxedBash,
+          protectedReadPaths,
+        );
         if (upstreamResult.block) return upstreamResult;
       } catch {
         return { block: true, reason: "Permission authorization failed; command blocked." };
@@ -1483,15 +1552,11 @@ export default function piPermissionSystemExtension(pi: ExtensionAPI): void {
     }
 
     // Protected credential reads run without a prompt, so their whole output is redacted.
-    let protectedReadPaths: string[] = [];
-    if (e.toolName === "bash" && typeof (e.input as { command?: unknown })?.command === "string") {
-      protectedReadPaths = await protectedBashReadPaths((e.input as { command: string }).command, ctx.cwd);
-      if (protectedReadPaths.length > 0) {
-        if (!e.toolCallId) {
-          return { block: true, reason: "Unable to track output redaction for protected path read; command blocked." };
-        }
-        pendingSrtWraps.set(e.toolCallId, { redactOutput: true });
-      }
+    const genericProtectedReadPaths = protectedReadPaths.filter((path) =>
+      isProtectedCredentialReadPath(path, ctx.cwd));
+    let redactProtectedReadOutput = genericProtectedReadPaths.length > 0;
+    if (redactProtectedReadOutput && !e.toolCallId) {
+      return { block: true, reason: "Unable to track output redaction for protected path read; command blocked." };
     }
 
     // 2. Sandbox wrapping with dynamic grants (mutates event.input.command)
@@ -1631,6 +1696,13 @@ export default function piPermissionSystemExtension(pi: ExtensionAPI): void {
           }
           if (maskedResolution.bypass) {
             return undefined;
+          }
+          redactProtectedReadOutput ||= maskedResolution.redactOutput === true;
+          if (redactProtectedReadOutput && !e.toolCallId) {
+            return { block: true, reason: "Unable to track output redaction for protected path read; command blocked." };
+          }
+          if (redactProtectedReadOutput && e.toolCallId) {
+            pendingSrtWraps.set(e.toolCallId, { redactOutput: true });
           }
           autoAllowedDotenvPaths = maskedResolution.autoAllowedDotenvPaths ?? [];
           if (autoAllowedDotenvPaths.length > 0 && !e.toolCallId) {
@@ -1786,13 +1858,14 @@ export default function piPermissionSystemExtension(pi: ExtensionAPI): void {
             || result.rawCommandBytes !== undefined
             || autoAllowedDotenvPaths.length > 0
             || protectedReadPaths.length > 0
+            || redactProtectedReadOutput
           )) {
             pendingSrtWraps.set(e.toolCallId, {
               cleanup: result.cleanup,
               helperPayloadBytes: result.helperPayloadBytes,
               rawCommandBytes: result.rawCommandBytes,
               dotenvPaths: autoAllowedDotenvPaths,
-              redactOutput: protectedReadPaths.length > 0,
+              redactOutput: redactProtectedReadOutput,
             });
           }
         }
@@ -1841,6 +1914,23 @@ export default function piPermissionSystemExtension(pi: ExtensionAPI): void {
         },
       };
     }
+    const sandboxedUserBash = sc.enabled
+      && sc.backend === "srt"
+      && !shouldBypassSandboxCommand(event.command, sc.bypassCommands);
+    if (!sandboxedUserBash) {
+      try {
+        if ((await protectedBashReadPaths(event.command, event.cwd)).length > 0) {
+          return blockedUserBash("Sandbox: credential access requires the SRT read-only boundary; command blocked.");
+        }
+        const implicitAuth = await detectImplicitAuthAccess(event.command, resolveRepoRoot(event.cwd));
+        if (implicitAuth && !isReadOnlyBashDiagnostic(event.command)) {
+          return blockedUserBash("Sandbox: implicit credential access requires the SRT read-only boundary; command blocked.");
+        }
+      } catch {
+        return blockedUserBash("Sandbox: unable to verify credential access; command blocked.");
+      }
+    }
+
     // Network domain gate for user bash
     let hardBlockedMutationPaths: string[];
     try {

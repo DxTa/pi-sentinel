@@ -22,6 +22,7 @@ import { resolve, join, basename, dirname, sep } from "node:path";
 import { existsSync } from "node:fs";
 import type { SandboxProfile, UnmaskedPath } from "./types.js";
 import { canonicalPath, normalizeMacPrivatePath } from "./sandbox-visible-paths.js";
+import { isSensitiveEnvPath, isWorkspaceLocalFileOperation } from "../path-utils.js";
 import type { MaskedAuthKind } from "./auth-path-detection.js";
 
 /**
@@ -137,7 +138,7 @@ export interface MaskedFileAccessOptions {
 
 export function detectMaskedFileAccess(
   command: string,
-  profile: SandboxProfile,
+  profile: Pick<SandboxProfile, "maskedPaths">,
   cwd: string,
   options: MaskedFileAccessOptions = {},
 ): string[] {
@@ -146,19 +147,35 @@ export function detectMaskedFileAccess(
     : DEFAULT_MASKED_PATTERNS;
 
   const home = homedir();
+  const candidatePaths: string[] = [];
+
+  // Docker's equals form is one shell token, so the ordinary tokenizer would
+  // otherwise treat `--env-file=/path` as a nonexistent path of its own.
+  const envFileOption = /(?:^|\s)--env-file(?:=|\s+)(?:"([^"]*)"|'([^']*)'|([^\s;&|<>]+))/g;
+  for (const match of command.matchAll(envFileOption)) {
+    const value = match[1] ?? match[2] ?? match[3];
+    if (!value) continue;
+    const expanded = expandHome(value);
+    candidatePaths.push(expanded.startsWith("/") ? expanded : resolve(cwd, expanded));
+  }
 
   // Strategy 1: Split-based token extraction
   // Split on shell metacharacters to get individual tokens
   const tokens = command
-    .split(/[\s;|&<>()`$\\'"!\n\r\t]+/)
+    .split(/[\s;|&<>`$\\'"!\n\r\t]+/)
     .filter((t) => t.length > 0);
 
   // Strategy 2: Extract paths from tokens using heuristics
-  const candidatePaths: string[] = [];
-
   for (const token of tokens) {
+    if (token.startsWith("--") && token.includes("=")) {
+      const value = token.slice(token.indexOf("=") + 1);
+      if (!value) continue;
+      const expanded = expandHome(value);
+      candidatePaths.push(expanded.startsWith("/") ? expanded : resolve(cwd, expanded));
+      continue;
+    }
     // Skip if it looks like a flag or command
-    if (token.startsWith("-") && !token.startsWith("--")) continue;
+    if (token.startsWith("-")) continue;
     if (/^(sudo|bash|sh|zsh|cat|head|tail|less|more|grep|sed|awk|find|ls|cd|cp|mv|rm|echo|printenv|env|which|type|file|stat|readlink|md5sum|sha256sum|wc|sort|uniq|cut|comm|diff|tar|unzip|gzip|python|python3|node|ruby|perl|vim|vi|nano|code|source|exec|xargs|tee|curl|wget|docker|git|npm|yarn|pnpm|npx|pip|make|cmake|cargo|go|java|javac|dotnet)$/.test(token)) continue;
 
     // Path-like tokens: starts with /, ~, ., or contains /
@@ -175,10 +192,11 @@ export function detectMaskedFileAccess(
   // Strategy 3: Environment variable expansion
   const envExpanded = command
     .replace(/\$HOME/g, home)
-    .replace(/\$\{HOME\}/g, home);
+    .replace(/\$\{HOME\}/g, home)
+    .replace(/\$\{HOME%\/\}/g, home.replace(/\/$/, ""));
 
   const envTokens = envExpanded
-    .split(/[\s;|&<>()`$\\'"!\n\r\t]+/)
+    .split(/[\s;|&<>`$\\'"!\n\r\t]+/)
     .filter((t) => t.length > 1 && t.startsWith("/"));
 
   for (const token of envTokens) {
@@ -191,7 +209,12 @@ export function detectMaskedFileAccess(
   // Check each candidate against masked patterns and existence
   const matchedPaths: string[] = [];
   for (const path of uniqueCandidates) {
-    if (isPathMasked(path, patterns) && (options.includeMissing === true || existsSync(path))) {
+    const workspaceDotenv = isSensitiveEnvPath(path, cwd)
+      && isWorkspaceLocalFileOperation("read", { path }, cwd, { allowWorkspaceEnvRead: true });
+    if (
+      (isPathMasked(path, patterns) || workspaceDotenv)
+      && (options.includeMissing === true || existsSync(path))
+    ) {
       matchedPaths.push(path);
     }
   }

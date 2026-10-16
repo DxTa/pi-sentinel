@@ -1,8 +1,8 @@
 import { isReadOnlyBashChain, isReadOnlyBashCommand } from "#src/bash-command-safety";
 import { getNonEmptyString, toRecord } from "#src/common";
-import { isPathWithinDirectory, normalizePathForComparison } from "#src/path-utils";
+import { isPathOutsideWorkingDirectory, isPathWithinDirectory, normalizePathForComparison } from "#src/path-utils";
 import { isPiClipboardTempFile } from "#src/clipboard-temp-cleanup";
-import { protectedBashReadPaths } from "#src/protected-read";
+import { isProtectedCredentialReadPath, protectedBashReadPaths } from "#src/protected-read";
 import type { Rule } from "#src/rule";
 import { deriveApprovalPattern } from "#src/session-rules";
 import type { PermissionCheckResult } from "#src/types";
@@ -90,17 +90,22 @@ export async function describeBashExternalDirectoryGate(
   const command = getNonEmptyString(toRecord(tcc.input).command);
   if (!command) return null;
 
-  const externalPaths = await extractExternalPathsFromBashCommand(
-    command,
-    tcc.cwd,
+  const protectedPaths = tcc.sandboxed === true
+    ? await protectedBashReadPaths(command, tcc.cwd)
+    : [];
+  const protectedExternalPaths = protectedPaths.filter((path) =>
+    isPathOutsideWorkingDirectory(path, tcc.cwd!),
   );
+  const externalPaths = [...new Set([
+    ...await extractExternalPathsFromBashCommand(command, tcc.cwd),
+    ...protectedExternalPaths,
+  ])];
   if (externalPaths.length === 0) return null;
 
-  // Read-only reads of clipboard temp files or protected credential paths are allowed;
-  // protected-path output is fully redacted by the tool_result hook.
+  // Clipboard reads stay a separate, narrower exception.
   const readsOnlyClipboardFiles = isReadOnlyBashChain(command, tcc.cwd)
     && externalPaths.every(isPiClipboardTempFile);
-  if (readsOnlyClipboardFiles || (await protectedBashReadPaths(command, tcc.cwd)).length > 0) {
+  if (readsOnlyClipboardFiles) {
     return {
       action: "allow",
       log: {
@@ -175,6 +180,27 @@ export async function describeBashExternalDirectoryGate(
   const uncoveredPathChecks = externalPathChecks.filter(
     ({ check }) => check.state !== "allow",
   );
+  const mayAutoAllowProtectedRead = protectedPaths.length > 0
+    && externalPaths.every((path) => isProtectedCredentialReadPath(path, tcc.cwd!))
+    && uncoveredPathChecks.every(({ check }) =>
+      check.state === "ask" && (check.origin === "builtin" || check.origin === "bundled"));
+
+  if (mayAutoAllowProtectedRead) {
+    return {
+      action: "allow",
+      log: {
+        event: "permission_request.protected_read_auto_allowed",
+        details: {
+          source: "tool_call",
+          toolCallId: tcc.toolCallId,
+          toolName: tcc.toolName,
+          agentName: tcc.agentName,
+          command,
+          resolution: "protected_read_auto_allowed",
+        },
+      },
+    };
+  }
 
   if (uncoveredPathChecks.length === 0) {
     return {

@@ -455,18 +455,24 @@ describe("buildSrtCommandSpec", () => {
     const envPath = path.join(repoRoot, ".env");
     await writeFile(envPath, "SECRET=1\n", "utf8");
 
-    const spec = buildSrtCommandSpec({
+    const input = {
       command: "cat .env",
       cwd,
       repoRoot,
       sandboxConfig: makeConfig(),
       profile: makeProfile({ maskedPaths: ["**/.env"] }),
       unmaskedPaths: [{ path: envPath, writable: false }],
-    });
+    };
 
-    expect(spec.maskedShimPlan.maskedFilePaths).toEqual([]);
-    expect(spec.maskedShimPlan.maskedDenyPaths).toEqual([]);
-    expect(spec.maskedShimPlan.shimCommands).toEqual([]);
+    for (const spec of [buildSrtCommandSpec(input), await buildSrtCommandSpecAsync(input)]) {
+      expect(spec.maskedShimPlan.maskedFilePaths).toEqual([]);
+      expect(spec.maskedShimPlan.maskedDenyPaths).toEqual([]);
+      expect(spec.maskedShimPlan.shimCommands).toEqual([]);
+      const filesystem = buildSrtRuntimeConfig(spec).filesystem;
+      expect(filesystem.allowRead).toContain(canonicalPath(envPath));
+      expect(filesystem.allowWrite).not.toContain(canonicalPath(envPath));
+      expect(filesystem.denyWrite).toContain(canonicalPath(envPath));
+    }
   });
 
   it("does not trust external helper paths", async () => {

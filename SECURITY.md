@@ -10,6 +10,8 @@
 
 **Out of scope:** host administrator or kernel compromise; compromise of the current user account, Pi runtime, explicitly trusted dependency, SRT runtime, Docker daemon, or configured worker; consequences of commands explicitly approved to run on the host; unreviewed project policy; intentionally approved Docker or local Unix-service access; and availability-only failures such as model download or resource exhaustion.
 
+**Credential consumption:** Sandboxed Bash can receive canonical read-only SRT grants for workspace dotenv and recognized workspace/home credential or configuration paths in manual, yolo, and yolo-auto modes. Dotenv output is value-masked; generic credential output is fully redacted. Protected targets remain in SRT `denyWrite`, including when the command writes elsewhere. Explicit custom asks/denies retain precedence. Unsandboxed or bypassed commands receive no automatic credential grant; if the selected SRT boundary or redaction tracking is unavailable, access is blocked. Read-only credentials may break token refresh or credential helpers. Result masking does not prevent an authorized consumer from transforming or transmitting secrets, and Docker or other privileged socket holders can act outside this boundary.
+
 **Residual limits:** classifier decisions use request metadata, not file contents. Path-pattern masking applies only to configured paths; it does not scan arbitrary file content or tool results. Static network preflight may miss dynamic destinations. Clipboard trust covers only tracked interactive direct reads; it does not make temp roots generally visible or authorize Bash. Approved host commands have normal host capabilities; Docker and powerful Unix sockets can be equivalent to host access.
 
 ## Report vulnerability

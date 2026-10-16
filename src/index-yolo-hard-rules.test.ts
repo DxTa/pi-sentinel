@@ -145,7 +145,6 @@ describe("yolo mode hard rules", () => {
   it.each([
     "rm notes.txt",
     "cd src && rm -rf build",
-    "ssh host ls",
     "git push origin main",
     "kubectl apply -f x.yaml",
     "kubectl set image deploy/a a=b",
@@ -155,6 +154,17 @@ describe("yolo mode hard rules", () => {
     await run("bash", { command });
 
     expect(context.ui.select).toHaveBeenCalledOnce();
+  });
+
+  it("blocks host SSH when the SRT credential boundary is disabled", async () => {
+    const { run, context } = await setup("yolo");
+    const result = await run("bash", { command: "ssh host ls" });
+
+    expect(result).toMatchObject({
+      block: true,
+      reason: expect.stringContaining("implicit credential access requires the SRT read-only boundary"),
+    });
+    expect(context.ui.select).not.toHaveBeenCalled();
   });
 
   it("auto-approves network asks and still denies forbidden writes before any network prompt", async () => {

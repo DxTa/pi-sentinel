@@ -38,6 +38,10 @@ export function buildSrtRuntimeConfig(spec: SrtCommandSpec): SrtRuntimeConfig {
   const approvedRead = dedupe(spec.unmaskedPaths.map((entry) => entry.path));
   const approvedWrite = dedupe(spec.unmaskedPaths.filter((entry) => entry.writable).map((entry) => entry.path));
   const deniedMaskedPaths = dedupe(spec.maskedShimPlan.maskedDenyPaths);
+  const deniedWritePaths = dedupe([
+    ...deniedMaskedPaths,
+    ...spec.unmaskedPaths.filter((entry) => !entry.writable).map((entry) => entry.path),
+  ]);
 
   const tempPaths = new Set(getSandboxTempPaths());
   const allowRead = dedupe([
@@ -69,7 +73,7 @@ export function buildSrtRuntimeConfig(spec: SrtCommandSpec): SrtRuntimeConfig {
       allowRead,
       allowWrite,
       denyRead: ["/", ...deniedMaskedReads],
-      denyWrite: deniedMaskedPaths.filter((path) => !approvedWrite.includes(path)), 
+      denyWrite: deniedWritePaths.filter((path) => !approvedWrite.includes(path)),
     },
   };
 }

@@ -1,4 +1,5 @@
 
+import { relative } from "node:path";
 import { matchTrustedPiRequest } from "./gates/trusted-pi-dirs";
 import { READ_ONLY_PATH_BEARING_TOOLS } from "#src/path-utils";
 import type {
@@ -77,6 +78,7 @@ export class PermissionGateHandler {
     event: unknown,
     ctx: ExtensionContext,
     sandboxedForYoloAuto = false,
+    protectedReadPaths: readonly string[] = [],
   ): Promise<{ block?: true; reason?: string }> {
     const { session } = this;
     session.activate(ctx);
@@ -268,6 +270,12 @@ export class PermissionGateHandler {
       tcc,
       infraDirs,
       this.options.isTrustedClipboardReadPath,
+      (pathValue) => checkPermission(
+        "external_directory",
+        { path: pathValue },
+        tcc.agentName ?? undefined,
+        getSessionRuleset(),
+      ),
     );
     if (extDirDesc) {
       if (isGateBypass(extDirDesc)) {
@@ -326,6 +334,14 @@ export class PermissionGateHandler {
     const bashPathTokens = bashCommand !== null
       ? await extractTokensForPathRules(bashCommand)
       : undefined;
+    const protectedPathPolicyTokens = protectedReadPaths.flatMap((path) => {
+      if (!tcc.cwd || isPathOutsideWorkingDirectory(path, tcc.cwd)) return [path];
+      const relativePath = relative(tcc.cwd, path);
+      return relativePath ? [path, relativePath] : [path];
+    });
+    const bashPathPolicyTokens = bashPathTokens === undefined
+      ? undefined
+      : [...new Set([...bashPathTokens, ...protectedPathPolicyTokens])];
     const yoloAutoBashContext = bashPathTokens !== undefined && bashCommand !== null
       ? buildYoloAutoBashContext(bashCommand, bashPathTokens, tcc.cwd)
       : undefined;
@@ -343,7 +359,7 @@ export class PermissionGateHandler {
       toolTcc,
       checkPermission,
       getSessionRuleset,
-      bashPathTokens,
+      bashPathPolicyTokens,
     );
 
     if (bashPathDesc) {

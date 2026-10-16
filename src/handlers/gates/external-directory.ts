@@ -1,3 +1,4 @@
+import { realpathSync } from "node:fs";
 import {
   getPathBearingToolPath,
   isPathOutsideWorkingDirectory,
@@ -9,6 +10,7 @@ import {
 import { isPiClipboardTempFile } from "#src/clipboard-temp-cleanup";
 import { isProtectedCredentialReadPath } from "#src/protected-read";
 import { deriveApprovalPattern } from "#src/session-rules";
+import type { PermissionCheckResult } from "#src/types";
 import type { GateResult } from "./descriptor";
 import { formatExternalDirectoryAskPrompt } from "./external-directory-messages";
 import type { ToolCallContext } from "./types";
@@ -21,10 +23,36 @@ import type { ToolCallContext } from "./types";
  * Returns a `GateBypass` for Pi infrastructure reads.
  * Returns a `GateDescriptor` for external paths needing a permission check.
  */
+function findExplicitRestriction(
+  checks: PermissionCheckResult[],
+): PermissionCheckResult | undefined {
+  const isExplicitRestriction = (check: PermissionCheckResult) =>
+    (check.state === "ask" || check.state === "deny")
+    && !["builtin", "bundled", "baseline"].includes(check.origin);
+
+  return checks.find((check) => check.state === "deny" && isExplicitRestriction(check))
+    ?? checks.find((check) => check.state === "ask" && isExplicitRestriction(check));
+}
+
+function getProtectedReadRestriction(
+  pathValue: string,
+  checkPermission: (pathValue: string) => PermissionCheckResult,
+): PermissionCheckResult | undefined {
+  const paths = new Set([pathValue]);
+  try {
+    paths.add(realpathSync.native(pathValue));
+  } catch {
+    // Keep checking the requested path when the target cannot be canonicalized.
+  }
+
+  return findExplicitRestriction([...paths].map(checkPermission));
+}
+
 export function describeExternalDirectoryGate(
   tcc: ToolCallContext,
   infraDirs: string[],
   isTrustedClipboardReadPath: (pathValue: string) => boolean = isPiClipboardTempFile,
+  checkExternalDirectoryPermission?: (pathValue: string) => PermissionCheckResult,
 ): GateResult {
   if (!tcc.cwd) return null;
 
@@ -60,8 +88,14 @@ export function describeExternalDirectoryGate(
     };
   }
 
-  // Protected credential reads are allowed; the tool_result hook fully redacts the output.
-  if (tcc.toolName === "read" && isProtectedCredentialReadPath(normalizedExtPath, tcc.cwd)) {
+  const protectedRead = tcc.toolName === "read"
+    && isProtectedCredentialReadPath(normalizedExtPath, tcc.cwd);
+  const explicitRestriction = protectedRead && checkExternalDirectoryPermission
+    ? getProtectedReadRestriction(normalizedExtPath, checkExternalDirectoryPermission)
+    : undefined;
+
+  // Protected credential reads are allowed by default; configured asks and denies still apply.
+  if (protectedRead && !explicitRestriction) {
     return {
       action: "allow",
       log: {
@@ -150,5 +184,6 @@ export function describeExternalDirectoryGate(
       surface: "external_directory",
       value: externalDirectoryPath,
     },
+    ...(explicitRestriction ? { preCheck: explicitRestriction } : {}),
   };
 }

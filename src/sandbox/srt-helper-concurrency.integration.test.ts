@@ -7,6 +7,8 @@ import { promisify } from "node:util";
 
 import { afterEach, describe, expect, it } from "vitest";
 import { createSrtBackend, DEFAULT_SRT_HELPER_ENV } from "./backends/srt-backend.js";
+import { buildSrtCommandSpec } from "./srt-command-spec.js";
+import { buildSrtRuntimeConfig } from "./srt-runtime-config.js";
 import { wrapCommandWithSandboxMacOS } from "@anthropic-ai/sandbox-runtime/dist/sandbox/macos-sandbox-utils.js";
 
 
@@ -80,6 +82,60 @@ async function runHelper(command: string, label: string) {
 
 
 maybeDescribe("sandbox-run SRT helper concurrency", () => {
+  it("allows read-only credential access while denying overwrite, removal, and rename", async () => {
+    const cwd = await realpath(await makeTempDir("pi-srt-read-only-credential-"));
+    const envPath = path.join(cwd, ".env");
+    await writeFile(envPath, "TOKEN=synthetic-value\n", "utf8");
+    const command = [
+      "if printf 'TOKEN=changed\n' > .env 2>/dev/null; then echo WRITE_ALLOWED; else echo WRITE_DENIED; fi",
+      "if rm .env 2>/dev/null; then echo REMOVE_ALLOWED; else echo REMOVE_DENIED; fi",
+      "if mv .env .env.renamed 2>/dev/null; then echo RENAME_ALLOWED; else echo RENAME_DENIED; fi",
+      "if [ \"$(cat .env)\" = 'TOKEN=synthetic-value' ]; then echo READ_ALLOWED; else echo READ_FAILED; fi",
+    ].join("; ");
+    const spec = buildSrtCommandSpec({
+      command,
+      cwd,
+      repoRoot: cwd,
+      sandboxConfig: {
+        enabled: true,
+        backend: "srt",
+        profiles: {},
+        defaultProfile: "offline-dev",
+        roBinds: [],
+        rwBinds: [],
+      },
+      profile: {
+        name: "offline-dev",
+        network: false,
+        allowDocker: false,
+        roBinds: [],
+        rwBinds: [],
+        env: { allow: [], deny: [] },
+        maskedPaths: ["**/.env"],
+      },
+      unmaskedPaths: [{ path: envPath, writable: false }],
+    });
+    const runtimeConfig = buildSrtRuntimeConfig(spec);
+
+    expect(runtimeConfig.filesystem.allowRead).toContain(envPath);
+    expect(runtimeConfig.filesystem.allowWrite).not.toContain(envPath);
+    expect(runtimeConfig.filesystem.denyWrite).toContain(envPath);
+
+    const result = await runHelperInput({
+      command,
+      cwd,
+      runtimeConfig,
+      unmatchedHostAction: spec.networkPlan.unmatchedHostAction,
+      maskedShimPlan: spec.maskedShimPlan,
+      unmaskedPaths: spec.unmaskedPaths,
+      envAllowPatterns: spec.envAllowPatterns,
+      envDenyPatterns: spec.envDenyPatterns,
+      execShimPlan: spec.execShimPlan,
+    });
+    expect(result.stdout).toBe("WRITE_DENIED\nREMOVE_DENIED\nRENAME_DENIED\nREAD_ALLOWED\n");
+    expect(await readFile(envPath, "utf8")).toBe("TOKEN=synthetic-value\n");
+  }, 180_000);
+
   it("keeps concurrent masked shim state isolated", async () => {
     const [a, b, c] = await Promise.all([
       runHelper("printf 'A:'; cat .env; printf 'N:'; cat normal.txt", "a"),

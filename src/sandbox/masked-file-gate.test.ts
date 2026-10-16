@@ -29,6 +29,27 @@ describe("detectMaskedFileAccess bare relative names", () => {
     },
   );
 
+  it("detects both Docker env-file operand spellings", () => {
+    const dir = workspaceWith(".env.local");
+    const envPath = path.join(dir, ".env.local");
+    expect(detectMaskedFileAccess(`docker run --env-file ${envPath} alpine:latest`, profile, dir))
+      .toEqual([envPath]);
+    expect(detectMaskedFileAccess(`docker run --env-file=${envPath} alpine:latest`, profile, dir))
+      .toEqual([envPath]);
+    expect(detectMaskedFileAccess(`docker run --env-file=${envPath} alpine:latest`, profile, dir, { includeMissing: true }))
+      .toEqual([envPath]);
+  });
+
+  it.each([".env.new", ".Env.local"])(
+    "finds a dotenv target embedded in interpreter code: %s",
+    (name) => {
+      const dir = workspaceWith();
+      const target = path.join(dir, name);
+      const command = `python3 -c "open('${target}', 'w').write('x')"`;
+      expect(detectMaskedFileAccess(command, profile, dir, { includeMissing: true })).toContain(target);
+    },
+  );
+
   it("ignores ordinary names and missing files", () => {
     const dir = workspaceWith("notes.txt");
     expect(detectMaskedFileAccess("cat notes.txt", profile, dir)).toEqual([]);

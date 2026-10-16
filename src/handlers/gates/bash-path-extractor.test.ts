@@ -24,6 +24,12 @@ describe("bash path extractor path candidates", () => {
     )).resolves.toEqual([envPath]);
   });
 
+  it("joins path fragments adjacent to single-quoted text", async () => {
+    const path = "/tmp/project/.env.local";
+    await expect(extractTokensForPathRules("cat /tmp/project/.en'v.local'"))
+      .resolves.toEqual([path]);
+  });
+
   it("preserves explicit root paths and paths in option values", async () => {
     await expect(extractTokensForPathRules("ls / && tool --config=/etc/hosts"))
       .resolves.toEqual(["/", "/etc/hosts"]);
