@@ -124,9 +124,9 @@ export function isPathMasked(filePath: string, patterns: string[]): boolean {
  * Detect masked file access in a bash command string.
  *
  * This uses a multi-strategy approach:
- * 1. Token splitting: extracts path-like tokens from the command
- * 2. Bare relative names such as .env.local or secret.pem, matched against the patterns
- * 3. Environment variable expansion: handles $HOME, ${HOME}
+ * 1. Docker `--env-file` operands, including quoted values
+ * 2. Token splitting for path-like tokens and bare names such as .env.local
+ * 3. Environment variable expansion for $HOME forms
  *
  * Returns the list of masked file paths referenced by the command,
  * or an empty array if no masked paths are referenced.
@@ -134,6 +134,73 @@ export function isPathMasked(filePath: string, patterns: string[]): boolean {
 export interface MaskedFileAccessOptions {
   /** Include protected path references that do not exist yet (write preflight). */
   includeMissing?: boolean;
+}
+
+function collectDockerEnvFileCandidates(command: string, cwd: string): string[] {
+  const candidates: string[] = [];
+  // Preserve quoted option values that the general token split would separate.
+  const envFileOption = /(?:^|\s)--env-file(?:=|\s+)(?:"([^"]*)"|'([^']*)'|([^\s;&|<>]+))/g;
+  for (const match of command.matchAll(envFileOption)) {
+    const value = match[1] ?? match[2] ?? match[3];
+    if (!value) continue;
+    const expanded = expandHome(value);
+    candidates.push(expanded.startsWith("/") ? expanded : resolve(cwd, expanded));
+  }
+  return candidates;
+}
+
+function getTokenPathCandidates(token: string, cwd: string): string[] {
+  if (token.startsWith("--") && token.includes("=")) {
+    const value = token.slice(token.indexOf("=") + 1);
+    if (!value) return [];
+    const expanded = expandHome(value);
+    return [expanded.startsWith("/") ? expanded : resolve(cwd, expanded)];
+  }
+
+  // Skip if it looks like a flag or command
+  if (token.startsWith("-")) return [];
+  if (/^(sudo|bash|sh|zsh|cat|head|tail|less|more|grep|sed|awk|find|ls|cd|cp|mv|rm|echo|printenv|env|which|type|file|stat|readlink|md5sum|sha256sum|wc|sort|uniq|cut|comm|diff|tar|unzip|gzip|python|python3|node|ruby|perl|vim|vi|nano|code|source|exec|xargs|tee|curl|wget|docker|git|npm|yarn|pnpm|npx|pip|make|cmake|cargo|go|java|javac|dotnet)$/.test(token)) return [];
+
+  const candidates: string[] = [];
+  // Path-like tokens: starts with /, ~, ., or contains /
+  if (token.startsWith("/") || token.startsWith("~") || token.startsWith("./") || token.startsWith("../") || token.includes("/")) {
+    const expanded = expandHome(token);
+    candidates.push(expanded.startsWith("/") ? expanded : resolve(cwd, expanded));
+  }
+
+  // A bare relative name (".env.local", "token.json") is matched against the patterns too.
+  if (!token.includes("/")) candidates.push(resolve(cwd, token));
+  return candidates;
+}
+
+function collectTokenPathCandidates(command: string, cwd: string): string[] {
+  const tokens = command
+    .split(/[\s;|&<>`$\\'"!\n\r\t]+/)
+    .filter((token) => token.length > 0);
+  const candidates: string[] = [];
+  for (const token of tokens) candidates.push(...getTokenPathCandidates(token, cwd));
+  return candidates;
+}
+
+function collectHomeExpansionCandidates(command: string): string[] {
+  const home = homedir();
+  const envExpanded = command
+    .replace(/\$HOME/g, home)
+    .replace(/\$\{HOME\}/g, home)
+    .replace(/\$\{HOME%\/\}/g, home.replace(/\/$/, ""));
+
+  const tokens = envExpanded
+    .split(/[\s;|&<>`$\\'"!\n\r\t]+/)
+    .filter((token) => token.length > 1 && token.startsWith("/"));
+  return tokens;
+}
+
+function collectCommandPathCandidates(command: string, cwd: string): string[] {
+  return [...new Set([
+    ...collectDockerEnvFileCandidates(command, cwd),
+    ...collectTokenPathCandidates(command, cwd),
+    ...collectHomeExpansionCandidates(command),
+  ])];
 }
 
 export function detectMaskedFileAccess(
@@ -146,65 +213,7 @@ export function detectMaskedFileAccess(
     ? profile.maskedPaths
     : DEFAULT_MASKED_PATTERNS;
 
-  const home = homedir();
-  const candidatePaths: string[] = [];
-
-  // Docker's equals form is one shell token, so the ordinary tokenizer would
-  // otherwise treat `--env-file=/path` as a nonexistent path of its own.
-  const envFileOption = /(?:^|\s)--env-file(?:=|\s+)(?:"([^"]*)"|'([^']*)'|([^\s;&|<>]+))/g;
-  for (const match of command.matchAll(envFileOption)) {
-    const value = match[1] ?? match[2] ?? match[3];
-    if (!value) continue;
-    const expanded = expandHome(value);
-    candidatePaths.push(expanded.startsWith("/") ? expanded : resolve(cwd, expanded));
-  }
-
-  // Strategy 1: Split-based token extraction
-  // Split on shell metacharacters to get individual tokens
-  const tokens = command
-    .split(/[\s;|&<>`$\\'"!\n\r\t]+/)
-    .filter((t) => t.length > 0);
-
-  // Strategy 2: Extract paths from tokens using heuristics
-  for (const token of tokens) {
-    if (token.startsWith("--") && token.includes("=")) {
-      const value = token.slice(token.indexOf("=") + 1);
-      if (!value) continue;
-      const expanded = expandHome(value);
-      candidatePaths.push(expanded.startsWith("/") ? expanded : resolve(cwd, expanded));
-      continue;
-    }
-    // Skip if it looks like a flag or command
-    if (token.startsWith("-")) continue;
-    if (/^(sudo|bash|sh|zsh|cat|head|tail|less|more|grep|sed|awk|find|ls|cd|cp|mv|rm|echo|printenv|env|which|type|file|stat|readlink|md5sum|sha256sum|wc|sort|uniq|cut|comm|diff|tar|unzip|gzip|python|python3|node|ruby|perl|vim|vi|nano|code|source|exec|xargs|tee|curl|wget|docker|git|npm|yarn|pnpm|npx|pip|make|cmake|cargo|go|java|javac|dotnet)$/.test(token)) continue;
-
-    // Path-like tokens: starts with /, ~, ., or contains /
-    if (token.startsWith("/") || token.startsWith("~") || token.startsWith("./") || token.startsWith("../") || token.includes("/")) {
-      const expanded = expandHome(token);
-      const resolved = expanded.startsWith("/") ? expanded : resolve(cwd, expanded);
-      candidatePaths.push(resolved);
-    }
-
-    // A bare relative name (".env.local", "token.json") is matched against the patterns too.
-    if (!token.includes("/")) candidatePaths.push(resolve(cwd, token));
-  }
-
-  // Strategy 3: Environment variable expansion
-  const envExpanded = command
-    .replace(/\$HOME/g, home)
-    .replace(/\$\{HOME\}/g, home)
-    .replace(/\$\{HOME%\/\}/g, home.replace(/\/$/, ""));
-
-  const envTokens = envExpanded
-    .split(/[\s;|&<>`$\\'"!\n\r\t]+/)
-    .filter((t) => t.length > 1 && t.startsWith("/"));
-
-  for (const token of envTokens) {
-    candidatePaths.push(token);
-  }
-
-  // Deduplicate candidate paths
-  const uniqueCandidates = [...new Set(candidatePaths)];
+  const uniqueCandidates = collectCommandPathCandidates(command, cwd);
 
   // Check each candidate against masked patterns and existence
   const matchedPaths: string[] = [];
