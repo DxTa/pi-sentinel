@@ -94,6 +94,7 @@ import { clearSessionNetworkApprovals, getSessionNetworkApprovals, handleNetwork
 import { normalizeSandboxConfig, resolveSandboxProfile, type SandboxConfig, validateSandboxGrantPath } from "./sandbox/settings.js";
 import type { ResolvedSandboxProfile, UnmaskedPath } from "./sandbox/types.js";
 import {
+  isDockerCommand,
   isHostCapabilityBootstrapCommand,
   shouldBypassSandboxCommand,
 } from "./sandbox/bypass-command.js";
@@ -417,6 +418,7 @@ interface MaskedAuthReadOptions {
   autoAllowWorkspaceDotenvRead?: boolean;
   /** Read-only protected credential paths approved without a prompt; the caller redacts all output. */
   autoApprovedReadPaths?: readonly string[];
+  requireSrtBoundary?: boolean;
 }
 
 /** Masked paths unmasked without a prompt: workspace dotenv reads and protected credential reads. */
@@ -551,6 +553,15 @@ async function resolveMaskedAuthAccess(
     };
   }
 
+  if (authDecision.strategy === "ask-bypass" && readOptions.requireSrtBoundary) {
+    return {
+      blockReason: "Sandbox: this command requires the SRT read-only boundary; authentication bypass blocked.",
+      unmaskedPaths: [],
+      bypass: false,
+      authDecision,
+    };
+  }
+
   if (authDecision.strategy === "ask-bypass") {
     const approvals = getBypassApprovals(repoRoot, authDecision.kind);
     if (approvals.has(authDecision.approvalKey)) {
@@ -653,15 +664,23 @@ async function resolveMaskedAuthAccess(
 
 // ── Main extension ───────────────────────────────────────────────────────
 
+function isReadOnlyDockerDaemonCommand(command: string): boolean {
+  return isDockerCommand(command)
+    && isReadOnlyBashDiagnostic(command)
+    && command.trim() !== "docker --help";
+}
+
 async function resolveBashSandboxAccess(
   command: string,
   cwd: string,
   repoRoot: string,
   config: SandboxConfig,
   bypassed: boolean,
-): Promise<{ protectedReadPaths: string[]; sandboxed: boolean; blockReason?: string }> {
+): Promise<{ protectedReadPaths: string[]; sandboxed: boolean; forceSrt: boolean; blockReason?: string }> {
   const protectedReadPaths = await protectedBashReadPaths(command, cwd);
-  const forceSrt = protectedReadPaths.length > 0;
+  const hasProtectedRead = protectedReadPaths.length > 0;
+  const dockerRequiresSrt = config.enabled && isReadOnlyDockerDaemonCommand(command);
+  const forceSrt = hasProtectedRead || dockerRequiresSrt;
   const sandboxed = config.enabled
     && config.backend === "srt"
     && (forceSrt || !bypassed);
@@ -671,7 +690,10 @@ async function resolveBashSandboxAccess(
       return {
         protectedReadPaths,
         sandboxed,
-        blockReason: "Sandbox: credential access requires the SRT read-only boundary; command blocked.",
+        forceSrt,
+        blockReason: hasProtectedRead
+          ? "Sandbox: credential access requires the SRT read-only boundary; command blocked."
+          : "Sandbox: Docker diagnostics require the SRT read-only boundary; command blocked.",
       };
     }
     try {
@@ -680,6 +702,7 @@ async function resolveBashSandboxAccess(
         return {
           protectedReadPaths,
           sandboxed,
+          forceSrt,
           blockReason: "Sandbox: implicit credential access requires the SRT read-only boundary; command blocked.",
         };
       }
@@ -687,15 +710,16 @@ async function resolveBashSandboxAccess(
       return {
         protectedReadPaths,
         sandboxed,
+        forceSrt,
         blockReason: "Sandbox: unable to verify implicit credential access; command blocked.",
       };
     }
   }
 
-  return { protectedReadPaths, sandboxed };
+  return { protectedReadPaths, sandboxed, forceSrt };
 }
 
-function configWithSrtCredentialBoundary(config: SandboxConfig, forceSrt: boolean): SandboxConfig {
+function configWithSrtBoundary(config: SandboxConfig, forceSrt: boolean): SandboxConfig {
   return forceSrt ? { ...config, bypassCommands: [] } : config;
 }
 
@@ -1557,6 +1581,7 @@ export default function piPermissionSystemExtension(pi: ExtensionAPI): void {
       : undefined;
     let protectedReadPaths: string[] = [];
     let sandboxedBash = false;
+    let forceSrtForReadOnlyAccess = false;
     if (typeof bashCommand === "string") {
       try {
         const access = await resolveBashSandboxAccess(
@@ -1569,12 +1594,11 @@ export default function piPermissionSystemExtension(pi: ExtensionAPI): void {
         if (access.blockReason) return { block: true, reason: access.blockReason };
         protectedReadPaths = access.protectedReadPaths;
         sandboxedBash = access.sandboxed;
+        forceSrtForReadOnlyAccess = access.forceSrt;
       } catch {
         return { block: true, reason: "Sandbox: unable to verify credential paths; command blocked." };
       }
     }
-    const forceSrtForCredentialReads = protectedReadPaths.length > 0;
-
     let bashPermissionAlreadyChecked = false;
     if (e.toolName === "bash") {
       try {
@@ -1604,7 +1628,7 @@ export default function piPermissionSystemExtension(pi: ExtensionAPI): void {
       const command = (e.input as { command?: unknown })?.command;
       if (
         typeof command === "string"
-        && (forceSrtForCredentialReads || !bypassesSandbox(command, ctx.cwd))
+        && sandboxedBash
       ) {
         let effectiveConfig = getEffectiveSandboxConfig(ctx.cwd);
         policyManager.updateConfig(effectiveConfig);
@@ -1729,7 +1753,11 @@ export default function piPermissionSystemExtension(pi: ExtensionAPI): void {
             ctx,
             promptWaitTracker,
             activeGrantPaths,
-            { autoAllowWorkspaceDotenvRead: true, autoApprovedReadPaths: protectedReadPaths },
+            {
+              autoAllowWorkspaceDotenvRead: true,
+              autoApprovedReadPaths: protectedReadPaths,
+              requireSrtBoundary: forceSrtForReadOnlyAccess && protectedReadPaths.length === 0,
+            },
           );
           if (maskedResolution.blockReason) {
             return {
@@ -1875,13 +1903,13 @@ export default function piPermissionSystemExtension(pi: ExtensionAPI): void {
         if (hostCapabilityDecision === "denied") {
           return { block: true, reason: "Sandbox: host toolchain approval denied." };
         }
-        if (hostCapabilityDecision === "allowed" && !forceSrtForCredentialReads) return undefined;
+        if (hostCapabilityDecision === "allowed" && !forceSrtForReadOnlyAccess) return undefined;
 
         // Use the policy-resolved profile (includes dynamic grants for network/path)
         const repoRoot = resolveRepoRoot(ctx.cwd);
         const result = await getSandboxBackend(ctx.cwd).wrapCommand({
           command,
-          sandboxConfig: configWithSrtCredentialBoundary(effectiveConfig, forceSrtForCredentialReads),
+          sandboxConfig: configWithSrtBoundary(effectiveConfig, forceSrtForReadOnlyAccess),
           cwd: ctx.cwd,
           repoRoot,
           unmaskedPaths,
@@ -1959,6 +1987,7 @@ export default function piPermissionSystemExtension(pi: ExtensionAPI): void {
     }
     let protectedReadPaths: string[];
     let sandboxedUserBash: boolean;
+    let forceSrtForReadOnlyAccess = false;
     try {
       const sandboxAccess = await resolveBashSandboxAccess(
         event.command,
@@ -1970,11 +1999,10 @@ export default function piPermissionSystemExtension(pi: ExtensionAPI): void {
       if (sandboxAccess.blockReason) return blockedUserBash(sandboxAccess.blockReason);
       protectedReadPaths = sandboxAccess.protectedReadPaths;
       sandboxedUserBash = sandboxAccess.sandboxed;
+      forceSrtForReadOnlyAccess = sandboxAccess.forceSrt;
     } catch {
       return blockedUserBash("Sandbox: unable to verify credential access; command blocked.");
     }
-    const forceSrtForCredentialReads = protectedReadPaths.length > 0;
-
     // Network domain gate for user bash
     let hardBlockedMutationPaths: string[];
     try {
@@ -2018,13 +2046,7 @@ export default function piPermissionSystemExtension(pi: ExtensionAPI): void {
 
     // Sandbox wrapping for user bash (same gate path as tool_call)
     if (sc.enabled) {
-      if (
-        !forceSrtForCredentialReads
-        && sc.bypassCommands?.length
-        && shouldBypassSandboxCommand(event.command, sc.bypassCommands)
-      ) {
-        return undefined;
-      }
+      if (!sandboxedUserBash) return undefined;
 
       // Same masked-file gate for user_bash
       // (masked files show "(masked)" content; block if user hasn't granted access)
@@ -2155,7 +2177,10 @@ export default function piPermissionSystemExtension(pi: ExtensionAPI): void {
         ctx,
         promptWaitTracker,
         activeGrantPaths,
-        { autoAllowWorkspaceDotenvRead: true },
+        {
+          autoAllowWorkspaceDotenvRead: true,
+          requireSrtBoundary: forceSrtForReadOnlyAccess && protectedReadPaths.length === 0,
+        },
       );
       if (maskedResolution.blockReason) {
         return {
@@ -2292,14 +2317,14 @@ export default function piPermissionSystemExtension(pi: ExtensionAPI): void {
       if (hostCapabilityDecision === "denied") {
         return blockedUserBash("Sandbox: host toolchain approval denied.");
       }
-      if (hostCapabilityDecision === "allowed" && !forceSrtForCredentialReads) return undefined;
+      if (hostCapabilityDecision === "allowed" && !forceSrtForReadOnlyAccess) return undefined;
 
       // Env vars and config dirs are always available by default in sandbox.
       const secretEnv: Record<string, string> = {};
 
       return {
         operations: getSandboxBackend(event.cwd).createBashOperations({
-          sandboxConfig: configWithSrtCredentialBoundary(effectiveConfig, forceSrtForCredentialReads),
+          sandboxConfig: configWithSrtBoundary(effectiveConfig, forceSrtForReadOnlyAccess),
           cwd: event.cwd,
           repoRoot: resolveRepoRoot(event.cwd),
           unmaskedPaths,

@@ -818,6 +818,57 @@ describe("piPermissionSystemExtension SRT default smoke", () => {
     expect(writeResult).toEqual({});
   });
 
+  it("routes default-context Docker ps through SRT despite wildcard host bypass", async () => {
+    const agentDir = await makeTempDir("pi-permission-agent-");
+    const projectDir = await makeTempDir("pi-permission-project-");
+    const socketPath = path.join(projectDir, "docker.sock");
+    mockDockerSocketPaths.mockReturnValue([socketPath]);
+    process.env.PI_CODING_AGENT_DIR = agentDir;
+    await writeExtensionConfig(agentDir, {
+      permission: { "*": "allow", bash: { "*": "allow" }, external_directory: { "*": "allow" } },
+      sandbox: { enabled: true, backend: "srt", defaultProfile: "online-dev", bypassCommands: ["*"] },
+    });
+
+    const pi = createFakePi();
+    piPermissionSystemExtension(pi as never);
+    const event = {
+      toolName: "bash",
+      toolCallId: "docker-default-context",
+      input: { command: "docker ps" },
+    };
+    await expect(pi.handlers.get("tool_call")?.(event, createContext(projectDir) as never))
+      .resolves.toBeUndefined();
+    expect(event.input.command).not.toBe("docker ps");
+
+    const helperInput = extractHelperInput(event.input.command);
+    expect(helperInput.runtimeConfig.dockerHost).toBe(`unix://${socketPath}`);
+    expect(helperInput.runtimeConfig.network.allowUnixSockets).toContain(socketPath);
+    expect(helperInput.runtimeConfig.filesystem.allowWrite).not.toContain(socketPath);
+  });
+
+  it("routes user Bash Docker ps through SRT despite wildcard host bypass", async () => {
+    const agentDir = await makeTempDir("pi-permission-agent-");
+    const projectDir = await makeTempDir("pi-permission-project-");
+    const socketPath = path.join(projectDir, "docker.sock");
+    mockDockerSocketPaths.mockReturnValue([socketPath]);
+    process.env.PI_CODING_AGENT_DIR = agentDir;
+    await writeExtensionConfig(agentDir, {
+      permission: { "*": "allow", bash: { "*": "allow" }, external_directory: { "*": "allow" } },
+      sandbox: { enabled: true, backend: "srt", defaultProfile: "online-dev", bypassCommands: ["*"] },
+    });
+
+    const pi = createFakePi();
+    piPermissionSystemExtension(pi as never);
+    const result = await pi.handlers.get("user_bash")?.(
+      { command: "docker ps", cwd: projectDir },
+      createContext(projectDir) as never,
+    );
+
+    expect(result).toBeDefined();
+    expect(result).toHaveProperty("operations");
+    expect(mockDockerSocketPaths).toHaveBeenCalled();
+  });
+
   it("auto-allows curated diagnostics for unsandboxed host Bash", async () => {
     const agentDir = await makeTempDir("pi-permission-agent-");
     const projectDir = await makeTempDir("pi-permission-project-");
