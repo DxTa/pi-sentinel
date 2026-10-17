@@ -1,5 +1,5 @@
 import type { SrtCommandSpec } from "./srt-command-spec.js";
-import { isDockerCommand } from "./bypass-command.js";
+import { isDockerDaemonCommand } from "./bypass-command.js";
 import { resolveDockerSocketPaths } from "./docker-socket.js";
 import { getSandboxTempPaths } from "./sandbox-visible-paths.js";
 
@@ -25,7 +25,7 @@ function dedupe(values: string[]): string[] {
 }
 
 export function buildSrtRuntimeConfig(spec: SrtCommandSpec): SrtRuntimeConfig {
-  const dockerRequested = spec.allowDocker && isDockerCommand(spec.command);
+  const dockerRequested = spec.allowDocker && isDockerDaemonCommand(spec.command);
   const dockerSocketPaths = dockerRequested ? resolveDockerSocketPaths() : [];
   if (dockerRequested && dockerSocketPaths.length === 0) {
     throw new Error("Docker socket unavailable; command blocked.");
@@ -34,6 +34,10 @@ export function buildSrtRuntimeConfig(spec: SrtCommandSpec): SrtRuntimeConfig {
   if (spec.envDenyPatterns.length > 0) {
     throw new Error("SRT helper path does not yet support env deny pattern parity.");
   }
+
+  // Linux SRT cannot scope Unix-socket access by path; Docker needs the broad allowance there.
+  const allowAllUnixSockets = process.platform === "linux"
+    || (!dockerRequested && process.platform === "darwin");
 
   const approvedRead = dedupe(spec.unmaskedPaths.map((entry) => entry.path));
   const approvedWrite = dedupe(spec.unmaskedPaths.filter((entry) => entry.writable).map((entry) => entry.path));
@@ -64,9 +68,7 @@ export function buildSrtRuntimeConfig(spec: SrtCommandSpec): SrtRuntimeConfig {
       allowedDomains: spec.networkPlan.config.allowedDomains,
       deniedDomains: spec.networkPlan.config.deniedDomains,
       strictAllowlist: spec.networkPlan.unmatchedHostAction === "deny",
-      ...(process.platform === "darwin" || process.platform === "linux"
-        ? { allowAllUnixSockets: true }
-        : {}),
+      ...(allowAllUnixSockets ? { allowAllUnixSockets: true } : {}),
       ...(dockerSocketPaths.length > 0 ? { allowUnixSockets: dockerSocketPaths } : {}),
     },
     filesystem: {

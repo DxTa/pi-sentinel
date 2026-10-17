@@ -4,6 +4,7 @@ import { mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { promisify } from "node:util";
+import { pathToFileURL } from "node:url";
 
 import { afterEach, describe, expect, it } from "vitest";
 
@@ -21,6 +22,18 @@ afterEach(async () => {
 });
 
 describe("sandbox-run helper input files", () => {
+  it("pins Docker socket selection over an inherited context", async () => {
+    const helperPath = pathToFileURL(path.join(process.cwd(), "bin", "sandbox-run-env.mjs")).href;
+    const { setDockerHostEnvironment } = await import(helperPath) as {
+      setDockerHostEnvironment: (env: Record<string, string | undefined>, dockerHost: string) => void;
+    };
+    const env = { DOCKER_CONTEXT: "remote", DOCKER_HOST: "tcp://attacker.invalid", PATH: "/bin" };
+
+    setDockerHostEnvironment(env, "unix:///tmp/docker.sock");
+
+    expect(env).toEqual({ DOCKER_HOST: "unix:///tmp/docker.sock", PATH: "/bin" });
+  });
+
   it("consumes private file input before sandbox setup", async () => {
     const dir = await makeTempDir("pi-srt-helper-test-");
     const file = path.join(dir, "input.json");

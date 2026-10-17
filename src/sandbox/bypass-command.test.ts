@@ -2,6 +2,8 @@ import { describe, expect, it } from "vitest";
 
 import {
   isDockerCommand,
+  hasDockerEndpointOverride,
+  isDockerDaemonCommand,
   isHostCapabilityBootstrapCommand,
   shouldBypassSandboxCommand,
 } from "./bypass-command.js";
@@ -71,6 +73,106 @@ describe("isDockerCommand", () => {
   });
 });
 
+
+describe("isDockerDaemonCommand", () => {
+  it.each([
+    "docker ps",
+    "docker ps --format 'table {{.Names}}\\t{{.Status}}'",
+    "docker version",
+    "d'o'cker ps",
+    "docker ps && echo done",
+    "docker ps | head",
+    "docker ps > /tmp/list",
+    "docker ps 2>&1",
+    "docker ps &> /tmp/out",
+    ">& /tmp/out docker ps",
+    ">/dev/null< /dev/null docker ps",
+    ">| out docker ps",
+    "{fd}>out docker ps",
+    "0<&0 docker ps",
+    "docker ps\necho done",
+    "> /tmp/list docker ps",
+    "docker ps --help",
+    "docker exec app mytool --help",
+    "docker run --rm alpine echo --help",
+    "/usr/local/bin/docker info",
+  ])("recognizes Docker daemon command %s", (command) => {
+    expect(isDockerDaemonCommand(command)).toBe(true);
+  });
+
+  it.each([
+    "docker --help",
+    'docker "--help"',
+    "env DOCKER_HOST=unix:///tmp/docker.sock docker --help",
+    "docker --version",
+    "docker -h",
+    "docker -v",
+    "/usr/local/bin/docker --version",
+    "docker help ps",
+    "docker --help && echo done",
+    "docker -h | cat",
+    "docker --help > /tmp/help",
+  ])("rejects Docker client-only or compound command %s", (command) => {
+    expect(isDockerDaemonCommand(command)).toBe(false);
+  });
+});
+
+
+describe("hasDockerEndpointOverride", () => {
+  it.each([
+    "DOCKER_HOST=tcp://example.invalid docker ps",
+    "DOCKER_CONFIG=/tmp/docker-config docker ps",
+    "env DOCKER_HOST=tcp://example.invalid docker ps",
+    "sudo env DOCKER_HOST=tcp://example.invalid docker ps",
+    "docker --host tcp://example.invalid ps",
+    "docker --\\host tcp://example.invalid ps",
+    "docker --context production ps",
+    "docker --config /tmp/docker-config ps",
+    `docker --config "$CONFIG_DIR" ps`,
+    "bash -c 'DOCKER_HOST=tcp://example.invalid docker ps'",
+    "bash -c 'docker --host tcp://example.invalid ps'",
+    `bash <<< 'docker --host tcp://example.invalid ps'`,
+    `bash <<< 'docker "$OPTIONS" ps'`,
+    `bash <<< 'export DOCKER_HOST=tcp://example.invalid; docker ps'`,
+    `bash <<< 'unset DOCKER_HOST; docker ps'`,
+    `bash <<< 'source ./docker-env; docker ps'`,
+    `bash <<< 'V=DOCKER_HOST; export "$V=tcp://example.invalid"; docker ps'`,
+    `bash -c 'docker "$@" ps' -- --host tcp://example.invalid`,
+    `bash -c 'docker "$OPTIONS" ps'`,
+    `echo "$(DOCKER_HOST=tcp://example.invalid docker ps)"`,
+    `echo "$(docker --host tcp://example.invalid ps)"`,
+    `echo "$(docker "$OPTIONS" ps)"`,
+    "DOCKER_HOST=tcp://example.invalid; docker ps",
+    "export DOCKER_HOST=tcp://example.invalid; docker ps",
+    "export DOCKER_CONFIG=/tmp/docker-config; docker ps",
+    "export 'DOCKER_CONTEXT=production'; docker ps",
+    "unset DOCKER_HOST; docker ps",
+    "env -u DOCKER_HOST docker ps",
+    "env -u DOCKER_CONFIG docker ps",
+    "env --unset=DOCKER_CONTEXT docker ps",
+    "env -i docker ps",
+    "env --ignore-environment -S 'docker ps'",
+    "env -S '-i docker ps'",
+    "env -i -S 'docker ps'",
+    "X=1 DOCKER_HOST=tcp://example.invalid; docker ps",
+    "bash -c 'export DOCKER_CONTEXT=production; docker ps'",
+  ])("detects command-level Docker host overrides in %s", (command) => {
+    expect(hasDockerEndpointOverride(command)).toBe(true);
+  });
+
+  it.each([
+    "docker ps",
+    "TRACE=1 docker ps",
+    "docker run --env DOCKER_HOST=tcp://example.invalid image",
+    "docker run image mytool --config /app/config",
+    "docker ps --format 'docker --host foo'",
+    "echo DOCKER_HOST=tcp://example.invalid",
+    `bash -c 'docker ps'`,
+    `bash -c 'docker ps "$FORMAT"'`,
+  ])("does not classify unrelated variables as Docker host overrides in %s", (command) => {
+    expect(hasDockerEndpointOverride(command)).toBe(false);
+  });
+});
 
 describe("isHostCapabilityBootstrapCommand", () => {
   it.each([

@@ -102,7 +102,7 @@ describe("buildSrtRuntimeConfig", () => {
     ).toThrowError("SRT helper path does not yet support env deny pattern parity.");
   });
 
-  it("allows validated Docker sockets through filesystem and Unix-socket rules", () => {
+  it("restricts macOS Docker Unix-socket access to the validated socket", () => {
     vi.spyOn(process, "platform", "get").mockReturnValue("darwin");
     vi.spyOn(dockerSocket, "resolveDockerSocketPaths").mockReturnValue(["/var/run/docker.sock"]);
 
@@ -110,10 +110,11 @@ describe("buildSrtRuntimeConfig", () => {
 
     expect(config.dockerHost).toBe("unix:///var/run/docker.sock");
     expect(config.filesystem.allowRead).toContain("/var/run/docker.sock");
+    expect(config.network?.allowAllUnixSockets).toBeUndefined();
     expect(config.network?.allowUnixSockets).toEqual(["/var/run/docker.sock"]);
   });
 
-  it("allows all Unix sockets by default on Linux while preserving Docker approval", () => {
+  it("allows all Unix sockets for Docker on Linux because SRT cannot scope them by path", () => {
     vi.spyOn(process, "platform", "get").mockReturnValue("linux");
     vi.spyOn(dockerSocket, "resolveDockerSocketPaths").mockReturnValue(["/var/run/docker.sock"]);
 
@@ -122,6 +123,12 @@ describe("buildSrtRuntimeConfig", () => {
     expect(config.network?.allowAllUnixSockets).toBe(true);
     expect(config.network?.allowUnixSockets).toEqual(["/var/run/docker.sock"]);
     expect(config.dockerHost).toBe("unix:///var/run/docker.sock");
+  });
+
+  it("keeps the platform-wide socket allowance for non-Docker commands", () => {
+    vi.spyOn(process, "platform", "get").mockReturnValue("linux");
+
+    expect(buildSrtRuntimeConfig(makeSpec({ command: "git status" })).network?.allowAllUnixSockets).toBe(true);
   });
 
   it("does not emit the platform default on unsupported platforms", () => {

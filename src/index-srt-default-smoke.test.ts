@@ -22,6 +22,8 @@ vi.mock("./sandbox/docker-socket.js", async (importOriginal) => {
 
 const tempPaths: string[] = [];
 let originalPath: string | undefined;
+let originalHome: string | undefined;
+let originalSshAuthSock: string | undefined;
 let fakeSrtBin = "";
 const canSimulateReadOnlyDirectory = process.platform !== "win32" && process.getuid?.() !== 0;
 
@@ -31,10 +33,26 @@ async function makeTempDir(prefix: string): Promise<string> {
   return dir;
 }
 
+async function makeSyntheticHome(): Promise<string> {
+  const home = await makeTempDir("pi-synthetic-home-");
+  process.env.HOME = home;
+  return home;
+}
+
+async function makeSyntheticAwsCredentials(): Promise<string> {
+  const home = await makeSyntheticHome();
+  const credentials = path.join(home, ".aws", "credentials");
+  await mkdir(path.dirname(credentials), { recursive: true });
+  await writeFile(credentials, "[default]\naws_access_key_id = synthetic\n", "utf8");
+  return credentials;
+}
+
 beforeEach(async () => {
   mockDockerSocketPaths.mockReturnValue([]);
   // Tool-call smoke tests only build wrapper operations; the stub is never executed.
   originalPath = process.env.PATH;
+  originalHome = process.env.HOME;
+  originalSshAuthSock = process.env.SSH_AUTH_SOCK;
   fakeSrtBin = await mkdtemp(path.join(tmpdir(), "pi-srt-test-deps-"));
   tempPaths.push(fakeSrtBin);
   const fakeSocat = path.join(fakeSrtBin, "socat");
@@ -49,6 +67,12 @@ afterEach(async () => {
   if (originalPath === undefined) delete process.env.PATH;
   else process.env.PATH = originalPath;
   originalPath = undefined;
+  if (originalHome === undefined) delete process.env.HOME;
+  else process.env.HOME = originalHome;
+  originalHome = undefined;
+  if (originalSshAuthSock === undefined) delete process.env.SSH_AUTH_SOCK;
+  else process.env.SSH_AUTH_SOCK = originalSshAuthSock;
+  originalSshAuthSock = undefined;
   fakeSrtBin = "";
   mockDockerSocketPaths.mockReturnValue([]);
   await Promise.all(tempPaths.splice(0).map((dir) => rm(dir, { recursive: true, force: true })));
@@ -474,6 +498,8 @@ describe("piPermissionSystemExtension SRT default smoke", () => {
     await mkdir(path.join(projectDir, ".git"));
     await writeFile(envPath, "TOKEN=synthetic-secret", "utf8");
     await writeFile(path.join(projectDir, ".git", "config"), '[remote "origin"]\nurl = git@example.test:repo.git\n', "utf8");
+    await makeSyntheticHome();
+    process.env.SSH_AUTH_SOCK = "";
     process.env.PI_CODING_AGENT_DIR = agentDir;
     await writeExtensionConfig(agentDir, {
       mode: "yolo",
@@ -834,7 +860,7 @@ describe("piPermissionSystemExtension SRT default smoke", () => {
     const event = {
       toolName: "bash",
       toolCallId: "docker-default-context",
-      input: { command: "docker ps" },
+      input: { command: "docker ps --format 'table {{.Names}}\\t{{.Status}}'" },
     };
     await expect(pi.handlers.get("tool_call")?.(event, createContext(projectDir) as never))
       .resolves.toBeUndefined();
@@ -860,14 +886,395 @@ describe("piPermissionSystemExtension SRT default smoke", () => {
     const pi = createFakePi();
     piPermissionSystemExtension(pi as never);
     const result = await pi.handlers.get("user_bash")?.(
-      { command: "docker ps", cwd: projectDir },
+      { command: "docker ps --format 'table {{.Names}}\\t{{.Status}}'", cwd: projectDir },
       createContext(projectDir) as never,
     );
 
     expect(result).toBeDefined();
     expect(result).toHaveProperty("operations");
-    expect(mockDockerSocketPaths).toHaveBeenCalled();
   });
+
+  it.each(["docker --help", "docker --version", "docker -h", "docker -v"])(
+    "keeps client-only Docker command %s on the configured host bypass",
+    async (command) => {
+      const agentDir = await makeTempDir("pi-permission-agent-");
+      const projectDir = await makeTempDir("pi-permission-project-");
+      const home = await makeSyntheticHome();
+      const dockerConfig = path.join(home, ".docker", "config.json");
+      await mkdir(path.dirname(dockerConfig), { recursive: true });
+      await writeFile(dockerConfig, "{}", "utf8");
+      process.env.PI_CODING_AGENT_DIR = agentDir;
+      await writeExtensionConfig(agentDir, {
+        permission: { "*": "allow", bash: { "*": "allow" }, external_directory: { "*": "allow" } },
+        sandbox: { enabled: true, backend: "srt", defaultProfile: "online-dev", bypassCommands: ["*"] },
+      });
+
+      const pi = createFakePi();
+      piPermissionSystemExtension(pi as never);
+      const event = { toolName: "bash", input: { command } };
+      await expect(pi.handlers.get("tool_call")?.(event, createContext(projectDir) as never))
+        .resolves.toBeUndefined();
+      expect(event.input.command).toBe(command);
+    },
+  );
+
+  it.each(["tool_call", "user_bash"] as const)(
+    "routes a container command with a trailing help flag through SRT on %s",
+    async (surface) => {
+      const agentDir = await makeTempDir("pi-permission-agent-");
+      const projectDir = await makeTempDir("pi-permission-project-");
+      await makeSyntheticHome();
+      const socketPath = path.join(projectDir, "docker.sock");
+      mockDockerSocketPaths.mockReturnValue([socketPath]);
+      process.env.PI_CODING_AGENT_DIR = agentDir;
+      await writeExtensionConfig(agentDir, {
+        permission: { "*": "allow", bash: { "*": "allow" }, external_directory: { "*": "allow" } },
+        sandbox: { enabled: true, backend: "srt", defaultProfile: "online-dev", bypassCommands: ["*"] },
+      });
+
+      const pi = createFakePi();
+      piPermissionSystemExtension(pi as never);
+      const command = "docker exec app mytool --help";
+      if (surface === "tool_call") {
+        const event = { toolName: "bash", input: { command } };
+        await expect(pi.handlers.get("tool_call")?.(event, createContext(projectDir) as never))
+          .resolves.toBeUndefined();
+        expect(event.input.command).not.toBe(command);
+        expect(extractHelperInput(event.input.command).runtimeConfig.dockerHost).toBe(`unix://${socketPath}`);
+      } else {
+        const result = await pi.handlers.get("user_bash")?.({ command, cwd: projectDir }, createContext(projectDir) as never);
+        expect(result).toHaveProperty("operations");
+      }
+    },
+  );
+
+  it.each(["tool_call", "user_bash"] as const)(
+    "routes Docker daemon command forms through SRT on %s despite wildcard host bypass",
+    async (surface) => {
+      const agentDir = await makeTempDir("pi-permission-agent-");
+      const projectDir = await makeTempDir("pi-permission-project-");
+      await makeSyntheticHome();
+      const socketPath = path.join(projectDir, "docker.sock");
+      mockDockerSocketPaths.mockReturnValue([socketPath]);
+      process.env.PI_CODING_AGENT_DIR = agentDir;
+      await writeExtensionConfig(agentDir, {
+        permission: { "*": "allow", bash: { "*": "allow" }, external_directory: { "*": "allow" } },
+        sandbox: { enabled: true, backend: "srt", defaultProfile: "online-dev", bypassCommands: ["*"] },
+      });
+
+      const pi = createFakePi();
+      piPermissionSystemExtension(pi as never);
+      const commands = [
+        "docker ps && echo done",
+        "bash -c 'docker ps'",
+        "bash <<< 'docker ps'",
+        "TRACE=1 docker ps",
+        "env TRACE=1 docker ps",
+        'echo "$(docker ps)"',
+        `docker ps > ${path.join(projectDir, "docker-out")}`,
+        "docker ps 2>&1",
+        `docker ps &> ${path.join(projectDir, "docker-both-out")}`,
+        ">& 1 docker ps",
+        ">| out docker ps",
+        "{fd}>out docker ps",
+        "0<&0 docker ps",
+        ">/dev/null< /dev/null docker ps",
+        "docker ps\necho done",
+      ];
+      for (const command of commands) {
+        const context = createContext(projectDir, {
+          hasUI: command.includes("$(docker ps)"),
+          choices: ["Yes"],
+        });
+        if (surface === "tool_call") {
+          const event = { toolName: "bash", input: { command } };
+          const result = await pi.handlers.get("tool_call")?.(event, context as never);
+          if ([">& 1 docker ps", ">| out docker ps", "0<&0 docker ps", ">/dev/null< /dev/null docker ps"].includes(command)) {
+            expect(result).toMatchObject({ block: true });
+            expect(event.input.command).toBe(command);
+            continue;
+          }
+          expect(result).toBeUndefined();
+          expect(event.input.command).not.toBe(command);
+          const runtimeConfig = extractHelperInput(event.input.command).runtimeConfig;
+          expect(runtimeConfig.dockerHost).toBe(`unix://${socketPath}`);
+          expect(runtimeConfig.network?.allowAllUnixSockets).toBe(process.platform === "linux" ? true : undefined);
+          expect(runtimeConfig.network?.allowUnixSockets).toEqual([socketPath]);
+        } else {
+          const result = await pi.handlers.get("user_bash")?.({ command, cwd: projectDir }, context as never);
+          expect(result, command).toHaveProperty("operations");
+        }
+      }
+    },
+  );
+
+  it.each(["tool_call", "user_bash"] as const)(
+    "blocks command-level Docker host overrides on %s",
+    async (surface) => {
+      const agentDir = await makeTempDir("pi-permission-agent-");
+      const projectDir = await makeTempDir("pi-permission-project-");
+      await makeSyntheticHome();
+      process.env.PI_CODING_AGENT_DIR = agentDir;
+      await writeExtensionConfig(agentDir, {
+        permission: { "*": "allow", bash: { "*": "allow" }, external_directory: { "*": "allow" } },
+        sandbox: { enabled: true, backend: "srt", defaultProfile: "online-dev", bypassCommands: ["*"] },
+      });
+
+      const pi = createFakePi();
+      piPermissionSystemExtension(pi as never);
+      const commands = [
+        "DOCKER_HOST=tcp://example.invalid docker ps",
+        "DOCKER_CONFIG=/tmp/docker-config docker ps",
+        "env DOCKER_HOST=tcp://example.invalid docker ps",
+        "docker --host tcp://example.invalid ps",
+        "docker --context production ps",
+        "docker --config /tmp/docker-config ps",
+        `docker --config "$CONFIG_DIR" ps`,
+        "bash -c 'DOCKER_HOST=tcp://example.invalid docker ps'",
+        "bash -c 'docker --host tcp://example.invalid ps'",
+        "bash <<< 'docker --host tcp://example.invalid ps'",
+        `bash <<< 'docker "$OPTIONS" ps'`,
+        `bash <<< 'export DOCKER_HOST=tcp://example.invalid; docker ps'`,
+        `bash <<< 'unset DOCKER_HOST; docker ps'`,
+        `bash <<< 'source ./docker-env; docker ps'`,
+        `bash <<< 'V=DOCKER_HOST; export "$V=tcp://example.invalid"; docker ps'`,
+        "DOCKER_HOST=tcp://example.invalid; docker ps",
+        "export DOCKER_HOST=tcp://example.invalid; docker ps",
+        "export DOCKER_CONFIG=/tmp/docker-config; docker ps",
+        "unset DOCKER_HOST; docker ps",
+        "env -u DOCKER_HOST docker ps",
+        "env -u DOCKER_CONFIG docker ps",
+        "env --unset=DOCKER_CONTEXT docker ps",
+        "env -i docker ps",
+        "env --ignore-environment -S 'docker ps'",
+        "env -i -S 'docker ps'",
+        "X=1 DOCKER_HOST=tcp://example.invalid; docker ps",
+        "bash -c 'export DOCKER_CONTEXT=production; docker ps'",
+      ];
+      for (const command of commands) {
+        const result = surface === "tool_call"
+          ? await pi.handlers.get("tool_call")?.({ toolName: "bash", input: { command } }, createContext(projectDir) as never)
+          : await pi.handlers.get("user_bash")?.({ command, cwd: projectDir }, createContext(projectDir) as never);
+        expect(JSON.stringify(result)).toContain("explicit Docker endpoint overrides are not supported");
+      }
+    },
+  );
+
+  it.each(["tool_call", "user_bash"] as const)(
+    "does not let GPG host fallback bypass a Docker SRT requirement on %s",
+    async (surface) => {
+      const agentDir = await makeTempDir("pi-permission-agent-");
+      const projectDir = await makeTempDir("pi-permission-project-");
+      await makeSyntheticHome();
+      const socketPath = path.join(projectDir, "docker.sock");
+      mockDockerSocketPaths.mockReturnValue([socketPath]);
+      process.env.PI_CODING_AGENT_DIR = agentDir;
+      await writeExtensionConfig(agentDir, {
+        permission: { "*": "allow", bash: { "*": "allow" }, external_directory: { "*": "allow" } },
+        sandbox: {
+          enabled: true,
+          backend: "srt",
+          defaultProfile: "online-dev",
+          bypassCommands: ["*"],
+          authExceptions: [{ match: "gpg *", kind: "gpg-auth", strategy: "ask-bypass" }],
+        },
+      });
+
+      const pi = createFakePi();
+      piPermissionSystemExtension(pi as never);
+      const context = createContext(projectDir, { hasUI: true, choices: ["Allow once"] });
+      const command = "docker ps && gpg --sign artifact";
+      const result = surface === "tool_call"
+        ? await pi.handlers.get("tool_call")?.({ toolName: "bash", input: { command } }, context as never)
+        : await pi.handlers.get("user_bash")?.({ command, cwd: projectDir }, context as never);
+
+      expect(JSON.stringify(result)).toContain("cannot be combined with unsandboxed authentication");
+    },
+  );
+
+  it.each(["tool_call", "user_bash"] as const)(
+    "routes file-backed AWS auth through SRT on %s despite wildcard host bypass",
+    async (surface) => {
+      const agentDir = await makeTempDir("pi-permission-agent-");
+      const projectDir = await makeTempDir("pi-permission-project-");
+      const credentialsPath = await makeSyntheticAwsCredentials();
+      process.env.PI_CODING_AGENT_DIR = agentDir;
+      await writeExtensionConfig(agentDir, {
+        permission: { "*": "allow", bash: { "*": "allow" }, external_directory: { "*": "allow" } },
+        sandbox: { enabled: true, backend: "srt", defaultProfile: "online-dev", bypassCommands: ["*"] },
+      });
+
+      const pi = createFakePi();
+      piPermissionSystemExtension(pi as never);
+      const context = createContext(projectDir, { hasUI: true, choices: ["Allow once"] });
+      const command = "aws sts get-caller-identity";
+      if (surface === "tool_call") {
+        const event = { toolName: "bash", input: { command } };
+        await expect(pi.handlers.get("tool_call")?.(event, context as never)).resolves.toBeUndefined();
+        const helperInput = extractHelperInput(event.input.command);
+        const canonicalCredentialsPath = await realpath(credentialsPath);
+        expect(helperInput.runtimeConfig.filesystem.allowRead).toContain(canonicalCredentialsPath);
+        expect(helperInput.runtimeConfig.filesystem.denyWrite).toContain(canonicalCredentialsPath);
+      } else {
+        const result = await pi.handlers.get("user_bash")?.({ command, cwd: projectDir }, context as never);
+        expect(result).toHaveProperty("operations");
+      }
+      expect(context.ui.select).toHaveBeenCalledOnce();
+    },
+  );
+
+  it.each(["tool_call", "user_bash"] as const)(
+    "keeps a later SSH deny visible after leading redirection on %s",
+    async (surface) => {
+      const agentDir = await makeTempDir("pi-permission-agent-");
+      const projectDir = await makeTempDir("pi-permission-project-");
+      const home = await makeSyntheticHome();
+      const sshDir = path.join(home, ".ssh");
+      await mkdir(sshDir, { recursive: true });
+      await writeFile(path.join(sshDir, "id_ed25519"), "synthetic-private-key", "utf8");
+      process.env.SSH_AUTH_SOCK = "";
+      process.env.PI_CODING_AGENT_DIR = agentDir;
+      await writeExtensionConfig(agentDir, {
+        permission: { "*": "allow", bash: { "*": "allow" }, external_directory: { "*": "allow" } },
+        sandbox: {
+          enabled: true,
+          backend: "srt",
+          defaultProfile: "online-dev",
+          bypassCommands: ["*"],
+          authExceptions: [
+            { match: "ssh *", kind: "ssh-auth", strategy: "ask-bypass" },
+            { match: "ssh trusted-host*", kind: "ssh-auth", strategy: "ask-bypass" },
+            { match: "ssh blocked-host*", kind: "ssh-auth", strategy: "deny" },
+          ],
+        },
+      });
+
+      const pi = createFakePi();
+      piPermissionSystemExtension(pi as never);
+      const context = createContext(projectDir);
+      const command = "ssh trusted-host && {fd}>out ssh blocked-host";
+      if (surface === "tool_call") {
+        const result = await pi.handlers.get("tool_call")?.(
+          { toolName: "bash", input: { command } },
+          context as never,
+        );
+        expect(result).toMatchObject({ block: true });
+      } else {
+        const result = await pi.handlers.get("user_bash")?.({ command, cwd: projectDir }, context as never);
+        expect(result).not.toBeUndefined();
+      }
+      expect(context.ui.select).not.toHaveBeenCalled();
+    },
+  );
+
+  it.each(["tool_call", "user_bash"] as const)(
+    "denies mixed or unsegmentable auth commands despite bypass approval on %s",
+    async (surface) => {
+      const agentDir = await makeTempDir("pi-permission-agent-");
+      const projectDir = await makeTempDir("pi-permission-project-");
+      const home = await makeSyntheticHome();
+      const sshDir = path.join(home, ".ssh");
+      const envPath = path.join(projectDir, ".env.local");
+      await mkdir(sshDir, { recursive: true });
+      await writeFile(path.join(sshDir, "id_ed25519"), "synthetic-private-key", "utf8");
+      await writeFile(envPath, "TOKEN=synthetic-secret\n", "utf8");
+      process.env.SSH_AUTH_SOCK = "";
+      process.env.PI_CODING_AGENT_DIR = agentDir;
+      await writeExtensionConfig(agentDir, {
+        permission: { "*": "allow", bash: { "*": "allow" }, external_directory: { "*": "allow" } },
+        sandbox: {
+          enabled: true,
+          backend: "srt",
+          defaultProfile: "online-dev",
+          bypassCommands: ["*"],
+          authExceptions: [
+            { match: "ssh *", kind: "ssh-auth", strategy: "ask-bypass" },
+            { match: "ssh trusted-host*", kind: "ssh-auth", strategy: "ask-bypass" },
+            { match: "ssh blocked-host*", kind: "ssh-auth", strategy: "deny" },
+          ],
+        },
+      });
+
+      const pi = createFakePi();
+      piPermissionSystemExtension(pi as never);
+      const cases = [
+        {
+          command: 'ssh trusted-host && ssh blocked-host "$(printf x)"',
+          reason: "could not be safely split",
+        },
+        {
+          command: `ssh trusted-host && {fd}>out ssh blocked-host; gpg --version; cat ${envPath}`,
+          reason: "Mixed authentication mechanisms",
+        },
+        {
+          command: 'echo "$(ssh blocked-host)"',
+          reason: "could not be safely split",
+        },
+        {
+          command: "ssh 'blocked-host'",
+          reason: "Matched auth exception rule",
+        },
+        {
+          command: "ssh 'block'ed-host",
+          reason: "Matched auth exception rule",
+        },
+        {
+          command: "bash <<< 'ssh blocked-host'",
+          reason: "Matched auth exception rule",
+        },
+        {
+          command: 'bash <<< "ssh $TARGET"',
+          reason: "SSH target could not be normalized",
+        },
+        {
+          command: 'ssh "$HOST"',
+          reason: "SSH target could not be normalized",
+        },
+      ];
+
+      for (const { command, reason } of cases) {
+        const context = createContext(projectDir, { hasUI: true, choices: ["Yes", "Allow once"] });
+        const result = surface === "tool_call"
+          ? await pi.handlers.get("tool_call")?.({ toolName: "bash", input: { command } }, context as never)
+          : await pi.handlers.get("user_bash")?.({ command, cwd: projectDir }, context as never);
+        expect(JSON.stringify(result)).toContain(reason);
+      }
+    },
+  );
+
+  it.each(["tool_call", "user_bash"] as const)(
+    "preserves explicit file-auth host-bypass approval on %s",
+    async (surface) => {
+      const agentDir = await makeTempDir("pi-permission-agent-");
+      const projectDir = await makeTempDir("pi-permission-project-");
+      await makeSyntheticAwsCredentials();
+      process.env.PI_CODING_AGENT_DIR = agentDir;
+      await writeExtensionConfig(agentDir, {
+        permission: { "*": "allow", bash: { "*": "allow" }, external_directory: { "*": "allow" } },
+        sandbox: {
+          enabled: true,
+          backend: "srt",
+          defaultProfile: "online-dev",
+          bypassCommands: [],
+          authExceptions: [{ match: "aws *", kind: "aws-auth", strategy: "ask-bypass" }],
+        },
+      });
+
+      const pi = createFakePi();
+      piPermissionSystemExtension(pi as never);
+      const context = createContext(projectDir, { hasUI: true, choices: ["Allow once"] });
+      const command = "aws sts get-caller-identity";
+      if (surface === "tool_call") {
+        const event = { toolName: "bash", input: { command } };
+        await expect(pi.handlers.get("tool_call")?.(event, context as never)).resolves.toBeUndefined();
+        expect(event.input.command).toBe(command);
+      } else {
+        const result = await pi.handlers.get("user_bash")?.({ command, cwd: projectDir }, context as never);
+        expect(result).toBeUndefined();
+      }
+      expect(context.ui.select).toHaveBeenCalledOnce();
+    },
+  );
 
   it("auto-allows curated diagnostics for unsandboxed host Bash", async () => {
     const agentDir = await makeTempDir("pi-permission-agent-");

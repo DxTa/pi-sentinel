@@ -3,6 +3,7 @@ import { execFileSync, spawn } from 'node:child_process'
 import { chmod, lstat, mkdtemp, readFile, realpath, rm, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { basename, dirname, join, resolve } from 'node:path'
+import { setDockerHostEnvironment } from './sandbox-run-env.mjs'
 
 const ENV_KEY = 'PI_SRT_HELPER_INPUT_B64'
 const INPUT_FILE_ENV = 'PI_SRT_HELPER_INPUT_FILE'
@@ -366,7 +367,7 @@ async function main() {
       stripHelperInputEnvironment({ ...process.env, ...wrappedEnv, ...shim.env }),
       new Set(Object.keys(wrappedEnv)),
     )
-    if (dockerHost) env.DOCKER_HOST = dockerHost
+    setDockerHostEnvironment(env, dockerHost)
     return await runChild(wrapped.argv, helperInput.cwd, env)
   } finally {
     try {

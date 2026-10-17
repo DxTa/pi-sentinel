@@ -3,7 +3,8 @@ import { existsSync, readFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { join, resolve } from "node:path";
 
-import { isDockerCommand } from "./bypass-command.js";
+import { bashInnerCommands, bashLiteralWords, bashWordsWithoutRedirections, splitBashSegments } from "../bash-segments.js";
+import { isDockerDaemonCommand } from "./bypass-command.js";
 
 export type MaskedAuthKind =
   | "ssh-auth"
@@ -17,21 +18,25 @@ export interface AuthSensitiveAccessInfo {
   kind: MaskedAuthKind;
   candidatePaths: string[];
   needsSocketFallback: boolean;
+  authCommands: string[];
 }
 
-const SSH_PRIVATE_KEY_CANDIDATES = [
+const SSH_PRIVATE_KEY_NAMES = [
   "id_ed25519",
   "id_rsa",
   "id_ecdsa",
   "id_dsa",
   "id_ed25519_sk",
   "id_ecdsa_sk",
-].map((name) => resolve(homedir(), ".ssh", name));
-
-const SSH_AUXILIARY_FILES = [
-  resolve(homedir(), ".ssh", "config"),
-  resolve(homedir(), ".ssh", "known_hosts"),
 ];
+
+function sshAuthCandidatePaths(): { privateKeys: string[]; auxiliaryFiles: string[] } {
+  const sshDir = resolve(homedir(), ".ssh");
+  return {
+    privateKeys: SSH_PRIVATE_KEY_NAMES.map((name) => resolve(sshDir, name)),
+    auxiliaryFiles: [resolve(sshDir, "config"), resolve(sshDir, "known_hosts")],
+  };
+}
 
 function dedupe(values: string[]): string[] {
   return [...new Set(values.map((value) => resolve(value)))];
@@ -94,84 +99,116 @@ function existingPaths(paths: string[]): string[] {
   return paths.filter((path) => existsSync(path));
 }
 
+type AuthAccessEvidence = Omit<AuthSensitiveAccessInfo, "authCommands">;
+
+function sshAuthEvidence(): AuthAccessEvidence {
+  const sshPaths = sshAuthCandidatePaths();
+  const privateKeys = existingPaths(sshPaths.privateKeys);
+  const needsSocketFallback = Boolean(process.env.SSH_AUTH_SOCK) && privateKeys.length === 0;
+  const auxiliaryFiles = privateKeys.length > 0 ? existingPaths(sshPaths.auxiliaryFiles) : [];
+  return {
+    kind: "ssh-auth",
+    candidatePaths: [...privateKeys, ...auxiliaryFiles],
+    needsSocketFallback,
+  };
+}
+
+function detectSshAuth(
+  command: string,
+  repoRoot: string | null,
+  opaque: boolean,
+): AuthAccessEvidence | null {
+  const gitSshCommand = /^git\s+(?:-C\s+(?:"[^"]*"|'[^']*'|\S+)\s+)*(push|fetch|pull|clone|ls-remote|submodule)\b/.test(command)
+    && (commandContainsSshUrl(command) || repoConfigSuggestsSsh(repoRoot));
+  const opaqueSshCommand = opaque && /\b(?:ssh|scp|sftp)\b/.test(command);
+  if (!commandLooksLikeSsh(command) && !commandContainsSshUrl(command) && !gitSshCommand && !opaqueSshCommand) {
+    return null;
+  }
+  return sshAuthEvidence();
+}
+
+function detectDockerAuth(command: string): AuthAccessEvidence | null {
+  if (!isDockerDaemonCommand(command)) return null;
+  const configPath = resolve(homedir(), ".docker/config.json");
+  return existsSync(configPath)
+    ? { kind: "docker-auth", candidatePaths: [configPath], needsSocketFallback: false }
+    : null;
+}
+
+function detectGpgAuth(command: string, repoRoot: string | null, opaque: boolean): AuthAccessEvidence | null {
+  const opaqueGpgCommand = opaque && /\b(?:gpg|gpg-agent|gpgconf|dirmngr)\b/.test(command);
+  if (!commandNeedsGpg(command, repoRoot) && !opaqueGpgCommand) return null;
+  // GPG signing needs gpg-agent socket + pinentry/tty, which the sandbox cannot model safely.
+  return { kind: "gpg-auth", candidatePaths: [], needsSocketFallback: true };
+}
+
+function detectAwsAuth(command: string, opaque: boolean): AuthAccessEvidence | null {
+  if (!commandLooksLikeAws(command) && !(opaque && /\baws\b/.test(command))) return null;
+  const candidatePaths = existingPaths([
+    resolve(homedir(), ".aws", "credentials"),
+    resolve(homedir(), ".aws", "config"),
+  ]);
+  return candidatePaths.length > 0
+    ? { kind: "aws-auth", candidatePaths, needsSocketFallback: false }
+    : null;
+}
+
+function detectAuthEvidence(command: string, repoRoot: string | null, opaque: boolean): AuthAccessEvidence[] {
+  const ssh = detectSshAuth(command, repoRoot, opaque);
+  if (ssh) return [ssh];
+
+  return [
+    detectDockerAuth(command),
+    detectGpgAuth(command, repoRoot, opaque),
+    detectAwsAuth(command, opaque),
+  ].filter((evidence): evidence is AuthAccessEvidence => evidence !== null);
+}
+
+function mergeAuthEvidence(
+  detected: AuthSensitiveAccessInfo | null,
+  next: AuthAccessEvidence,
+  authCommand: string,
+): AuthSensitiveAccessInfo {
+  if (!detected) return { ...next, candidatePaths: dedupe(next.candidatePaths), authCommands: [authCommand] };
+  if (detected.kind !== next.kind) {
+    return {
+      kind: "generic-secret",
+      candidatePaths: [],
+      needsSocketFallback: false,
+      authCommands: [...detected.authCommands, authCommand],
+    };
+  }
+  return {
+    ...detected,
+    candidatePaths: dedupe([...detected.candidatePaths, ...next.candidatePaths]),
+    needsSocketFallback: detected.needsSocketFallback || next.needsSocketFallback,
+    authCommands: detected.authCommands.includes(authCommand)
+      ? detected.authCommands
+      : [...detected.authCommands, authCommand],
+  };
+}
+
 export async function detectImplicitAuthAccess(
   command: string,
   repoRoot: string | null,
 ): Promise<AuthSensitiveAccessInfo | null> {
-  const trimmed = extractTrailingSimpleCommand(command);
+  const parsedCommands = bashInnerCommands(command);
+  const simpleCommands = parsedCommands?.commands ?? [command.trim()].filter(Boolean);
+  let detected: AuthSensitiveAccessInfo | null = null;
 
-  if (commandLooksLikeSsh(trimmed) || commandContainsSshUrl(trimmed)) {
-    const privateKeys = existingPaths(SSH_PRIVATE_KEY_CANDIDATES);
-    const needsSocketFallback = Boolean(process.env.SSH_AUTH_SOCK) && privateKeys.length === 0;
-    if (privateKeys.length === 0) {
-      return {
-        kind: "ssh-auth",
-        candidatePaths: [],
-        needsSocketFallback,
-      };
-    }
-    const auxFiles = existingPaths(SSH_AUXILIARY_FILES);
-    return {
-      kind: "ssh-auth",
-      candidatePaths: dedupe([...privateKeys, ...auxFiles]),
-      needsSocketFallback: false,
-    };
-  }
-
-  if (/^git\s+(push|fetch|pull|clone|ls-remote|submodule)\b/.test(trimmed)) {
-    if (commandContainsSshUrl(trimmed) || repoConfigSuggestsSsh(repoRoot)) {
-      const privateKeys = existingPaths(SSH_PRIVATE_KEY_CANDIDATES);
-      const needsSocketFallback = Boolean(process.env.SSH_AUTH_SOCK) && privateKeys.length === 0;
-      if (privateKeys.length === 0) {
-        return {
-          kind: "ssh-auth",
-          candidatePaths: [],
-          needsSocketFallback,
-        };
-      }
-      const auxFiles = existingPaths(SSH_AUXILIARY_FILES);
-      return {
-        kind: "ssh-auth",
-        candidatePaths: dedupe([...privateKeys, ...auxFiles]),
-        needsSocketFallback: false,
-      };
+  for (const segment of simpleCommands) {
+    const opaque = parsedCommands === null || parsedCommands.opaque;
+    const opaqueSshHereString = opaque
+      && /\b(?:bash|sh|zsh|dash)\b[^\n]*<<<[^\n]*\b(?:ssh|scp|sftp)\b/.test(segment);
+    const trimmed = opaqueSshHereString
+      ? segment.trim()
+      : bashLiteralWords(segment)?.join(" ")
+        ?? bashWordsWithoutRedirections(segment)?.join(" ")
+        ?? segment.trim();
+    for (const evidence of detectAuthEvidence(trimmed, repoRoot, opaque)) {
+      detected = mergeAuthEvidence(detected, evidence, trimmed);
     }
   }
 
-  if (isDockerCommand(trimmed)) {
-    const configPath = resolve(homedir(), ".docker/config.json");
-    if (existsSync(configPath)) {
-      return {
-        kind: "docker-auth",
-        candidatePaths: [configPath],
-        needsSocketFallback: false,
-      };
-    }
-  }
-
-  if (commandNeedsGpg(trimmed, repoRoot)) {
-    // GPG signing needs gpg-agent socket + pinentry/tty, which the sandbox
-    // cannot model safely. Always route to ask-bypass.
-    return {
-      kind: "gpg-auth",
-      candidatePaths: [],
-      needsSocketFallback: true,
-    };
-  }
-
-  if (commandLooksLikeAws(trimmed)) {
-    const paths = existingPaths([
-      resolve(homedir(), ".aws", "credentials"),
-      resolve(homedir(), ".aws", "config"),
-    ]);
-    if (paths.length > 0) {
-      return {
-        kind: "aws-auth",
-        candidatePaths: dedupe(paths),
-        needsSocketFallback: false,
-      };
-    }
-  }
-
-  return null;
+  return detected;
 }

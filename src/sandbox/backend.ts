@@ -6,6 +6,8 @@ import type { UnmaskedPath, ResolvedSandboxProfile, SandboxConfig } from "./type
 
 export interface SandboxWrapInput {
   command: string;
+  /** Keep resource-protected commands in SRT even when they match host bypass rules. */
+  forceSrt?: boolean;
   sandboxConfig: SandboxConfig;
   cwd: string;
   repoRoot?: string;
@@ -17,6 +19,8 @@ export interface SandboxWrapInput {
 }
 
 export interface SandboxOperationsInput {
+  /** Keep resource-protected commands in SRT even when they match host bypass rules. */
+  forceSrt?: boolean;
   sandboxConfig: SandboxConfig;
   cwd: string;
   repoRoot?: string;
@@ -25,6 +29,10 @@ export interface SandboxOperationsInput {
   secretEnv?: Record<string, string>;
   unifiedConfig?: { network?: DomainGateConfig };
   approvedDomains?: string[];
+  outputMasking?: {
+    dotenvPaths?: readonly string[];
+    redactOutput?: boolean;
+  };
 }
 
 export type SandboxWrapResult =

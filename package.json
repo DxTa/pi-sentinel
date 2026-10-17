@@ -13,6 +13,7 @@
     "src",
     "scripts/calibration-report.mjs",
     "bin/sandbox-run.mjs",
+    "bin/sandbox-run-env.mjs",
     "config.json",
     "profiles",
     "schemas",

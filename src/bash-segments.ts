@@ -14,7 +14,7 @@ export interface QuoteScan {
 
 const EXPANSION_START = new RegExp("[A-Za-z0-9_{(@*#?!$-]");
 const UNQUOTED_SUBSTITUTION = new RegExp("[$<>][(]|`");
-const CONTROL_OPERATOR = new RegExp("&&|[|][|]|[;|\\n]", "g");
+const CONTROL_OPERATOR = new RegExp("&&|[|][|]|[|]&|(?<!>)[|]|[;\\n]", "g");
 
 /* Null for unbalanced quotes and ambiguous backslash syntax. */
 export function scanQuotes(command: string): QuoteScan | null {
@@ -65,7 +65,7 @@ export function scanQuotes(command: string): QuoteScan | null {
  */
 export function splitBashSegments(command: string): string[] | null {
   const scan = scanQuotes(command);
-  if (!scan || scan.substitutes || /(^|[^&])&([^&]|$)/.test(scan.masked)) return null;
+  if (!scan || scan.substitutes || /(^|[^&<>|])&(?![&>])/.test(scan.masked)) return null;
   const segments: string[] = [];
   let start = 0;
   for (const match of scan.masked.matchAll(CONTROL_OPERATOR)) {
@@ -136,6 +136,65 @@ export function bashWords(command: string): string[] | null {
   return scan ? wordsOf(command, scan.masked).map((word) => word.text) : null;
 }
 
+function redirectionOperatorEnd(masked: string, index: number): number | null {
+  if (masked.startsWith("&>", index)) return index + (masked[index + 2] === ">" ? 3 : 2);
+  if (masked[index] !== "<" && masked[index] !== ">") return null;
+  if (masked.startsWith("<<<", index) || masked.startsWith("<<-", index)) return index + 3;
+  if (["<<", ">>", "<>", ">&", "<&", ">|"].some((operator) => masked.startsWith(operator, index))) return index + 2;
+  return index + 1;
+}
+
+function redirectionStart(masked: string, operatorStart: number): number {
+  let descriptorStart = operatorStart;
+  while (descriptorStart > 0 && /\d/.test(masked[descriptorStart - 1] ?? "")) descriptorStart--;
+  if (
+    descriptorStart < operatorStart
+    && (descriptorStart === 0 || /[\s;&|()]/.test(masked[descriptorStart - 1]!))
+  ) return descriptorStart;
+
+  if (masked[operatorStart - 1] === "}") {
+    const namedDescriptorStart = masked.lastIndexOf("{", operatorStart - 1);
+    if (
+      namedDescriptorStart >= 0
+      && /^\{[A-Za-z_][A-Za-z0-9_]*\}$/.test(masked.slice(namedDescriptorStart, operatorStart))
+      && (namedDescriptorStart === 0 || /[\s;&|()]/.test(masked[namedDescriptorStart - 1]!))
+    ) return namedDescriptorStart;
+  }
+  return operatorStart;
+}
+
+function redirectionEnd(masked: string, operatorEnd: number): number {
+  let targetStart = operatorEnd;
+  while (/\s/.test(masked[targetStart] ?? "")) targetStart++;
+  const nextIsOperator = targetStart >= masked.length
+    || /^(?:&&|\|\||[;|\n])/.test(masked.slice(targetStart))
+    || ["<", ">", "&>"].some((operator) => masked.startsWith(operator, targetStart));
+  if (nextIsOperator) return operatorEnd;
+
+  let targetEnd = targetStart;
+  while (targetEnd < masked.length && !/[\s<>|;&\n]/.test(masked[targetEnd]!)) targetEnd++;
+  return targetEnd;
+}
+
+/* Shell words with redirection operators and their separate targets removed. */
+export function bashWordsWithoutRedirections(command: string): string[] | null {
+  const scan = scanQuotes(command);
+  if (!scan) return null;
+  const masked = scan.masked.split("");
+
+  for (let index = 0; index < masked.length; index++) {
+    const operatorEnd = redirectionOperatorEnd(scan.masked, index);
+    if (operatorEnd === null) continue;
+
+    const start = redirectionStart(scan.masked, index);
+    const end = redirectionEnd(scan.masked, operatorEnd);
+    for (let position = start; position < end; position++) masked[position] = " ";
+    index = end - 1;
+  }
+
+  return wordsOf(command, masked.join("")).map((word) => word.text);
+}
+
 /* Index after the wrapper's options, or -1 for an option this table does not know. */
 function afterOptions(words: Word[], from: number, wrapper: { valued: RegExp; plain: RegExp }): number {
   let i = from;
@@ -171,13 +230,46 @@ function skipPrefix(words: Word[], result: InnerCommands): number {
   return i;
 }
 
-/* The text of a plainly quoted or bare word; null when the shell would expand it. */
+function readLiteralPart(word: string, start: number): { value: string; end: number } | null {
+  const quote = word[start];
+  if (quote === "'" || quote === '"') {
+    const end = word.indexOf(quote, start + 1);
+    if (end < 0) return null;
+    const value = word.slice(start + 1, end);
+    if (quote === '"' && value.includes("\\")) return null;
+    return { value, end: end + 1 };
+  }
+
+  let end = start;
+  while (end < word.length && word[end] !== "'" && word[end] !== '"') {
+    if (!/[\w./:=+,@%-]/.test(word[end]!)) return null;
+    end++;
+  }
+  return end === start ? null : { value: word.slice(start, end), end };
+}
+
+/* The text of a statically literal shell word; null when expansion or escapes are involved. */
 function literal(word: string | undefined): string | null {
   if (word === undefined) return null;
-  if (/^'[^']*'$/.test(word)) return word.slice(1, -1);
   const scan = scanQuotes(word);
-  if (/^"[^"]*"$/.test(word) && scan && !scan.expands) return word.slice(1, -1);
-  return /^[\w./:=+,@%-]+$/.test(word) ? word : null;
+  if (!scan || scan.expands) return null;
+
+  let value = "";
+  for (let index = 0; index < word.length;) {
+    const part = readLiteralPart(word, index);
+    if (!part) return null;
+    value += part.value;
+    index = part.end;
+  }
+  return value;
+}
+
+/* Shell words with quoting removed only when each word is statically literal. */
+export function bashLiteralWords(command: string): string[] | null {
+  const words = bashWordsWithoutRedirections(command);
+  if (!words) return null;
+  const literals = words.map(literal);
+  return literals.every((word): word is string => word !== null) ? literals : null;
 }
 
 /* The `-c` code of a shell invocation: a string, null when unreadable or read from stdin, undefined for a script file. */
@@ -188,6 +280,7 @@ function shellCode(words: Word[], first: number): string | null | undefined {
     i += SHELL_VALUED_OPTION.test(words[i]!.text) ? 2 : 1;
   }
   const word = words[i]?.text;
+  if (word === "<<<") return literal(words[i + 1]?.text);
   if (word === undefined || word.startsWith("<") || /^['"]/.test(word)) return null;
   return SHELL_CODE_FLAG.test(word) ? literal(words[i + 1]?.text) : undefined;
 }

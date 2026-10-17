@@ -1,10 +1,14 @@
 import { EventEmitter } from "node:events";
 import { existsSync, readFileSync } from "node:fs";
+import { mkdtemp, rm, writeFile } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import path from "node:path";
 
 import { describe, expect, it, vi } from "vitest";
 
 import { createSrtBackend, DEFAULT_SRT_HELPER_ENV } from "./srt-backend.js";
-import type { ResolvedSandboxProfile, SandboxConfig } from "../types.js";
+import type { SrtCommandSpec, SrtCommandSpecInput } from "../srt-command-spec.js";
+import type { ResolvedSandboxProfile, SandboxConfig, UnmaskedPath } from "../types.js";
 
 function makeConfig(): SandboxConfig {
   return {
@@ -28,7 +32,153 @@ function makeProfile(name = "online-dev", network = true): ResolvedSandboxProfil
   };
 }
 
+function makeSrtCommandSpec(command: string, unmaskedPaths: UnmaskedPath[] = []): SrtCommandSpec {
+  return {
+    command,
+    cwd: "/repo",
+    repoRoot: "/repo",
+    profileName: "online-dev",
+    networkEnabled: true,
+    allowDocker: false,
+    roBinds: [],
+    rwBinds: [],
+    maskedPaths: [],
+    unmaskedPaths,
+    secretEnvNames: [],
+    envDenyPatterns: [],
+    visibleReadPaths: [],
+    runtimeReadAllowPaths: [],
+    maskedShimPlan: { maskedFilePaths: [], maskedDenyPaths: [], shimCommands: [] },
+    execShimPlan: {},
+    networkPlan: {
+      mode: "runtime-filtered",
+      requiresOuterPrompt: false,
+      unmatchedHostAction: "deny",
+      config: { allowedDomains: [], deniedDomains: [], strictAllowlist: true },
+    },
+  };
+}
+
+function makeBackendWithSpawn(spawn: () => unknown) {
+  return createSrtBackend({
+    helperPath: () => "/helper.mjs",
+    processExecPath: () => "/usr/bin/node",
+    checkSrtStatus: () => ({
+      available: true,
+      platform: "darwin",
+      packageAvailable: true,
+      entrypointPath: "/helper.mjs",
+      entrypointExists: true,
+      dependencyChecks: [],
+    }),
+    buildSrtCommandSpecAsync: async ({ command }) => makeSrtCommandSpec(command),
+    buildSrtRuntimeConfig: () => ({
+      network: { allowedDomains: [], deniedDomains: [], strictAllowlist: true },
+      filesystem: { allowRead: ["/repo"], allowWrite: ["/repo"], denyRead: [], denyWrite: [] },
+    }),
+    loadSpawn: async () => ({ spawn: spawn as never }),
+  });
+}
+
 describe("createSrtBackend", () => {
+  it("blocks before spawn when dotenv values cannot be loaded for masking", async () => {
+    const directory = await mkdtemp(path.join(tmpdir(), "pi-srt-mask-failure-"));
+    const spawn = vi.fn();
+    const backend = makeBackendWithSpawn(spawn);
+    const onData = vi.fn();
+
+    try {
+      const result = await backend.createBashOperations({
+        sandboxConfig: makeConfig(),
+        cwd: "/repo",
+        preResolvedProfile: makeProfile(),
+        forceSrt: true,
+        outputMasking: { dotenvPaths: [path.join(directory, "missing.env")] },
+      } as never).exec("cat .env", "/repo", { onData } as never);
+
+      expect(result).toEqual({ exitCode: 1 });
+      expect(spawn).not.toHaveBeenCalled();
+      expect(String(onData.mock.calls[0]?.[0])).toContain("command blocked");
+    } finally {
+      await rm(directory, { recursive: true, force: true });
+    }
+  });
+
+  it("masks dotenv values before streaming user Bash output", async () => {
+    const directory = await mkdtemp(path.join(tmpdir(), "pi-srt-output-mask-"));
+    const dotenvPath = path.join(directory, ".env");
+    await writeFile(dotenvPath, "API_TOKEN=VALUE-123456\n", "utf8");
+
+    const child = Object.assign(new EventEmitter(), {
+      stdout: new EventEmitter(),
+      stderr: new EventEmitter(),
+      kill: vi.fn(),
+    });
+    let resolveSpawn!: () => void;
+    const spawned = new Promise<void>((resolve) => { resolveSpawn = resolve; });
+    const backend = makeBackendWithSpawn(() => {
+      resolveSpawn();
+      return child;
+    });
+    const onData = vi.fn();
+    const execution = backend.createBashOperations({
+      sandboxConfig: makeConfig(),
+      cwd: "/repo",
+      preResolvedProfile: makeProfile(),
+      forceSrt: true,
+      outputMasking: { dotenvPaths: [dotenvPath] },
+    } as never).exec("cat .env", "/repo", { onData } as never);
+
+    try {
+      const didSpawn = await Promise.race([spawned.then(() => true), execution.then(() => false)]);
+      expect(didSpawn, String(onData.mock.calls[0]?.[0] ?? "")).toBe(true);
+      child.stdout.emit("data", Buffer.from("prefix VALUE-"));
+      child.stdout.emit("data", Buffer.from("123456 suffix\n"));
+      expect(onData).not.toHaveBeenCalled();
+
+      child.emit("close", 0);
+      await expect(execution).resolves.toEqual({ exitCode: 0 });
+      const output = Buffer.concat(onData.mock.calls.map(([data]) => data as Buffer)).toString("utf8");
+      expect(output).toContain("prefix **** suffix");
+      expect(output).not.toContain("VALUE-123456");
+    } finally {
+      child.emit("close", 0);
+      await rm(directory, { recursive: true, force: true });
+    }
+  });
+
+  it("fully redacts protected-path output before streaming user Bash results", async () => {
+    const child = Object.assign(new EventEmitter(), {
+      stdout: new EventEmitter(),
+      stderr: new EventEmitter(),
+      kill: vi.fn(),
+    });
+    let resolveSpawn!: () => void;
+    const spawned = new Promise<void>((resolve) => { resolveSpawn = resolve; });
+    const backend = makeBackendWithSpawn(() => {
+      resolveSpawn();
+      return child;
+    });
+    const onData = vi.fn();
+    const execution = backend.createBashOperations({
+      sandboxConfig: makeConfig(),
+      cwd: "/repo",
+      preResolvedProfile: makeProfile(),
+      forceSrt: true,
+      outputMasking: { redactOutput: true },
+    } as never).exec("cat ~/.ssh/id_ed25519", "/repo", { onData } as never);
+
+    const didSpawn = await Promise.race([spawned.then(() => true), execution.then(() => false)]);
+    expect(didSpawn, String(onData.mock.calls[0]?.[0] ?? "")).toBe(true);
+    child.stdout.emit("data", Buffer.from("SYNTHETIC-KEY-DATA"));
+    child.emit("close", 0);
+    await expect(execution).resolves.toEqual({ exitCode: 0 });
+
+    const output = Buffer.concat(onData.mock.calls.map(([data]) => data as Buffer)).toString("utf8");
+    expect(output).toBe("****");
+    expect(output).not.toContain("SYNTHETIC-KEY-DATA");
+  });
+
   it("fails closed when SRT status is unavailable", async () => {
     const backend = createSrtBackend({
       helperPath: () => "/helper.mjs",
@@ -490,6 +640,93 @@ describe("createSrtBackend", () => {
     });
     expect(JSON.stringify(diagnostic)).not.toContain("do-not-log-this-value");
     expect(JSON.stringify(diagnostic)).not.toContain(command);
+  });
+
+  it("keeps forced resource-backed Git commands inside SRT wrapping", async () => {
+    const command = "git push git@example.invalid:org/repo.git";
+    const unmaskedPaths = [{ path: "/tmp/synthetic-ssh/id_ed25519", writable: false }];
+    const buildSrtCommandSpec = vi.fn((input: SrtCommandSpecInput) =>
+      makeSrtCommandSpec(input.command, input.unmaskedPaths),
+    );
+    const backend = createSrtBackend({
+      helperPath: () => "/helper.mjs",
+      processExecPath: () => "/usr/bin/node",
+      checkSrtStatus: () => ({
+        available: true,
+        platform: "linux",
+        packageAvailable: true,
+        entrypointPath: "/helper.mjs",
+        entrypointExists: true,
+        dependencyChecks: [],
+      }),
+      buildSrtCommandSpec,
+      buildSrtRuntimeConfig: () => ({
+        network: { allowedDomains: [], deniedDomains: [], strictAllowlist: true },
+        filesystem: { allowRead: ["/repo"], allowWrite: ["/repo"], denyRead: [], denyWrite: [] },
+      }),
+    });
+
+    const result = await backend.wrapCommand({
+      command,
+      sandboxConfig: { ...makeConfig(), bypassCommands: [] },
+      cwd: "/repo",
+      unmaskedPaths,
+      preResolvedProfile: makeProfile(),
+      forceSrt: true,
+    });
+
+    expect(result).toHaveProperty("command");
+    expect(result).not.toEqual({ command });
+    expect(buildSrtCommandSpec).toHaveBeenCalledWith(expect.objectContaining({ unmaskedPaths }));
+  });
+
+  it("keeps forced resource-backed Git user bash inside SRT operations", async () => {
+    const command = "git push git@example.invalid:org/repo.git";
+    const unmaskedPaths = [{ path: "/tmp/synthetic-ssh/id_ed25519", writable: false }];
+    const child = new EventEmitter() as EventEmitter & { stdout: EventEmitter; stderr: EventEmitter; kill: () => void };
+    child.stdout = new EventEmitter();
+    child.stderr = new EventEmitter();
+    child.kill = vi.fn();
+    const spawn = vi.fn(() => {
+      process.nextTick(() => child.emit("close", 0));
+      return child as never;
+    });
+    const backend = createSrtBackend({
+      helperPath: () => "/helper.mjs",
+      processExecPath: () => "/usr/bin/node",
+      checkSrtStatus: () => ({
+        available: true,
+        platform: "linux",
+        packageAvailable: true,
+        entrypointPath: "/helper.mjs",
+        entrypointExists: true,
+        dependencyChecks: [],
+      }),
+      buildSrtCommandSpec: ({ command, unmaskedPaths }) => makeSrtCommandSpec(command, unmaskedPaths),
+      buildSrtRuntimeConfig: () => ({
+        network: { allowedDomains: [], deniedDomains: [], strictAllowlist: true },
+        filesystem: { allowRead: ["/repo"], allowWrite: ["/repo"], denyRead: [], denyWrite: [] },
+      }),
+      loadSpawn: async () => ({ spawn: spawn as never }),
+    });
+
+    const result = await backend.createBashOperations({
+      sandboxConfig: { ...makeConfig(), bypassCommands: [] },
+      cwd: "/repo",
+      unmaskedPaths,
+      preResolvedProfile: makeProfile(),
+      forceSrt: true,
+    }).exec(command, "/repo", { env: {}, onData: vi.fn() } as never);
+
+    expect(result).toEqual({ exitCode: 0 });
+    expect(spawn).toHaveBeenCalledWith(
+      "/usr/bin/node",
+      ["/helper.mjs"],
+      expect.objectContaining({ env: expect.objectContaining({ [DEFAULT_SRT_HELPER_ENV]: expect.any(String) }) }),
+    );
+    const spawnOptions = spawn.mock.calls[0]?.[2] as { env: NodeJS.ProcessEnv };
+    const encoded = spawnOptions.env[DEFAULT_SRT_HELPER_ENV];
+    expect(JSON.parse(Buffer.from(String(encoded), "base64").toString("utf8")).unmaskedPaths).toEqual(unmaskedPaths);
   });
 
   it("bypasses built-in git transport commands without SRT wrapping", async () => {

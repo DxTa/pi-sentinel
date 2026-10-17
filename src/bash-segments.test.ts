@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 
-import { bashInnerCommands, scanQuotes, splitBashSegments } from "./bash-segments";
+import { bashInnerCommands, bashLiteralWords, bashWordsWithoutRedirections, scanQuotes, splitBashSegments } from "./bash-segments";
 
 const PIPELINE = 'cd src && grep -rn -E "gpt-6-sol|sonnet-5" . | grep -v "sonnet-5\\.5" | head -50; echo; grep -rln -E "gpt-6-sol|sonnet-5([^.]|$)" . | wc -l';
 
@@ -9,12 +9,53 @@ describe("splitBashSegments", () => {
     expect(splitBashSegments(PIPELINE)).toEqual(['cd src', 'grep -rn -E "gpt-6-sol|sonnet-5" .', 'grep -v "sonnet-5\\.5"', 'head -50', 'echo', 'grep -rln -E "gpt-6-sol|sonnet-5([^.]|$)" .', 'wc -l']);
   });
 
+  it("keeps file-descriptor redirections distinct from background execution", () => {
+    expect(splitBashSegments("docker ps 2>&1")).toEqual(["docker ps 2>&1"]);
+    expect(splitBashSegments("docker ps &> /tmp/out")).toEqual(["docker ps &> /tmp/out"]);
+    expect(splitBashSegments("docker ps 2>&1 && echo done")).toEqual(["docker ps 2>&1", "echo done"]);
+    expect(splitBashSegments("0<&0 docker ps")).toEqual(["0<&0 docker ps"]);
+    expect(splitBashSegments(">| out docker ps")).toEqual([">| out docker ps"]);
+    expect(splitBashSegments("echo x |& cat")).toEqual(["echo x", "cat"]);
+    expect(splitBashSegments("sleep 1 &")).toBeNull();
+  });
+
   it("rejects substitutions outside single quotes and unbalanced quotes", () => {
     expect(splitBashSegments('echo "$(id)"')).toBeNull();
     expect(splitBashSegments('echo `id`')).toBeNull();
     expect(splitBashSegments('cat <(ls)')).toBeNull();
     expect(splitBashSegments('echo \'x')).toBeNull();
     expect(splitBashSegments('echo \'$(id) | x\'')).toEqual(['echo \'$(id) | x\'']);
+  });
+});
+
+describe("bashWordsWithoutRedirections", () => {
+  it.each([
+    [">& /tmp/out docker ps", ["docker", "ps"]],
+    [">/dev/null< /dev/null docker ps", ["docker", "ps"]],
+    ["0<&0 docker ps", ["docker", "ps"]],
+    ["docker>/tmp/out ps", ["docker", "ps"]],
+    ["{fd}>out docker ps", ["docker", "ps"]],
+    ["2>&1 ssh blocked-host", ["ssh", "blocked-host"]],
+    ["ssh blocked-host 2>&1", ["ssh", "blocked-host"]],
+    ["docker ps &> /tmp/out", ["docker", "ps"]],
+    ['echo ">& /tmp/out"', ["echo", '">& /tmp/out"']],
+  ])("removes redirections from %s", (command, words) => {
+    expect(bashWordsWithoutRedirections(command)).toEqual(words);
+  });
+});
+
+describe("bashLiteralWords", () => {
+  it.each([
+    ["ssh 'blocked-host'", ["ssh", "blocked-host"]],
+    ["ssh 'block'ed-host", ["ssh", "blocked-host"]],
+    ['ssh "blocked-host"', ["ssh", "blocked-host"]],
+    ['ssh -- "blocked host"', ["ssh", "--", "blocked host"]],
+  ])("normalizes literal shell quoting in %s", (command, words) => {
+    expect(bashLiteralWords(command)).toEqual(words);
+  });
+
+  it("rejects words that require shell expansion", () => {
+    expect(bashLiteralWords('ssh "$HOST"')).toBeNull();
   });
 });
 
@@ -68,6 +109,8 @@ describe("bashInnerCommands: readable wrappers", () => {
     ["find . -name x -exec rm {} +", ["find . -name x -exec rm {} +", "rm {}"]],
     ["find . -exec rm {} ';' -exec chmod 600 {} ';'", ["find . -exec rm {} ';' -exec chmod 600 {} ';'", "rm {}", "chmod 600 {}"]],
     ["bash -c 'cd src && rm -rf build'", ["cd src", "rm -rf build"]],
+    ["bash <<< 'docker ps'", ["docker ps"]],
+    ["bash <<< 'ssh blocked-host'", ["ssh blocked-host"]],
     ['sh -c "echo hi"', ["echo hi"]],
     ["bash -lc 'ls'", ["ls"]],
     ["bash -c \"sh -c 'rm x'\"", ["rm x"]],
@@ -97,6 +140,7 @@ describe("bashInnerCommands: code that cannot be read", () => {
     ["bash"],
     ["bash -s arg"],
     ["bash < script.sh"],
+    ['bash <<< "$SCRIPT"'],
     ["bash <<EOF\nrm x\nEOF"],
     ['bash -c "$x"'],
     ["bash -c"],

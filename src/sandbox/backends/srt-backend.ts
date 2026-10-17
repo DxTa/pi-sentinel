@@ -6,6 +6,7 @@ import type { BashOperations } from "@earendil-works/pi-coding-agent";
 
 import type { SandboxBackend, SandboxOperationsInput, SandboxWrapInput, SandboxWrapResult } from "../backend.js";
 import { shouldBypassSandboxCommand } from "../bypass-command.js";
+import { maskSecretValues, parseDotenvValues } from "../../env-mask.js";
 import type { SrtCommandSpec } from "../srt-command-spec.js";
 import { buildSrtCommandSpec, buildSrtCommandSpecAsync } from "../srt-command-spec.js";
 import { buildSrtRuntimeConfig } from "../srt-runtime-config.js";
@@ -54,6 +55,69 @@ export interface SrtBackendDeps {
 export const DEFAULT_SRT_HELPER_ENV = "PI_SRT_HELPER_INPUT_B64";
 export const DEFAULT_SRT_HELPER_INPUT_FILE_ENV = "PI_SRT_HELPER_INPUT_FILE";
 const MAX_INLINE_HELPER_INPUT_BYTES = 64 * 1024;
+const MAX_BUFFERED_MASKED_OUTPUT_BYTES = 1024 * 1024;
+
+type BashOutputMasker = {
+  onData: (data: Buffer) => void;
+  flush: () => void;
+  blocked: boolean;
+};
+
+async function createBashOutputMasker(
+  masking: SandboxOperationsInput["outputMasking"],
+  onData: ((data: Buffer) => void) | undefined,
+): Promise<BashOutputMasker> {
+  if (!masking?.redactOutput && !masking?.dotenvPaths?.length) {
+    return { onData: (data) => onData?.(data), flush: () => undefined, blocked: false };
+  }
+
+  if (masking.redactOutput) {
+    let flushed = false;
+    return {
+      onData: () => undefined,
+      flush: () => {
+        if (flushed) return;
+        flushed = true;
+        onData?.(Buffer.from("****"));
+      },
+      blocked: false,
+    };
+  }
+
+  let values: string[];
+  try {
+    values = (await Promise.all(masking.dotenvPaths!.map(parseDotenvValues))).flat();
+  } catch {
+    return { onData: () => undefined, flush: () => undefined, blocked: true };
+  }
+
+  const chunks: Buffer[] = [];
+  let bytes = 0;
+  let overflow = false;
+  let flushed = false;
+  return {
+    onData: (data) => {
+      if (flushed || overflow) return;
+      if (bytes + data.length > MAX_BUFFERED_MASKED_OUTPUT_BYTES) {
+        chunks.length = 0;
+        overflow = true;
+        return;
+      }
+      chunks.push(Buffer.from(data));
+      bytes += data.length;
+    },
+    flush: () => {
+      if (flushed) return;
+      flushed = true;
+      const output = overflow
+        ? "****"
+        : maskSecretValues(Buffer.concat(chunks).toString("utf8"), values);
+      onData?.(Buffer.from(output));
+    },
+    blocked: false,
+  };
+}
+
 
 type HelperInputTransport = {
   environmentName: typeof DEFAULT_SRT_HELPER_ENV | typeof DEFAULT_SRT_HELPER_INPUT_FILE_ENV;
@@ -297,7 +361,7 @@ export function createSrtBackend(
   return {
     kind: "srt",
     wrapCommand: async (input: SandboxWrapInput): Promise<SandboxWrapResult> => {
-      if (shouldBypassSandboxCommand(input.command, input.sandboxConfig.bypassCommands)) {
+      if (!input.forceSrt && shouldBypassSandboxCommand(input.command, input.sandboxConfig.bypassCommands)) {
         return { command: input.command };
       }
 
@@ -321,7 +385,12 @@ export function createSrtBackend(
     createBashOperations(input: SandboxOperationsInput): BashOperations {
       return {
         exec: async (command, workDir, options) => {
-          if (shouldBypassSandboxCommand(command, input.sandboxConfig.bypassCommands)) {
+          const outputMasker = await createBashOutputMasker(input.outputMasking, options.onData);
+          if (outputMasker.blocked) {
+            options.onData?.(Buffer.from("Sandbox: unable to safely mask dotenv output; command blocked.\n"));
+            return { exitCode: 1 };
+          }
+          if (!input.forceSrt && shouldBypassSandboxCommand(command, input.sandboxConfig.bypassCommands)) {
             const { spawn } = await resolvedDeps.loadSpawn();
             const spawnEnv = { ...(options.env ?? process.env) };
             const spawnInput = { route: "srt-bypass", command, env: spawnEnv };
@@ -338,8 +407,8 @@ export function createSrtBackend(
               throw error;
             }
 
-            child.stdout?.on("data", (data: Buffer) => options.onData?.(data));
-            child.stderr?.on("data", (data: Buffer) => options.onData?.(data));
+            child.stdout?.on("data", outputMasker.onData);
+            child.stderr?.on("data", outputMasker.onData);
 
             return new Promise<{ exitCode: number | null }>((resolve) => {
               let settled = false;
@@ -351,6 +420,7 @@ export function createSrtBackend(
                 if (timeoutHandle) clearTimeout(timeoutHandle);
                 if (forceKillHandle) clearTimeout(forceKillHandle);
                 options.signal?.removeEventListener("abort", terminate);
+                outputMasker.flush();
                 resolve({ exitCode });
               };
               const terminate = () => {
@@ -365,7 +435,7 @@ export function createSrtBackend(
               child.on("close", (code) => finish(code));
               child.on("error", (err) => {
                 reportSpawnE2Big(resolvedDeps, err as NodeJS.ErrnoException, spawnInput);
-                options.onData?.(Buffer.from(`Bypass shell error: ${err.message}\n`));
+                outputMasker.onData(Buffer.from(`Bypass shell error: ${err.message}\n`));
                 finish(1);
               });
               options.signal?.addEventListener("abort", terminate, { once: true });
@@ -382,11 +452,13 @@ export function createSrtBackend(
             commandAvailable: resolvedDeps.commandAvailable,
           });
           if (!status.available) {
-            options.onData?.(Buffer.from(`SRT backend unavailable: ${status.error}\n`));
+            outputMasker.onData(Buffer.from(`SRT backend unavailable: ${status.error}\n`));
+            outputMasker.flush();
             return { exitCode: 1 };
           }
           if (!input.preResolvedProfile) {
-            options.onData?.(Buffer.from("SRT backend requires pre-resolved sandbox profile.\n"));
+            outputMasker.onData(Buffer.from("SRT backend requires pre-resolved sandbox profile.\n"));
+            outputMasker.flush();
             return { exitCode: 1 };
           }
 
@@ -400,13 +472,14 @@ export function createSrtBackend(
             signal: options.signal,
           });
           if ("errorMessage" in launch) {
-            options.onData?.(Buffer.from(`${launch.errorMessage}\n`));
+            outputMasker.onData(Buffer.from(`${launch.errorMessage}\n`));
+            outputMasker.flush();
             return { exitCode: 1 };
           }
           const { child, transport, spawnInput } = launch;
 
-          child.stdout?.on("data", (data: Buffer) => options.onData?.(data));
-          child.stderr?.on("data", (data: Buffer) => options.onData?.(data));
+          child.stdout?.on("data", outputMasker.onData);
+          child.stderr?.on("data", outputMasker.onData);
 
           return new Promise<{ exitCode: number | null }>((resolve) => {
             let settled = false;
@@ -419,6 +492,7 @@ export function createSrtBackend(
               if (forceKillHandle) clearTimeout(forceKillHandle);
               options.signal?.removeEventListener("abort", terminate);
               transport.cleanup?.();
+              outputMasker.flush();
               resolve({ exitCode });
             };
             const terminate = () => {
@@ -433,7 +507,7 @@ export function createSrtBackend(
             child.on("close", (code) => finish(code));
             child.on("error", (err) => {
               reportSpawnE2Big(resolvedDeps, err as NodeJS.ErrnoException, spawnInput);
-              options.onData?.(Buffer.from(`SRT helper error: ${err.message}\n`));
+              outputMasker.onData(Buffer.from(`SRT helper error: ${err.message}\n`));
               finish(1);
             });
             options.signal?.addEventListener("abort", terminate, { once: true });
