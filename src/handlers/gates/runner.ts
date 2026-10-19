@@ -69,6 +69,10 @@ export async function runGateCheck(
     );
   }
 
+  if (descriptor.freshApproval && check.state !== "deny") {
+    check = { ...check, state: "ask" };
+  }
+
   deps.writeDebugLog?.("permission_gate.checked", {
     ...getSafeDebugLogContext(descriptor.logContext),
     agentName,
@@ -79,7 +83,7 @@ export async function runGateCheck(
   });
 
   // 2. Session-hit fast path
-  if (check.source === "session") {
+  if (!descriptor.freshApproval && check.source === "session") {
     deps.writeReviewLog("permission_request.session_approved", {
       ...descriptor.logContext,
       agentName,

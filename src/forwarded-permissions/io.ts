@@ -291,6 +291,8 @@ export function readForwardedPermissionRequest(
         typeof parsed.forcePromptInYolo === "boolean"
           ? parsed.forcePromptInYolo
           : undefined,
+      allowSession:
+        typeof parsed.allowSession === "boolean" ? parsed.allowSession : undefined,
     };
   } catch (error) {
     logPermissionForwardingWarning(

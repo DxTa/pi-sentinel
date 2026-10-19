@@ -72,6 +72,66 @@ describe("runGateCheck", () => {
     expect(JSON.stringify(debugRecords)).not.toContain("SECRET_TOKEN=do-not-log");
   });
 
+  it("prompts a fresh approval despite an existing session allow", async () => {
+    const promptPermission = vi.fn(async () => ({ approved: true, state: "approved" as const }));
+    const approveSessionRule = vi.fn();
+    const persistPermissionRule = vi.fn();
+
+    const result = await runGateCheck(
+      {
+        surface: "bash",
+        input: { command: "git push origin main" },
+        denialContext: {
+          kind: "tool",
+          check: {
+            toolName: "bash",
+            state: "allow",
+            source: "session",
+            origin: "session",
+            command: "git push origin main",
+          },
+          input: { command: "git push origin main" },
+        },
+        freshApproval: true,
+        promptDetails: {
+          source: "tool_call",
+          agentName: null,
+          message: "Need permission",
+          toolName: "bash",
+          command: "git push origin main",
+          allowSession: false,
+          forcePromptInYolo: true,
+        },
+        logContext: {},
+        decision: { surface: "bash", value: "git push origin main" },
+        preCheck: {
+          toolName: "bash",
+          state: "allow",
+          source: "session",
+          origin: "session",
+          command: "git push origin main",
+        },
+      },
+      null,
+      "tool-call-2",
+      {
+        checkPermission: vi.fn(),
+        getSessionRuleset: () => [],
+        approveSessionRule,
+        persistPermissionRule,
+        writeReviewLog: vi.fn(),
+        emitDecision: vi.fn(),
+        canConfirm: () => true,
+        promptPermission,
+      },
+    );
+
+    expect(result).toEqual({ action: "allow" });
+    expect(promptPermission).toHaveBeenCalledOnce();
+    expect(approveSessionRule).not.toHaveBeenCalled();
+    expect(persistPermissionRule).not.toHaveBeenCalled();
+  });
+
   it("persists workspace approval patterns and records them for current session", async () => {
     const approveSessionRule = vi.fn();
     const persistPermissionRule = vi.fn();

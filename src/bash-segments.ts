@@ -249,7 +249,7 @@ function readLiteralPart(word: string, start: number): { value: string; end: num
 }
 
 /* The text of a statically literal shell word; null when expansion or escapes are involved. */
-function literal(word: string | undefined): string | null {
+export function bashLiteralWord(word: string | undefined): string | null {
   if (word === undefined) return null;
   const scan = scanQuotes(word);
   if (!scan || scan.expands) return null;
@@ -268,7 +268,7 @@ function literal(word: string | undefined): string | null {
 export function bashLiteralWords(command: string): string[] | null {
   const words = bashWordsWithoutRedirections(command);
   if (!words) return null;
-  const literals = words.map(literal);
+  const literals = words.map(bashLiteralWord);
   return literals.every((word): word is string => word !== null) ? literals : null;
 }
 
@@ -280,9 +280,9 @@ function shellCode(words: Word[], first: number): string | null | undefined {
     i += SHELL_VALUED_OPTION.test(words[i]!.text) ? 2 : 1;
   }
   const word = words[i]?.text;
-  if (word === "<<<") return literal(words[i + 1]?.text);
+  if (word === "<<<") return bashLiteralWord(words[i + 1]?.text);
   if (word === undefined || word.startsWith("<") || /^['"]/.test(word)) return null;
-  return SHELL_CODE_FLAG.test(word) ? literal(words[i + 1]?.text) : undefined;
+  return SHELL_CODE_FLAG.test(word) ? bashLiteralWord(words[i + 1]?.text) : undefined;
 }
 
 function markOpaque(text: string, result: InnerCommands): void {

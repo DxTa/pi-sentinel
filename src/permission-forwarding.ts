@@ -47,6 +47,7 @@ export type ForwardedPermissionRequest = {
   toolName?: string;
   command?: string;
   forcePromptInYolo?: boolean;
+  allowSession?: boolean;
 };
 
 export type ForwardedPermissionResponse = {

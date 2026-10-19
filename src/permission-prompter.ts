@@ -45,6 +45,8 @@ export interface PromptPermissionDetails {
   forcePromptInYolo?: boolean;
   /** Override label for the "for this session" dialog option. */
   sessionLabel?: string;
+  /** Disable all remembered approval choices for one-time prompts. */
+  allowSession?: boolean;
   /** Set only after normal deterministic tool gates pass. */
   yoloAutoEligible?: boolean;
   /** Whether eligible request path is workspace-local. */
@@ -253,10 +255,12 @@ export class PermissionPrompter implements PermissionPrompterApi {
         ctx,
         details.message,
         this.buildForwardingDeps(),
-        {
-          ...(details.sessionLabel ? { sessionLabel: details.sessionLabel } : {}),
-          allowWorkspace: Boolean(ctx.cwd),
-        },
+        details.allowSession === false
+          ? { allowSession: false, allowWorkspace: false, allowGlobal: false }
+          : {
+              ...(details.sessionLabel ? { sessionLabel: details.sessionLabel } : {}),
+              allowWorkspace: Boolean(ctx.cwd),
+            },
         {
           toolName: details.toolName,
           command: details.command,
@@ -265,7 +269,7 @@ export class PermissionPrompter implements PermissionPrompterApi {
       );
 
       // Only a person's explicit dialog answer is a learning label; failures and timeouts are not.
-      if (decision.humanDecided) {
+      if (decision.humanDecided && details.allowSession !== false) {
         this.labelEvaluation(yoloAutoDecision.evaluationId, decision.state, details);
       }
 

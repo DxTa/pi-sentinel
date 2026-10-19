@@ -131,7 +131,7 @@ export async function waitForForwardedPermissionApproval(
   deps: PermissionForwardingDeps,
   requestMetadata?: Pick<
     ForwardedPermissionRequest,
-    "toolName" | "command" | "forcePromptInYolo"
+    "toolName" | "command" | "forcePromptInYolo" | "allowSession"
   >,
 ): Promise<PermissionPromptDecision> {
   const requesterSessionId = getSessionId(ctx);
@@ -193,6 +193,7 @@ export async function waitForForwardedPermissionApproval(
     ...(requestMetadata?.forcePromptInYolo
       ? { forcePromptInYolo: true }
       : {}),
+    ...(requestMetadata?.allowSession === false ? { allowSession: false } : {}),
   };
 
   const requestPath = join(location.requestsDir, `${requestId}.json`);
@@ -396,6 +397,9 @@ export async function processForwardedPermissionRequests(
           ctx.ui,
           "Permission Required (Subagent)",
           formatForwardedPermissionPrompt(request),
+          request.allowSession === false
+            ? { allowSession: false, allowWorkspace: false, allowGlobal: false }
+            : undefined,
         );
       } catch (error) {
         logPermissionForwardingError(
@@ -470,7 +474,7 @@ export async function confirmPermission(
   options?: RequestPermissionOptions,
   requestMetadata?: Pick<
     ForwardedPermissionRequest,
-    "toolName" | "command" | "forcePromptInYolo"
+    "toolName" | "command" | "forcePromptInYolo" | "allowSession"
   >,
 ): Promise<PermissionPromptDecision> {
   if (ctx.hasUI) {
@@ -494,6 +498,9 @@ export async function confirmPermission(
     ctx,
     message,
     deps,
-    requestMetadata,
+    {
+      ...requestMetadata,
+      ...(options?.allowSession === false ? { allowSession: false } : {}),
+    },
   );
 }

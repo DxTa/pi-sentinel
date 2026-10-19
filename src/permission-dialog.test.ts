@@ -43,6 +43,24 @@ describe("requestPermissionDecisionFromUi", () => {
     });
   });
 
+  it("shows only one-time approval when remembered choices are disabled", async () => {
+    const ui = {
+      select: vi.fn(async (_title: string, options: string[]) => {
+        expect(options).toEqual(["Yes", "No", "No, provide reason"]);
+        return "Yes";
+      }),
+      input: vi.fn(),
+    };
+
+    await expect(
+      requestPermissionDecisionFromUi(ui, "Permission Required", "Allow?", {
+        allowSession: false,
+        allowWorkspace: false,
+        allowGlobal: false,
+      }),
+    ).resolves.toEqual({ approved: true, state: "approved", humanDecided: true });
+  });
+
   it("marks an explicit No as a human decision", async () => {
     const ui = { select: vi.fn(async () => "No"), input: vi.fn() };
     await expect(requestPermissionDecisionFromUi(ui, "Permission Required", "Allow?"))

@@ -3,6 +3,7 @@ import { describe, expect, it } from "vitest";
 import * as yoloModeModule from "./yolo-mode";
 import {
   canResolveAskPermissionRequest,
+  matchesGitPushCommand,
   matchesYoloAskBashPattern,
   shouldAutoApproveForwardedPermissionRequest,
   shouldAutoApprovePermissionState,
@@ -30,6 +31,36 @@ function bundledDeny(toolName: "write" | "edit") {
     origin: "bundled",
   } as const;
 }
+
+
+describe("matchesGitPushCommand", () => {
+  it.each([
+    "git push origin main",
+    "git -C repo push origin main",
+    "/usr/bin/git push origin main",
+    "git status && git push origin main",
+    "bash -c 'git push origin main'",
+    'git "push" origin main',
+    "git pu'sh' origin main",
+    '"git" "-C" repo "push" origin main',
+    "git -C '$repo' push origin main",
+  ])("recognizes %s", (command) => {
+    expect(matchesGitPushCommand(command)).toBe(true);
+  });
+
+  it.each([
+    "git pull",
+    "git status",
+    "echo git push origin main",
+    "$bin/git push origin main",
+    "git -${opt} push origin main",
+  ])(
+    "does not recognize %s",
+    (command) => {
+      expect(matchesGitPushCommand(command)).toBe(false);
+    },
+  );
+});
 
 describe("matchesYoloAskBashPattern", () => {
   it.each([

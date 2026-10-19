@@ -40,6 +40,19 @@ describe("describeToolGate bash session approval", () => {
     const descriptor = describeToolGate(context("bash", { command: "pytest -q" }), { ...check("bash"), command: "pytest -q" });
     expect(descriptor.sessionApproval).toEqual({ surface: "bash", pattern: "pytest *" });
   });
+
+  it("requires one-time approval for git push", () => {
+    const descriptor = describeToolGate(
+      context("bash", { command: "git push origin main" }),
+      { ...check("bash"), command: "git push origin main" },
+    );
+
+    expect(descriptor).toMatchObject({
+      freshApproval: true,
+      promptDetails: { allowSession: false, forcePromptInYolo: true },
+    });
+    expect(descriptor.sessionApproval).toBeUndefined();
+  });
 });
 
 describe("describeToolGate bash approvals use inner commands", () => {

@@ -67,6 +67,56 @@ describe("PermissionPrompter", () => {
     expect(recordHumanDecision).toHaveBeenCalledWith("eval-human-1", action, expect.any(Number));
   });
 
+  it("does not learn or offer remembered choices for one-time approval", async () => {
+    const evaluate = vi.fn(async () => ({
+      action: "prompt" as const,
+      reason: "threat_not_benign",
+      candidate: true,
+      attempted: true,
+      evaluationId: "eval-once-1",
+      audit: false,
+    }));
+    const recordHumanDecision = vi.fn();
+    const requestPermissionDecisionFromUi = vi.fn(async () => ({
+      approved: true,
+      state: "approved" as const,
+      humanDecided: true as const,
+    }));
+    const prompter = new PermissionPrompter({
+      promptWaitTracker: new PromptWaitTracker({ emit() {} }),
+      getConfig: () => ({ debugLog: false, permissionReviewLog: false, mode: "yolo-auto", yoloAskBashPatterns: [] }),
+      yoloAutoEvaluator: { evaluate },
+      recordHumanDecision,
+      writeReviewLog() {},
+      subagentSessionsDir: "/tmp/subagents",
+      forwardingDir: "/tmp/forwarding",
+      requestPermissionDecisionFromUi,
+    });
+
+    await prompter.prompt({ hasUI: true, cwd: "/work/repo", ui: { setStatus() {} } } as never, {
+      requestId: "req-once-1",
+      source: "tool_call",
+      agentName: null,
+      message: "Need permission",
+      toolName: "bash",
+      command: "git push origin main",
+      allowSession: false,
+      forcePromptInYolo: true,
+      yoloAutoEligible: true,
+      yoloAutoHardRuleHit: false,
+      yoloAutoWorkspaceLocal: true,
+      yoloAutoOperation: "exec",
+    });
+
+    expect(requestPermissionDecisionFromUi).toHaveBeenCalledWith(
+      expect.anything(),
+      "Permission Required",
+      "Need permission",
+      { allowSession: false, allowWorkspace: false, allowGlobal: false },
+    );
+    expect(recordHumanDecision).not.toHaveBeenCalled();
+  });
+
   it("sends no pattern key for Bash whose inner commands cannot be read", async () => {
     const evaluate = vi.fn(async () => ({
       action: "prompt" as const, reason: "threat_not_benign", candidate: true, attempted: true,

@@ -13,6 +13,7 @@ import {
 } from "#src/path-utils";
 import { isSensitivePath } from "../../yolo-auto-sensitive-paths";
 import { bashInnerCommands } from "#src/bash-segments";
+import { matchesGitPushCommand } from "#src/yolo-mode";
 import { suggestSessionPattern } from "#src/pattern-suggest";
 import { formatAskPrompt } from "#src/permission-prompts";
 import { getEditReplacementText, getPermissionLogContext } from "#src/tool-input-preview";
@@ -80,7 +81,18 @@ export function describeToolGate(
     deriveSuggestionValue(tcc, check),
   );
 
-  const sessionApproval = sessionApprovalFor(tcc, check, suggestion);
+  const freshApproval =
+    tcc.toolName === "bash" && matchesGitPushCommand(check.command ?? "");
+  const sessionApproval = freshApproval
+    ? undefined
+    : sessionApprovalFor(tcc, check, suggestion);
+  const sessionLabel = !sessionApproval
+    ? undefined
+    : "patterns" in sessionApproval
+      ? sessionApproval.patterns.length === 0
+        ? "Yes, allow this once (code that cannot be matched is not remembered)"
+        : 'Yes, allow bash ' + sessionApproval.patterns.map((p) => JSON.stringify(p)).join(', ') + ' for this session'
+      : suggestion.label;
 
   const askMessage = formatAskPrompt(
     check,
@@ -132,7 +144,8 @@ export function describeToolGate(
         : undefined
     : undefined;
   const yoloAutoInner = yoloAutoOperation === "exec" ? bashInnerCommands(yoloAutoCommand ?? "") : null;
-  const forcePromptInYolo = hasProtectedEnvSelector(tcc.toolName, tcc.input);
+  const forcePromptInYolo =
+    freshApproval || hasProtectedEnvSelector(tcc.toolName, tcc.input);
   const yoloAutoHardRuleTarget = yoloAutoWorkspaceLocal && tcc.cwd
     ? toolPath
       ? normalizePathForComparison(toolPath, tcc.cwd)
@@ -154,18 +167,16 @@ export function describeToolGate(
       agentName: tcc.agentName ?? undefined,
       input: tcc.input,
     },
-    sessionApproval,
+    ...(sessionApproval ? { sessionApproval } : {}),
+    ...(freshApproval ? { freshApproval: true } : {}),
     promptDetails: {
       source: "tool_call",
       agentName: tcc.agentName,
       message: askMessage,
       toolCallId: tcc.toolCallId,
       toolName: tcc.toolName,
-      sessionLabel: 'patterns' in sessionApproval
-        ? sessionApproval.patterns.length === 0
-          ? "Yes, allow this once (code that cannot be matched is not remembered)"
-          : 'Yes, allow bash ' + sessionApproval.patterns.map((p) => JSON.stringify(p)).join(', ') + ' for this session'
-        : suggestion.label,
+      ...(sessionLabel ? { sessionLabel } : {}),
+      ...(freshApproval ? { allowSession: false } : {}),
       ...permissionLogContext,
       ...(yoloAutoOperation
         ? {

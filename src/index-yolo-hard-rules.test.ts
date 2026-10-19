@@ -82,7 +82,11 @@ function createContext(cwd: string, options: { hasUI?: boolean; choices?: string
 }
 
 
-async function setup(mode: string, network: Record<string, unknown> = { enabled: false, unknownDomains: "allow", allowedDomains: [], deniedDomains: [] }) {
+async function setup(
+  mode: string,
+  network: Record<string, unknown> = { enabled: false, unknownDomains: "allow", allowedDomains: [], deniedDomains: [] },
+  permission: Record<string, unknown> = { "*": "ask", bash: { "*": "ask" } },
+) {
   const agentDir = await makeTempDir("pi-yolo-agent-");
   const projectDir = await makeTempDir("pi-yolo-project-");
   process.env.PI_CODING_AGENT_DIR = agentDir;
@@ -91,7 +95,7 @@ async function setup(mode: string, network: Record<string, unknown> = { enabled:
     JSON.stringify({
       mode,
       yoloAskBashPatterns: [],
-      permission: { "*": "ask", bash: { "*": "ask" } },
+      permission,
       network,
       sandbox: { enabled: false, backend: "srt", defaultProfile: "online-dev" },
     }),
@@ -196,5 +200,33 @@ describe("yolo mode hard rules", () => {
     await run("bash", { command });
 
     expect(context.ui.select).toHaveBeenCalledOnce();
+  });
+
+  it("blocks an explicitly denied Git push without a dialog", async () => {
+    const { run, context } = await setup(
+      "manual",
+      { enabled: true, unknownDomains: "ask", allowedDomains: [], deniedDomains: [] },
+      { "*": "ask", bash: { "git *": "deny" } },
+    );
+
+    await expect(run("bash", { command: "git push https://example.com/repo.git main" }))
+      .resolves.toMatchObject({ block: true });
+    expect(context.ui.select).not.toHaveBeenCalled();
+  });
+
+  it("uses one-time approval for Git pushes through earlier Bash gates", async () => {
+    const { run, context } = await setup("manual");
+    const outsideDir = await makeTempDir("pi-yolo-outside-");
+    const command = `git -C ${outsideDir} push origin main`;
+
+    await run("bash", { command });
+    const firstPromptCount = context.ui.select.mock.calls.length;
+    await run("bash", { command });
+
+    expect(firstPromptCount).toBeGreaterThan(0);
+    expect(context.ui.select.mock.calls.length).toBeGreaterThan(firstPromptCount);
+    for (const [, choices] of context.ui.select.mock.calls) {
+      expect(choices).toEqual(["Yes", "No", "No, provide reason"]);
+    }
   });
 });

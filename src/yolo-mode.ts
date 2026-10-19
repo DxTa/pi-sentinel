@@ -1,4 +1,4 @@
-import { bashInnerCommands, bashWords, splitBashSegments } from "./bash-segments";
+import { bashInnerCommands, bashLiteralWord, bashWords, splitBashSegments } from "./bash-segments";
 import type { PermissionSystemExtensionConfig } from "./extension-config";
 import {
   isPathOutsideWorkingDirectory,
@@ -44,11 +44,35 @@ function isKubectlWrite(words: string[]): boolean {
 }
 
 /** rm, ssh, git push and kubectl writes, by executable name, so `/bin/rm` and tab spacing count. */
+function isGitPushWords(words: readonly string[]): boolean {
+  const normalized = words.map((word) => bashLiteralWord(word) ?? word);
+  const subcommand = subcommandIndex(normalized, GIT_VALUE_OPTIONS);
+  const executable = bashLiteralWord(words[0]);
+  if (
+    executable?.slice(executable.lastIndexOf("/") + 1) !== "git"
+    || normalized[subcommand] !== "push"
+  ) return false;
+
+  for (let index = 1; index <= subcommand;) {
+    const word = bashLiteralWord(words[index]);
+    if (word === null) return false;
+    index += GIT_VALUE_OPTIONS.has(word) ? 2 : 1;
+  }
+  return true;
+}
+
 function isBuiltInAskCommand(words: string[]): boolean {
   const name = words[0]?.slice(words[0].lastIndexOf("/") + 1);
   if (name === "rm" || name === "ssh") return true;
-  if (name === "git") return words[subcommandIndex(words, GIT_VALUE_OPTIONS)] === "push";
+  if (isGitPushWords(words)) return true;
   return name === "kubectl" && isKubectlWrite(words);
+}
+
+export function matchesGitPushCommand(command: string): boolean {
+  return (bashInnerCommands(command)?.commands ?? [command]).some((part) => {
+    const words = bashWords(part);
+    return words !== null && isGitPushWords(words);
+  });
 }
 
 function matchesBuiltInAsk(command: string): boolean {

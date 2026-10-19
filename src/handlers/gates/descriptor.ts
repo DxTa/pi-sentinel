@@ -29,6 +29,8 @@ export interface GateDescriptor {
   sessionApproval?:
     | { surface: string; pattern: string }
     | { surface: string; patterns: string[] };
+  /** Require interactive one-time approval even when policy or session rules allow. */
+  freshApproval?: boolean;
   /** Details passed to the interactive permission prompt (requestId is added by the runner). */
   promptDetails: Omit<PromptPermissionDetails, "requestId">;
   /** Extra context fields written to the review log alongside gate outcomes. */

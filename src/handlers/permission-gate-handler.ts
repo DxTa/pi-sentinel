@@ -35,13 +35,13 @@ import {
 } from "#src/tool-registry";
 import { buildYoloAutoBashContext } from "#src/yolo-auto-bash-context";
 import { forbiddenWriteTarget } from "#src/yolo-forbidden-writes";
-import { shouldRelaxBundledToolDenyInYolo } from "#src/yolo-mode";
+import { matchesGitPushCommand, shouldRelaxBundledToolDenyInYolo } from "#src/yolo-mode";
 import { describeBashExternalDirectoryGate } from "./gates/bash-external-directory";
 
 import { describeBashPathGate } from "./gates/bash-path";
 import { extractTokensForPathRules } from "./gates/bash-path-extractor";
-import type { GateRunnerDeps } from "./gates/descriptor";
-import { isGateBypass } from "./gates/descriptor";
+import type { GateDescriptor, GateResult, GateRunnerDeps } from "./gates/descriptor";
+import { isGateBypass, isGateDescriptor } from "./gates/descriptor";
 import { describeExternalDirectoryGate } from "./gates/external-directory";
 import { describePathGate } from "./gates/path";
 import { runGateCheck } from "./gates/runner";
@@ -56,6 +56,25 @@ interface InputPayload {
 
 interface PermissionGateHandlerOptions {
   isTrustedClipboardReadPath?: (pathValue: string) => boolean;
+}
+
+function requireFreshPushApproval(
+  result: GateResult,
+  isFreshPush: boolean,
+): GateResult {
+  if (!isFreshPush || !isGateDescriptor(result)) return result;
+
+  const descriptor: GateDescriptor = {
+    ...result,
+    freshApproval: true,
+    sessionApproval: undefined,
+    promptDetails: {
+      ...result.promptDetails,
+      allowSession: false,
+      forcePromptInYolo: true,
+    },
+  };
+  return descriptor;
 }
 
 /**
@@ -124,6 +143,12 @@ export class PermissionGateHandler {
       mode: session.config.mode,
     };
 
+    const bashCommand = tcc.toolName === "bash"
+      ? getNonEmptyString(toRecord(tcc.input).command)
+      : null;
+    const freshPushApproval =
+      bashCommand !== null && matchesGitPushCommand(bashCommand);
+
     session.logger.debug("tool_call.received", {
       source: "tool_call",
       toolCallId,
@@ -168,6 +193,26 @@ export class PermissionGateHandler {
       canConfirm,
       promptPermission,
     };
+
+    const freshPushCheck = freshPushApproval
+      ? checkPermission(
+          tcc.toolName,
+          tcc.input,
+          tcc.agentName ?? undefined,
+          getSessionRuleset(),
+        )
+      : null;
+    if (freshPushCheck?.state === "deny") {
+      const deniedPushResult = await runGateCheck(
+        describeToolGate(tcc, freshPushCheck),
+        tcc.agentName,
+        tcc.toolCallId,
+        runnerDeps,
+      );
+      if (deniedPushResult.action === "block") {
+        return { block: true, reason: deniedPushResult.reason };
+      }
+    }
 
     // ── yolo hard rule: never write system or credential paths ──────────────
     const forbiddenWrite = session.config.mode === "yolo"
@@ -304,10 +349,13 @@ export class PermissionGateHandler {
     );
 
     // ── Bash external-directory gate (descriptor + runner) ───────────────────
-    const bashExtDesc = await describeBashExternalDirectoryGate(
-      tcc,
-      checkPermission,
-      getSessionRuleset,
+    const bashExtDesc = requireFreshPushApproval(
+      await describeBashExternalDirectoryGate(
+        tcc,
+        checkPermission,
+        getSessionRuleset,
+      ),
+      freshPushApproval,
     );
     if (bashExtDesc) {
       if (isGateBypass(bashExtDesc)) {
@@ -328,9 +376,6 @@ export class PermissionGateHandler {
     }
 
     // ── Bash path gate (descriptor + runner) ────────────────────────────────
-    const bashCommand = tcc.toolName === "bash"
-      ? getNonEmptyString(toRecord(tcc.input).command)
-      : null;
     const bashPathTokens = bashCommand !== null
       ? await extractTokensForPathRules(bashCommand)
       : undefined;
@@ -355,11 +400,14 @@ export class PermissionGateHandler {
           yoloAutoUnits: yoloAutoBashContext.units,
           yoloAutoOpaque: yoloAutoBashContext.opaque,
         };
-    const bashPathDesc = await describeBashPathGate(
-      toolTcc,
-      checkPermission,
-      getSessionRuleset,
-      bashPathPolicyTokens,
+    const bashPathDesc = requireFreshPushApproval(
+      await describeBashPathGate(
+        toolTcc,
+        checkPermission,
+        getSessionRuleset,
+        bashPathPolicyTokens,
+      ),
+      freshPushApproval,
     );
 
     if (bashPathDesc) {
@@ -395,7 +443,7 @@ export class PermissionGateHandler {
         tcc.agentName ?? undefined,
         toolSessionRules,
       ).state === "allow";
-    const baseToolCheck = checkPermission(
+    const baseToolCheck = freshPushCheck ?? checkPermission(
       tcc.toolName,
       tcc.input,
       tcc.agentName ?? undefined,

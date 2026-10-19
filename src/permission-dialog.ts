@@ -96,6 +96,8 @@ export interface RequestPermissionOptions {
   workspaceLabel?: string;
   /** Override the global-persistence label. */
   globalLabel?: string;
+  /** Whether session persistence is available for this prompt. */
+  allowSession?: boolean;
   /** Whether workspace persistence is available for this prompt. */
   allowWorkspace?: boolean;
   /** Whether global persistence is available for this prompt. */
@@ -112,11 +114,12 @@ export async function requestPermissionDecisionFromUi(
   const workspaceOption =
     options?.workspaceLabel ?? APPROVE_FOR_WORKSPACE_OPTION;
   const globalOption = options?.globalLabel ?? APPROVE_GLOBALLY_OPTION;
+  const allowSession = options?.allowSession !== false;
   const allowWorkspace = options?.allowWorkspace !== false;
   const allowGlobal = options?.allowGlobal !== false;
   const decisionOptions = [
     APPROVE_OPTION,
-    sessionOption,
+    ...(allowSession ? [sessionOption] : []),
     ...(allowWorkspace ? [workspaceOption] : []),
     ...(allowGlobal ? [globalOption] : []),
     DENY_OPTION,
@@ -131,7 +134,7 @@ export async function requestPermissionDecisionFromUi(
     return humanDecision({ approved: true, state: "approved" });
   }
 
-  if (selected === sessionOption) {
+  if (allowSession && selected === sessionOption) {
     return humanDecision({ approved: true, state: "approved_for_session" });
   }
 

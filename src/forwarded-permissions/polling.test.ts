@@ -253,6 +253,60 @@ describe("processForwardedPermissionRequests", () => {
     });
   });
 
+  it("removes remembered choices for forwarded one-time approval", async () => {
+    const forwardingDir = mkdtempSync(join(tmpdir(), "forwarded-permission-"));
+    const location = createPermissionForwardingLocation(forwardingDir, "parent-session");
+    mkdirSync(location.requestsDir, { recursive: true });
+    mkdirSync(location.responsesDir, { recursive: true });
+
+    const request: ForwardedPermissionRequest = {
+      id: `${Date.now()}-subagent-${process.pid}`,
+      createdAt: Date.now(),
+      requesterSessionId: "child-session",
+      targetSessionId: "parent-session",
+      requesterAgentName: "worker",
+      message: "Need permission",
+      toolName: "bash",
+      command: "git push origin main",
+      forcePromptInYolo: true,
+      allowSession: false,
+    };
+    writeFileSync(
+      join(location.requestsDir, `${request.id}.json`),
+      JSON.stringify(request),
+      "utf-8",
+    );
+
+    const requestPermissionDecisionFromUi = vi.fn(async () => ({
+      approved: true,
+      state: "approved" as const,
+    }));
+
+    await processForwardedPermissionRequests(
+      {
+        hasUI: true,
+        ui: { setStatus() {} },
+        sessionManager: { getSessionId() { return "parent-session"; } },
+      } as never,
+      {
+        forwardingDir,
+        subagentSessionsDir: "/tmp/subagents",
+        logger: { writeReviewLog() {}, writeDebugLog() {} },
+        promptWaitTracker: new PromptWaitTracker({ emit() {} }),
+        writeReviewLog() {},
+        requestPermissionDecisionFromUi,
+        shouldAutoApprove: vi.fn(() => true),
+      },
+    );
+
+    expect(requestPermissionDecisionFromUi).toHaveBeenCalledWith(
+      expect.anything(),
+      "Permission Required (Subagent)",
+      expect.stringContaining("Need permission"),
+      { allowSession: false, allowWorkspace: false, allowGlobal: false },
+    );
+  });
+
   it("forces a prompt for non-bash forwarded writes marked forcePromptInYolo", async () => {
     const forwardingDir = mkdtempSync(join(tmpdir(), "forwarded-permission-"));
     const location = createPermissionForwardingLocation(forwardingDir, "parent-session");
