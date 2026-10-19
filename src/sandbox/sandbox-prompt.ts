@@ -25,6 +25,8 @@ export interface SandboxPromptDetails {
   promptWaitTracker?: PromptWaitTracker;
   /** Set false when persistent scopes are unsupported for this prompt. */
   allowPersistentScopes?: boolean;
+  /** Set false for a strictly invocation-scoped decision. */
+  allowSession?: boolean;
 }
 
 const CHOICE_ONCE = "Allow once";
@@ -51,6 +53,7 @@ export async function promptSandboxGrant(
     command,
     promptWaitTracker,
     allowPersistentScopes = true,
+    allowSession = true,
   } = details;
 
   let title: string;
@@ -117,7 +120,9 @@ export async function promptSandboxGrant(
     title = "⚠ Sandbox: Unsandboxed Authentication Required";
     message = change.description;
   } else if (change.type === "host-bypass") {
-    title = "⚠ Sandbox: Host Toolchain Required";
+    title = allowSession
+      ? "⚠ Sandbox: Host Toolchain Required"
+      : "⚠ Sandbox: One-time Host Execution Requested";
     message = change.description;
   } else {
     title = "⚠ Sandbox: Policy Change Requested";
@@ -125,8 +130,9 @@ export async function promptSandboxGrant(
   }
 
   const hasWorkspaceScope = Boolean(ctx.cwd) && allowPersistentScopes;
-  const options =
-    change.type === "auth-bypass" || change.type === "host-bypass" || !allowPersistentScopes
+  const options = !allowSession
+    ? [CHOICE_ONCE, CHOICE_DENY]
+    : change.type === "auth-bypass" || change.type === "host-bypass" || !allowPersistentScopes
       ? [CHOICE_ONCE, CHOICE_SESSION, CHOICE_DENY]
       : [
           CHOICE_ONCE,
@@ -138,7 +144,7 @@ export async function promptSandboxGrant(
 
   const waitMessage =
     change.type === "host-bypass"
-      ? "Waiting for host toolchain approval"
+      ? (allowSession ? "Waiting for host toolchain approval" : "Waiting for one-time host execution approval")
       : change.type === "network"
       ? "Waiting for sandbox network approval"
       : change.type === "env"
@@ -155,7 +161,7 @@ export async function promptSandboxGrant(
     promptWaitTracker?.end(ctx, promptToken);
   }
 
-  if (!choice || choice === CHOICE_DENY) {
+  if (!choice || !options.includes(choice) || choice === CHOICE_DENY) {
     return { action: "deny" };
   }
 

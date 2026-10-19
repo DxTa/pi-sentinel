@@ -47,6 +47,25 @@ describe("promptSandboxGrant", () => {
 
 
 describe("host toolchain prompt", () => {
+  it.each(["Allow once", "Allow for session", "Allow globally", undefined])(
+    "restricts a one-time host prompt to its displayed choices (choice=%s)", async (choice) => {
+      const select = vi.fn(async () => choice);
+      const ctx = { hasUI: true, cwd: "/repo", ui: { select } } as never;
+      const result = await promptSandboxGrant(ctx, {
+        command: "git push origin main",
+        change: { type: "host-bypass", description: "SRT egress failed", values: ["git-push"] },
+        allowPersistentScopes: false,
+        allowSession: false,
+      });
+      expect(result).toEqual(choice === "Allow once"
+        ? { action: "allow", duration: "once", scope: undefined }
+        : { action: "deny" });
+      expect(select).toHaveBeenCalledWith(
+        expect.stringContaining("One-time Host Execution"), ["Allow once", "Deny"],
+      );
+    },
+  );
+
   it("offers only once/session/deny choices", async () => {
     const select = vi.fn(async () => "Allow for session");
     const ctx = {

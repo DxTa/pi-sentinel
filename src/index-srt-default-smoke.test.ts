@@ -123,7 +123,7 @@ function createFakePi(toolNames: string[] = ["bash"]): FakePi {
   };
 }
 
-function createContext(cwd: string, options: { hasUI?: boolean; choices?: string[] } = {}) {
+function createContext(cwd: string, options: { hasUI?: boolean; choices?: Array<string | undefined> } = {}) {
   const choices = [...(options.choices ?? [])];
   return {
     cwd,
@@ -166,6 +166,32 @@ async function writeExtensionConfig(agentDir: string, overrides: Record<string, 
   );
 }
 
+async function setupPushFallback(overrides: Record<string, unknown> = {}) {
+  const agentDir = await makeTempDir("pi-push-fallback-agent-");
+  const projectDir = await makeTempDir("pi-push-fallback-project-");
+  await makeSyntheticHome();
+  process.env.SSH_AUTH_SOCK = "";
+  process.env.PI_CODING_AGENT_DIR = agentDir;
+  await writeExtensionConfig(agentDir, {
+    permission: { "*": "allow", bash: { "*": "allow" }, external_directory: { "*": "allow" } },
+    ...overrides,
+  });
+  const pi = createFakePi();
+  piPermissionSystemExtension(pi as never);
+  const command = "git -C . push https://example.test/repo.git main";
+  let callId = 0;
+  const run = async (ctx: ReturnType<typeof createContext>, rawCommand = command) => {
+    const event = { toolName: "bash", toolCallId: `push-${++callId}`, input: { command: rawCommand } };
+    const result = await pi.handlers.get("tool_call")!(event, ctx);
+    return { event, result };
+  };
+  const fail = (event: { toolName: string; toolCallId: string; input: { command: string } }, ctx: ReturnType<typeof createContext>, output = "socat[123] E proxy_connect: connection closed by proxy") =>
+    pi.handlers.get("tool_result")!({
+      ...event, content: [{ type: "text", text: output }], isError: true,
+    }, ctx);
+  return { agentDir, projectDir, pi, command, run, fail };
+}
+
 function safeYoloAutoHeads(action: string): YoloAutoHeads {
   const winners: Record<string, string> = {
     injection: "benign",
@@ -205,6 +231,182 @@ function extractHelperInput(command: string) {
 }
 
 describe("piPermissionSystemExtension SRT default smoke", () => {
+  it("offers one-time host execution only on the next identical push after SRT egress failure", async () => {
+    const agentDir = await makeTempDir("pi-push-fallback-agent-");
+    const projectDir = await makeTempDir("pi-push-fallback-project-");
+    await makeSyntheticHome();
+    process.env.SSH_AUTH_SOCK = "";
+    process.env.PI_CODING_AGENT_DIR = agentDir;
+    await writeExtensionConfig(agentDir, {
+      permission: { "*": "allow", bash: { "*": "allow" }, external_directory: { "*": "allow" } },
+    });
+    const configBefore = await readFile(path.join(agentDir, "permissions.json"), "utf8");
+    const pi = createFakePi();
+    piPermissionSystemExtension(pi as never);
+    const command = "git -C . push https://example.test/repo.git main";
+    const context = createContext(projectDir, { hasUI: true, choices: ["Yes", "Yes", "Allow once", "Yes"] });
+    const call = pi.handlers.get("tool_call")!;
+    const first = { toolName: "bash", toolCallId: "push-1", input: { command } };
+    await expect(call(first, context)).resolves.toBeUndefined();
+    expect(first.input.command).not.toBe(command);
+    expect(context.ui.select).toHaveBeenCalledOnce();
+
+    await pi.handlers.get("tool_result")!({
+      ...first,
+      content: [{ type: "text", text: "socat[123] E proxy_connect: connection closed by proxy" }],
+      isError: true,
+    }, context);
+    expect(context.ui.select).toHaveBeenCalledOnce();
+
+    const next = { toolName: "bash", toolCallId: "push-2", input: { command } };
+    await expect(call(next, context)).resolves.toBeUndefined();
+    expect(next.input.command).toBe(command);
+    expect(context.ui.select).toHaveBeenCalledTimes(3);
+    expect(context.ui.select.mock.calls[2][0]).toContain("outside sandbox protections");
+    expect(context.ui.select.mock.calls[2][0]).toContain(command);
+    expect(context.ui.select.mock.calls[2][1]).toEqual(["Allow once", "Deny"]);
+
+    const third = { toolName: "bash", toolCallId: "push-3", input: { command } };
+    await expect(call(third, context)).resolves.toBeUndefined();
+    expect(third.input.command).not.toBe(command);
+    expect(context.ui.select).toHaveBeenCalledTimes(4);
+    for (const index of [0, 1, 3]) {
+      expect(context.ui.select.mock.calls[index][1]).toEqual(["Yes", "No", "No, provide reason"]);
+    }
+    expect(await readFile(path.join(agentDir, "permissions.json"), "utf8")).toBe(configBefore);
+  });
+
+  it("offers one-time host execution for a failed plain SSH Git push despite the implicit-auth SRT requirement", async () => {
+    const fixture = await setupPushFallback();
+    const sshDir = path.join(process.env.HOME!, ".ssh");
+    await mkdir(sshDir, { recursive: true });
+    await writeFile(path.join(sshDir, "id_ed25519"), "synthetic-key", "utf8");
+    await mkdir(path.join(fixture.projectDir, ".git"));
+    await writeFile(path.join(fixture.projectDir, ".git", "config"), '[remote "origin"]\nurl = git@example.test:repo.git\n', "utf8");
+    const command = "git push origin main";
+    const ctx = createContext(fixture.projectDir, { hasUI: true, choices: ["Yes", "Allow once", "Yes", "Allow once", "Allow once"] });
+    const first = await fixture.run(ctx, command);
+    expect(first.result).toBeUndefined();
+    expect(first.event.input.command).not.toBe(command);
+    await fixture.fail(first.event, ctx);
+    const next = await fixture.run(ctx, command);
+    expect(next.result).toBeUndefined();
+    expect(next.event.input.command).toBe(command);
+    expect(ctx.ui.select.mock.calls.at(-1)?.[1]).toEqual(["Allow once", "Deny"]);
+  });
+
+  it.each(["Deny", undefined, "Allow for session"])(
+    "blocks one-time host execution when the fallback choice is %s and consumes the failure",
+    async (choice) => {
+      const fixture = await setupPushFallback();
+      const firstCtx = createContext(fixture.projectDir, { hasUI: true, choices: ["Yes"] });
+      const first = await fixture.run(firstCtx);
+      expect(first.result).toBeUndefined();
+      await fixture.fail(first.event, firstCtx);
+      const ctx = createContext(fixture.projectDir, { hasUI: true, choices: ["Yes", choice, "Yes"] });
+      const denied = await fixture.run(ctx);
+      expect(denied.result).toMatchObject({ block: true, reason: expect.stringContaining("host execution denied") });
+      expect(denied.event.input.command).toBe(fixture.command);
+      const next = await fixture.run(ctx);
+      expect(next.result).toBeUndefined();
+      expect(next.event.input.command).not.toBe(fixture.command);
+      expect(ctx.ui.select.mock.calls.filter(([, options]) => options.length === 2)).toHaveLength(1);
+    },
+  );
+
+  it("keeps push failures scoped to the exact command and working directory", async () => {
+    const fixture = await setupPushFallback();
+    const ctx = createContext(fixture.projectDir, { hasUI: true, choices: ["Yes", "Yes", "Allow once"] });
+    const first = await fixture.run(ctx);
+    await fixture.fail(first.event, ctx);
+    const changed = await fixture.run(ctx, `${fixture.command} --dry-run`);
+    expect(changed.result).toBeUndefined();
+    expect(changed.event.input.command).not.toBe(`${fixture.command} --dry-run`);
+    expect(ctx.ui.select).toHaveBeenCalledTimes(2);
+    const otherDir = await makeTempDir("pi-push-other-project-");
+    const otherCtx = createContext(otherDir, { hasUI: true, choices: ["Yes"] });
+    const other = await fixture.run(otherCtx);
+    expect(other.result).toBeUndefined();
+    expect(other.event.input.command).not.toBe(fixture.command);
+    expect(otherCtx.ui.select).toHaveBeenCalledOnce();
+  });
+
+  it("never offers host execution without a UI even after an SRT push failure", async () => {
+    const fixture = await setupPushFallback();
+    const firstCtx = createContext(fixture.projectDir, { hasUI: true, choices: ["Yes"] });
+    const first = await fixture.run(firstCtx);
+    await fixture.fail(first.event, firstCtx);
+    const ctx = createContext(fixture.projectDir);
+    const denied = await fixture.run(ctx);
+    expect(denied.result).toMatchObject({ block: true });
+    expect(ctx.ui.select).not.toHaveBeenCalled();
+    expect(denied.event.input.command).toBe(fixture.command);
+  });
+
+  it.each([false, true])("clears push fallback at session start including late results (late=%s)", async (late) => {
+    const fixture = await setupPushFallback();
+    const ctx = createContext(fixture.projectDir, { hasUI: true, choices: ["Yes", "Yes"] });
+    const first = await fixture.run(ctx);
+    if (!late) await fixture.fail(first.event, ctx);
+    await fixture.pi.handlers.get("session_start")!({}, ctx);
+    if (late) await fixture.fail(first.event, ctx);
+    const next = await fixture.run(ctx);
+    expect(next.result).toBeUndefined();
+    expect(next.event.input.command).not.toBe(fixture.command);
+    expect(ctx.ui.select.mock.calls.every(([, options]) => options.length === 3)).toBe(true);
+  });
+
+  it("rejects host execution approval if the session changes while its prompt is open", async () => {
+    const fixture = await setupPushFallback();
+    const ctx = createContext(fixture.projectDir, { hasUI: true, choices: ["Yes", "Yes"] });
+    const first = await fixture.run(ctx);
+    await fixture.fail(first.event, ctx);
+    const select = ctx.ui.select;
+    let selections = 0;
+    select.mockImplementation(async () => {
+      if (++selections === 1) return "Yes";
+      await fixture.pi.handlers.get("session_start")!({}, ctx);
+      return "Allow once";
+    });
+    const next = await fixture.run(ctx);
+    expect(next.result).toMatchObject({ block: true, reason: expect.stringContaining("host execution denied") });
+    expect(next.event.input.command).toBe(fixture.command);
+  });
+
+  it("preserves explicit push denies before offering host execution", async () => {
+    const fixture = await setupPushFallback();
+    const ctx = createContext(fixture.projectDir, { hasUI: true, choices: ["Yes"] });
+    const first = await fixture.run(ctx);
+    await fixture.fail(first.event, ctx);
+    await writeExtensionConfig(fixture.agentDir, { permission: { "*": "allow", bash: { "git *": "deny" } } });
+    await fixture.pi.handlers.get("resources_discover")!({ reason: "reload" }, ctx);
+    ctx.ui.select.mockClear();
+    const denied = await fixture.run(ctx);
+    expect(denied.result).toMatchObject({ block: true });
+    expect(ctx.ui.select).not.toHaveBeenCalled();
+  });
+
+  it.each(["ordinary network failure", "untracked proxy output", "successful proxy output"])(
+    "does not offer host execution after %s",
+    async (failure) => {
+      const fixture = await setupPushFallback();
+      const ctx = createContext(fixture.projectDir, { hasUI: true, choices: ["Yes", "Yes"] });
+      const first = await fixture.run(ctx);
+      await fixture.pi.handlers.get("tool_result")!({
+        ...first.event,
+        toolCallId: failure === "untracked proxy output" ? "untracked" : first.event.toolCallId,
+        content: [{ type: "text", text: failure === "ordinary network failure"
+          ? "Connection refused"
+          : "socat[123] E proxy_connect: connection closed by proxy" }],
+        isError: failure !== "successful proxy output",
+      }, ctx);
+      const next = await fixture.run(ctx);
+      expect(next.result).toBeUndefined();
+      expect(next.event.input.command).not.toBe(fixture.command);
+      expect(ctx.ui.select).toHaveBeenCalledTimes(2);
+    },
+  );
+
   it("masks dotenv read results but leaves .env.example unchanged", async () => {
     const agentDir = await makeTempDir("pi-permission-agent-");
     const projectDir = await makeTempDir("pi-permission-project-");

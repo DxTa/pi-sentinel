@@ -14,6 +14,8 @@ import { openDecisionStore, type DecisionStore } from "./yolo-auto-decision-stor
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
 import type { ChildProcess } from "node:child_process";
 import { toRecord } from "./common";
+import { srtEgressFailureMessage } from "./sandbox/srt-egress-error";
+import { literalGitPushKey } from "./sandbox/git-push-host-fallback";
 
 // ── Extension imports ────────────────────────────────────────────────────
 import { registerPermissionSystemCommand } from "./config-modal";
@@ -724,6 +726,31 @@ export default function piPermissionSystemExtension(pi: ExtensionAPI): void {
   // ── Upstream setup (identical to original index.ts) ───────────────────
   const runtime = createExtensionRuntime();
   const hostCapabilityBypassApprovals = new Set<string>();
+  const failedSrtPushes = new Set<string>();
+  let pushFallbackSession = 0;
+  const resolvePushHostFallback = async (
+    command: string,
+    ctx: ExtensionContext,
+  ): Promise<"allowed" | "denied" | "not-needed"> => {
+    const key = literalGitPushKey(command, ctx.cwd);
+    // Consume the failure before prompting, including denial or an unavailable UI.
+    if (!key || !failedSrtPushes.delete(key)) return "not-needed";
+    const approvalSession = pushFallbackSession;
+    const result = await promptSandboxGrant(ctx, {
+      change: {
+        type: "host-bypass",
+        values: ["git-push"],
+        description: `A previous SRT attempt of this exact Git push failed because its proxy closed the connection.\n\nRun "${command}" in "${ctx.cwd}" outside sandbox protections once? Host filesystem, credentials and network will be accessible. This may repeat remote side effects from the previous attempt. No automatic retry will occur.`,
+      },
+      command,
+      promptWaitTracker,
+      allowPersistentScopes: false,
+      allowSession: false,
+    });
+    return result.action === "allow" && result.duration === "once" && approvalSession === pushFallbackSession
+      ? "allowed"
+      : "denied";
+  };
   const resolveHostCapabilityDecision = async (
     command: string,
     ctx: ExtensionContext,
@@ -765,6 +792,7 @@ export default function piPermissionSystemExtension(pi: ExtensionAPI): void {
     rawCommandBytes?: number;
     dotenvPaths?: string[];
     redactOutput?: boolean;
+    pushFallback?: { key: string; session: number };
   }>();
 
   refreshExtensionConfig(runtime);
@@ -1100,6 +1128,8 @@ export default function piPermissionSystemExtension(pi: ExtensionAPI): void {
     promptWaitTracker.clear(runtime.runtimeContext ?? undefined);
     sessionBypassApprovals.clear();
     hostCapabilityBypassApprovals.clear();
+    failedSrtPushes.clear();
+    pushFallbackSession++;
     clearSessionNetworkApprovals();
     clearMaskedAuthSessionGrants();
     sandboxRuntime.clearGrants();
@@ -1116,6 +1146,8 @@ export default function piPermissionSystemExtension(pi: ExtensionAPI): void {
     promptWaitTracker.clear(runtime.runtimeContext ?? undefined);
     sessionBypassApprovals.clear();
     hostCapabilityBypassApprovals.clear();
+    failedSrtPushes.clear();
+    pushFallbackSession++;
     clearSessionNetworkApprovals();
     clearMaskedAuthSessionGrants();
     sandboxRuntime.dispose();
@@ -1918,6 +1950,15 @@ export default function piPermissionSystemExtension(pi: ExtensionAPI): void {
         // 2d. Secret env handling remains separate from masked auth-file handling.
         const secretEnv: Record<string, string> = {};
 
+        if (!redactProtectedReadOutput && autoAllowedDotenvPaths.length === 0
+          && protectedReadPaths.length === 0 && !dockerRequiresSrtForInvocation) {
+          const pushFallback = await resolvePushHostFallback(command, ctx);
+          if (pushFallback === "denied") {
+            return { block: true, reason: "Sandbox: one-time Git push host execution denied." };
+          }
+          if (pushFallback === "allowed") return undefined;
+        }
+
         const hostCapabilityDecision = await resolveHostCapabilityDecision(command, ctx);
         if (hostCapabilityDecision === "denied") {
           return { block: true, reason: "Sandbox: host toolchain approval denied." };
@@ -1943,8 +1984,10 @@ export default function piPermissionSystemExtension(pi: ExtensionAPI): void {
         }
         if (result && "command" in result) {
           (e.input as { command: string }).command = result.command;
+          const pushKey = literalGitPushKey(command, ctx.cwd);
           if (e.toolCallId && (
-            result.cleanup
+            pushKey !== undefined
+            || result.cleanup
             || result.helperPayloadBytes !== undefined
             || result.rawCommandBytes !== undefined
             || autoAllowedDotenvPaths.length > 0
@@ -1957,6 +2000,7 @@ export default function piPermissionSystemExtension(pi: ExtensionAPI): void {
               rawCommandBytes: result.rawCommandBytes,
               dotenvPaths: autoAllowedDotenvPaths,
               redactOutput: redactProtectedReadOutput,
+              pushFallback: pushKey === undefined ? undefined : { key: pushKey, session: pushFallbackSession },
             });
           }
         }
@@ -2468,6 +2512,14 @@ export default function piPermissionSystemExtension(pi: ExtensionAPI): void {
     const text = event.content.length === 1 && event.content[0]?.type === "text"
       ? event.content[0].text.trim()
       : "";
+    const srtEgressMessage = srtEgressFailureMessage(text);
+    if (event.toolName === "bash" && event.isError && srtEgressMessage) {
+      if (wrapped?.pushFallback?.session === pushFallbackSession) {
+        failedSrtPushes.add(wrapped.pushFallback.key);
+      }
+      return { content: [{ type: "text" as const, text: srtEgressMessage }], details: dotenvOutputResult?.details ?? event.details };
+    }
+
     const isPiSpawnE2Big = /^spawn(?:[ \t]+.+)?[ \t]+E2BIG$/.test(text);
     const isHelperSpawnE2Big = /^sandbox-run error: spawn(?:[ \t]+.+)?[ \t]+E2BIG$/.test(text);
     if (event.toolName !== "bash" || !event.isError || (!isPiSpawnE2Big && !isHelperSpawnE2Big)) {
