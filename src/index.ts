@@ -2517,7 +2517,7 @@ export default function piPermissionSystemExtension(pi: ExtensionAPI): void {
       if (wrapped?.pushFallback?.session === pushFallbackSession) {
         failedSrtPushes.add(wrapped.pushFallback.key);
       }
-      return { content: [{ type: "text" as const, text: srtEgressMessage }], details: dotenvOutputResult?.details ?? event.details };
+      return { content: [{ type: "text" as const, text: srtEgressFailureMessage(text, wrapped?.pushFallback?.session === pushFallbackSession)! }], details: dotenvOutputResult?.details ?? event.details };
     }
 
     const isPiSpawnE2Big = /^spawn(?:[ \t]+.+)?[ \t]+E2BIG$/.test(text);
