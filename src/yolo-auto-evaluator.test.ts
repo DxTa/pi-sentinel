@@ -93,8 +93,8 @@ describe("YoloAutoEvaluator", () => {
         candidate: true,
         eligible: true,
         policyThresholds: {
-          minBenignThreat: 0.9,
-          maxInjection: 0.1,
+          minBenignThreat: 0.75,
+          maxInjection: 0.25,
           maxToolTag: 0.5,
         },
         disposition: "attempted",

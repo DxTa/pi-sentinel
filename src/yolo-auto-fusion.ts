@@ -4,7 +4,7 @@
  * reason (low-confidence benign) and only when no risk signal is present.
  */
 import type { NeighbourSummary } from "./yolo-auto-neighbours";
-import { expectedToolAction, type YoloAutoHeads } from "./yolo-auto-policy";
+import { expectedToolAction, YOLO_AUTO_POLICY_THRESHOLDS, type YoloAutoHeads } from "./yolo-auto-policy";
 import type { ScorerResult } from "./yolo-auto-scorer";
 
 export const FUSION_VERSION = 2;
@@ -56,11 +56,11 @@ function argmax(probs: Record<string, number>): string {
 
 function hasRiskSignal(heads: YoloAutoHeads): boolean {
   const h = heads as Record<string, Record<string, number>>;
-  return (h.injection?.injection ?? 1) >= 0.1
+  return (h.injection?.injection ?? 1) >= YOLO_AUTO_POLICY_THRESHOLDS.maxInjection
     || BLOCKING_THREATS.has(argmax(h.threat ?? {}))
     || RESTRICTED_CLASSES.has(argmax(h.tool_class ?? {}))
-    || (h.tool_tags?.["source:sensitive"] ?? 1) >= 0.5
-    || (h.tool_tags?.["sink:external"] ?? 1) >= 0.5;
+    || (h.tool_tags?.["source:sensitive"] ?? 1) >= YOLO_AUTO_POLICY_THRESHOLDS.maxToolTag
+    || (h.tool_tags?.["sink:external"] ?? 1) >= YOLO_AUTO_POLICY_THRESHOLDS.maxToolTag;
 }
 
 /** True when history may turn this model prompt into an allow. */

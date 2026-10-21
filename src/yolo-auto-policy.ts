@@ -25,8 +25,8 @@ export interface YoloAutoPolicyDecision {
 
 // ponytail: fixed uncalibrated thresholds; tune from calibration log.
 export const YOLO_AUTO_POLICY_THRESHOLDS = {
-  minBenignThreat: 0.9,
-  maxInjection: 0.1,
+  minBenignThreat: 0.75,
+  maxInjection: 0.25,
   maxToolTag: 0.5,
 } as const;
 const RESTRICTED_TOOL_CLASSES = new Set(["secrets", "infra", "system"]);

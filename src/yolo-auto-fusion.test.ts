@@ -99,7 +99,7 @@ describe("fuseWithNeighbours: what history may override", () => {
 
   it.each([
     ["hard rule", { hardRuleHit: true }],
-    ["injection signal", { heads: heads({ injection: 0.2 }) }],
+    ["injection signal", { heads: heads({ injection: 0.3 }) }],
     ["restricted tool class", { heads: heads({ toolClass: "secrets" }) }],
     ["sensitive source", { heads: heads({ tags: { "source:sensitive": 0.6, "source:untrusted": 0.5, "sink:external": 0.1 } }) }],
     ["external sink", { heads: heads({ tags: { "source:sensitive": 0.1, "source:untrusted": 0.5, "sink:external": 0.6 } }) }],
