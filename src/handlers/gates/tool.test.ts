@@ -49,9 +49,31 @@ describe("describeToolGate bash session approval", () => {
 
     expect(descriptor).toMatchObject({
       freshApproval: true,
-      promptDetails: { allowSession: false, forcePromptInYolo: true },
+      promptDetails: { allowSession: false },
     });
     expect(descriptor.sessionApproval).toBeUndefined();
+  });
+});
+
+describe("describeToolGate git push by mode", () => {
+  const command = "git push origin main";
+
+  it("keeps the fresh push prompt in yolo-auto so the model evaluator cannot approve it", () => {
+    const descriptor = describeToolGate(
+      { ...context("bash", { command }), mode: "yolo-auto" },
+      { ...check("bash"), command },
+    );
+
+    expect(descriptor.promptDetails.forcePromptInYolo).toBe(true);
+  });
+
+  it("does not force the push prompt in plain yolo, which auto-approves it", () => {
+    const descriptor = describeToolGate(
+      { ...context("bash", { command }), mode: "yolo" },
+      { ...check("bash"), command },
+    );
+
+    expect(descriptor.promptDetails.forcePromptInYolo).toBeUndefined();
   });
 });
 

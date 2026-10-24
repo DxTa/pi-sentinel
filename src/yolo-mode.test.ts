@@ -77,8 +77,6 @@ describe("matchesYoloAskBashPattern", () => {
   });
 
   it.each([
-    "git push origin main",
-    "git -C repo push origin main",
     "ssh prod.example.com",
     "kubectl apply -f deploy.yaml",
     "kubectl set image deploy/a a=b",
@@ -92,10 +90,11 @@ describe("matchesYoloAskBashPattern", () => {
     "kubectl expose deploy a --port=80",
     "kubectl --as admin delete pod a",
     "/bin/rm ./notes.txt",
-    "/usr/bin/ssh host",
-    "rm\t./notes.txt",
     "sudo git push origin main",
     "git -c user.name=x push origin main",
+    "GIT_SSH_COMMAND=x git push origin main",
+    "/usr/bin/ssh host",
+    "rm\t./notes.txt",
   ])("requires prompt for %s in YOLO mode", (command: string) => {
     const context = { toolName: "bash", command };
 
@@ -105,7 +104,7 @@ describe("matchesYoloAskBashPattern", () => {
 
   it.each([
     "cd src && rm -rf build",
-    "git status; git push origin main",
+    "git status; ssh prod.example.com",
     "for f in a b; do rm $f; done",
     "if true; then kubectl delete pod a; fi",
     "bash -c 'rm x'",

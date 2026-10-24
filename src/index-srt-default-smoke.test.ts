@@ -730,7 +730,7 @@ describe("piPermissionSystemExtension SRT default smoke", () => {
     expect(dockerHelperInput.runtimeConfig.filesystem.allowRead).toContain(approvedEnvPath);
     expect(dockerHelperInput.runtimeConfig.filesystem.denyWrite).toContain(approvedEnvPath);
     await expect(toolCall?.(
-      { toolName: "bash", input: { command: "git push" } },
+      { toolName: "bash", input: { command: "git fetch" } },
       context as never,
     )).resolves.toMatchObject({ block: true, reason: expect.stringContaining("SRT read-only boundary") });
   });

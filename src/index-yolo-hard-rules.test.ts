@@ -106,8 +106,19 @@ async function setup(
   const context = createContext(projectDir, { hasUI: true, choices: Array(10).fill("Yes") });
   const run = (toolName: string, input: Record<string, unknown>) =>
     pi.handlers.get("tool_call")?.({ toolName, toolCallId: "t-" + Math.random(), input }, context as never) as Promise<{ block?: true; reason?: string } | undefined>;
-  return { projectDir, context, run };
+  return { pi, projectDir, context, run };
 }
+
+async function writeSshRemote(repoDir: string): Promise<void> {
+  await mkdir(path.join(repoDir, ".git"));
+  await writeFile(
+    path.join(repoDir, ".git", "config"),
+    '[remote "origin"]\n\turl = git@github.com:example/repo.git\n',
+    "utf8",
+  );
+}
+
+const SSH_REMOTE = "git@example.test:org/repo.git";
 
 describe("yolo mode hard rules", () => {
   it.each([
@@ -149,7 +160,6 @@ describe("yolo mode hard rules", () => {
   it.each([
     "rm notes.txt",
     "cd src && rm -rf build",
-    "git push origin main",
     "kubectl apply -f x.yaml",
     "kubectl set image deploy/a a=b",
     "kubectl delete pod a",
@@ -169,6 +179,98 @@ describe("yolo mode hard rules", () => {
       reason: expect.stringContaining("implicit credential access requires the SRT read-only boundary"),
     });
     expect(context.ui.select).not.toHaveBeenCalled();
+  });
+
+  it("prompts once for a git push to an SSH remote instead of blocking it when SRT is disabled", async () => {
+    const { run, context, projectDir } = await setup("manual");
+    await writeSshRemote(projectDir);
+
+    const result = await run("bash", { command: "git push origin main" });
+
+    expect(result?.block).toBeUndefined();
+    expect(context.ui.select).toHaveBeenCalledOnce();
+    expect(context.ui.select.mock.calls[0]?.[1]).toEqual(["Yes", "No", "No, provide reason"]);
+  });
+
+  it("blocks a git push to an SSH remote when the one-time prompt is denied", async () => {
+    const { run, context, projectDir } = await setup("manual");
+    await writeSshRemote(projectDir);
+    context.ui.select.mockResolvedValueOnce("No");
+
+    expect(await run("bash", { command: "git push origin main" })).toMatchObject({ block: true });
+    expect(context.ui.select).toHaveBeenCalledOnce();
+  });
+
+  it("auto-approves a git push to an SSH remote in yolo mode when SRT is disabled", async () => {
+    const { run, context, projectDir } = await setup("yolo");
+    await writeSshRemote(projectDir);
+
+    expect((await run("bash", { command: "git push origin main" }))?.block).toBeUndefined();
+    expect(context.ui.select).not.toHaveBeenCalled();
+  });
+
+  it("still blocks an SSH segment chained before a git push in a tool call", async () => {
+    const { run, projectDir } = await setup("manual");
+    await writeSshRemote(projectDir);
+
+    expect(await run("bash", { command: "ssh host ls; git push origin main" })).toMatchObject({
+      block: true,
+      reason: expect.stringContaining("implicit credential access"),
+    });
+  });
+
+  it("still blocks an SSH segment chained before a git push in user bash", async () => {
+    const { pi, context, projectDir } = await setup("manual");
+    await writeSshRemote(projectDir);
+
+    const result = await pi.handlers.get("user_bash")?.(
+      { command: "ssh host ls; git push origin main", cwd: projectDir },
+      context as never,
+    );
+
+    expect(result).not.toHaveProperty("operations");
+    expect(context.ui.select).not.toHaveBeenCalled();
+  });
+
+  it("still blocks a git fetch into another repo chained after a git push", async () => {
+    const { run } = await setup("manual");
+    const otherRepo = await makeTempDir("pi-yolo-other-");
+    await writeSshRemote(otherRepo);
+
+    expect(await run("bash", { command: `git push git@example.test:org/repo.git main; git -C ${otherRepo} fetch origin` })).toMatchObject({
+      block: true,
+    });
+  });
+
+  it.each([
+    "git remote update && git push URL main",
+    "git -C OTHER fe't'ch origin && git push URL main",
+    "git push URL main $(SSHWORD host ls)",
+  ])("still blocks a chain that hides a remote or credential segment: %s", async (template) => {
+    const { run } = await setup("manual");
+    const otherRepo = await makeTempDir("pi-yolo-other-");
+    await writeSshRemote(otherRepo);
+    const command = template.replace("URL", SSH_REMOTE).replace("OTHER", otherRepo).replace("SSHWORD", "ssh");
+
+    expect(await run("bash", { command })).toMatchObject({ block: true });
+  });
+
+  it("keeps local git commands in a push chain on the one-time prompt", async () => {
+    const { run, context } = await setup("manual");
+
+    expect((await run("bash", { command: "git add -A && git commit -m x && git push " + SSH_REMOTE + " main" }))?.block).toBeUndefined();
+    expect(context.ui.select).toHaveBeenCalledOnce();
+  });
+
+  it.each([
+    "git -c core.sshCommand=x push @REMOTE@ main",
+    "git commit -S -m x; git push @REMOTE@ main",
+    "git -C . tag -s v1; git push @REMOTE@ main",
+  ])("still blocks a push chain with a non-plain git form or signing flag: %s", async (template) => {
+    const { run, projectDir } = await setup("manual");
+    await writeSshRemote(projectDir);
+
+    expect(await run("bash", { command: template.replace("@REMOTE@", SSH_REMOTE) })).toMatchObject({ block: true });
   });
 
   it("auto-approves network asks and still denies forbidden writes before any network prompt", async () => {

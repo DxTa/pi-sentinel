@@ -61,6 +61,7 @@ interface PermissionGateHandlerOptions {
 function requireFreshPushApproval(
   result: GateResult,
   isFreshPush: boolean,
+  mode: string,
 ): GateResult {
   if (!isFreshPush || !isGateDescriptor(result)) return result;
 
@@ -71,7 +72,7 @@ function requireFreshPushApproval(
     promptDetails: {
       ...result.promptDetails,
       allowSession: false,
-      forcePromptInYolo: true,
+      ...(mode === "yolo-auto" ? { forcePromptInYolo: true } : {}),
     },
   };
   return descriptor;
@@ -356,6 +357,7 @@ export class PermissionGateHandler {
         getSessionRuleset,
       ),
       freshPushApproval,
+      session.config.mode,
     );
     if (bashExtDesc) {
       if (isGateBypass(bashExtDesc)) {
@@ -408,6 +410,7 @@ export class PermissionGateHandler {
         bashPathPolicyTokens,
       ),
       freshPushApproval,
+      session.config.mode,
     );
 
     if (bashPathDesc) {

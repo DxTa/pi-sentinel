@@ -15,7 +15,7 @@ import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-a
 import type { ChildProcess } from "node:child_process";
 import { toRecord } from "./common";
 import { srtEgressFailureMessage } from "./sandbox/srt-egress-error";
-import { literalGitPushKey } from "./sandbox/git-push-host-fallback";
+import { implicitAuthIsGitPushOnly, literalGitPushKey } from "./sandbox/git-push-host-fallback";
 
 // ── Extension imports ────────────────────────────────────────────────────
 import { registerPermissionSystemCommand } from "./config-modal";
@@ -708,7 +708,7 @@ async function resolveBashSandboxAccess(
           : "Sandbox: protected-resource access requires SRT; command blocked.",
       };
     }
-    if (implicitAuth && !isReadOnlyBashDiagnostic(command)) {
+    if (implicitAuth && !isReadOnlyBashDiagnostic(command) && !(await implicitAuthIsGitPushOnly(command, repoRoot))) {
       return {
         protectedReadPaths,
         sandboxed,

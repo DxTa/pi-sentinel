@@ -145,7 +145,7 @@ export function describeToolGate(
     : undefined;
   const yoloAutoInner = yoloAutoOperation === "exec" ? bashInnerCommands(yoloAutoCommand ?? "") : null;
   const forcePromptInYolo =
-    freshApproval || hasProtectedEnvSelector(tcc.toolName, tcc.input);
+    (freshApproval && tcc.mode === "yolo-auto") || hasProtectedEnvSelector(tcc.toolName, tcc.input);
   const yoloAutoHardRuleTarget = yoloAutoWorkspaceLocal && tcc.cwd
     ? toolPath
       ? normalizePathForComparison(toolPath, tcc.cwd)

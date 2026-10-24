@@ -43,7 +43,7 @@ function isKubectlWrite(words: string[]): boolean {
   return !KUBECTL_READ_VERBS.has(verb) && words.some((word) => KUBECTL_WRITE_VERBS.has(word));
 }
 
-/** rm, ssh, git push and kubectl writes, by executable name, so `/bin/rm` and tab spacing count. */
+/** git push by executable name, so `/usr/bin/git` and tab spacing count. */
 function isGitPushWords(words: readonly string[]): boolean {
   const normalized = words.map((word) => bashLiteralWord(word) ?? word);
   const subcommand = subcommandIndex(normalized, GIT_VALUE_OPTIONS);
@@ -61,10 +61,27 @@ function isGitPushWords(words: readonly string[]): boolean {
   return true;
 }
 
+export function isGitExecutable(word: string): boolean {
+  return word.slice(word.lastIndexOf("/") + 1) === "git";
+}
+
+/** Only `git push` and `git -C <path> push` are plain; other forms that name push need a prompt. */
+export function isPlainGitPushWords(words: readonly string[]): boolean {
+  const normalized = words.map((word) => bashLiteralWord(word) ?? word);
+  const verbAt = normalized[1] === "-C" ? 3 : 1;
+  return isGitExecutable(normalized[0] ?? "") && normalized[verbAt] === "push";
+}
+
+/** A git push that is not plain, including one behind an env prefix or wrapper that the inner parse drops. */
+function isNonPlainGitPush(words: readonly string[]): boolean {
+  const gitAt = words.findIndex((word) => isGitExecutable(bashLiteralWord(word) ?? word));
+  return gitAt !== -1 && isGitPushWords(words.slice(gitAt)) && !isPlainGitPushWords(words);
+}
+
 function isBuiltInAskCommand(words: string[]): boolean {
   const name = words[0]?.slice(words[0].lastIndexOf("/") + 1);
   if (name === "rm" || name === "ssh") return true;
-  if (isGitPushWords(words)) return true;
+  if (isNonPlainGitPush(words)) return true;
   return name === "kubectl" && isKubectlWrite(words);
 }
 
@@ -76,7 +93,7 @@ export function matchesGitPushCommand(command: string): boolean {
 }
 
 function matchesBuiltInAsk(command: string): boolean {
-  return (bashInnerCommands(command)?.commands ?? [command]).some((part) => {
+  return [...(bashInnerCommands(command)?.commands ?? [command]), ...(splitBashSegments(command) ?? [])].some((part) => {
     const words = bashWords(part);
     return words !== null && isBuiltInAskCommand(words);
   });
