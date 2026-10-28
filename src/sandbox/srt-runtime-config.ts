@@ -75,7 +75,11 @@ export function buildSrtRuntimeConfig(spec: SrtCommandSpec): SrtRuntimeConfig {
       allowRead,
       allowWrite,
       denyRead: ["/", ...deniedMaskedReads],
-      denyWrite: deniedWritePaths.filter((path) => !approvedWrite.includes(path)),
+      denyWrite: [
+        ...deniedWritePaths.filter((path) => !approvedWrite.includes(path)),
+        // An approved target may not exist yet; deny its children so it cannot grow into a writable tree.
+        ...approvedWrite.map((path) => `${path}/*`),
+      ],
     },
   };
 }

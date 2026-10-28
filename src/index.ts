@@ -53,7 +53,8 @@ import { isUnixSocketActive, spawnDetachedYoloAutoWorker, waitForWorkerStartup }
 import { YOLO_AUTO_BUILD_ID } from "./yolo-auto-build";
 import { PromptWaitTracker } from "./prompt-state";
 import { getHardBlockedBashMutationPaths } from "./handlers/gates/bash-external-directory.js";
-import { extractExternalPathsFromBashCommand } from "./handlers/gates/bash-path-extractor.js";
+import { extractExternalPathsFromBashCommand, extractExternalWritePathsFromBashCommand } from "./handlers/gates/bash-path-extractor.js";
+import { canonicalPath } from "./sandbox/sandbox-visible-paths.js";
 import { isReadOnlyBashChain, isReadOnlyBashDiagnostic } from "./bash-command-safety";
 import {
   getPathBearingToolPath,
@@ -115,7 +116,7 @@ import {
   parseDotenvValues,
   readDotenvSourceWithinLimit,
 } from "./env-mask";
-import { isProtectedCredentialReadPath, protectedBashReadPaths } from "./protected-read";
+import { isProtectedCredentialReadPath, prepareApprovedTarget, protectedBashReadPaths, protectedWriteRefusal } from "./protected-read";
 
 import { defaultSrtHelperPath, defaultSrtStatus } from "./sandbox/srt-status.js";
 import { SandboxPolicyManager, type Grant, type GrantDuration } from "./sandbox/policy-manager.js";
@@ -1632,6 +1633,7 @@ export default function piPermissionSystemExtension(pi: ExtensionAPI): void {
     let sandboxedBash = false;
     let forceSrtForProtectedResource = false;
     let dockerRequiresSrtForInvocation = false;
+    let hasApprovedProtectedWrite = false;
     if (typeof bashCommand === "string") {
       try {
         const access = await resolveBashSandboxAccess(
@@ -1860,6 +1862,20 @@ export default function piPermissionSystemExtension(pi: ExtensionAPI): void {
               : "invalid external path";
             return { block: true, reason: `Sandbox: ${detail}; command blocked.` };
           }
+          // Only exact single files are approved; a refused target blocks the command instead of being dropped.
+          const maskedPatterns = [...DEFAULT_MASKED_PATTERNS, ...(activeProfile.maskedPaths ?? [])];
+          const protectedWriteTargets: string[] = [];
+          for (const target of (await extractExternalWritePathsFromBashCommand(command, ctx.cwd)).map((path) => canonicalPath(path))) {
+            if (!isProtectedCredentialReadPath(target, ctx.cwd)) continue;
+            const refusal = protectedWriteRefusal(target, maskedPatterns);
+            if (refusal) return { block: true, reason: `Sandbox: protected write target ${target} ${refusal}; command blocked.` };
+            protectedWriteTargets.push(target);
+          }
+          // Any approved protected target forces SRT, so host-capability and push-fallback exits cannot run it unwrapped.
+          if (protectedWriteTargets.length > 0) {
+            forceSrtForProtectedResource = true;
+            hasApprovedProtectedWrite = true;
+          }
           const approvalGroups = [
             {
               mode: "ro" as const,
@@ -1871,13 +1887,24 @@ export default function piPermissionSystemExtension(pi: ExtensionAPI): void {
                       (write.isDirectory && isPathWithinDirectory(entry.path, write.path)),
                   ) && !activeGrantPaths.has(entry.path),
               ),
+              protectedWrite: false,
             },
-            { mode: "rw" as const, paths: externalWritePaths },
+            {
+              mode: "rw" as const,
+              protectedWrite: false,
+              paths: externalWritePaths.filter((entry) => !isProtectedCredentialReadPath(entry.path, ctx.cwd)),
+            },
+            {
+              mode: "rw" as const,
+              protectedWrite: true,
+              paths: protectedWriteTargets.map((path) => ({ path, isDirectory: false, displayPath: path })),
+            },
           ];
           let promptedForExternalPaths = false;
-          for (const { mode, paths } of approvalGroups) {
+          for (const { mode, paths, protectedWrite } of approvalGroups) {
             if (paths.length === 0) continue;
             promptedForExternalPaths = true;
+            // An approved protected target is writable for this one command; no session or persistent grant.
             const extPromptResult = await promptSandboxGrant(ctx, {
               change: {
                 type: "path",
@@ -1887,6 +1914,8 @@ export default function piPermissionSystemExtension(pi: ExtensionAPI): void {
               },
               command,
               promptWaitTracker,
+              allowPersistentScopes: !protectedWrite,
+              allowSession: !protectedWrite,
             });
 
             if (extPromptResult.action === "deny") {
@@ -1898,6 +1927,14 @@ export default function piPermissionSystemExtension(pi: ExtensionAPI): void {
               };
             }
 
+            if (protectedWrite) {
+              for (const { path } of paths) {
+                const refusal = prepareApprovedTarget(path);
+                if (refusal) return { block: true, reason: `Sandbox: approved write target ${path} ${refusal}; command blocked.` };
+                unmaskedPaths.push({ path, writable: true });
+              }
+              continue;
+            }
             if (extPromptResult.duration === "once") {
               for (const { path } of paths) {
                 invocationPathGrants.push({ path, mode });
@@ -1951,7 +1988,7 @@ export default function piPermissionSystemExtension(pi: ExtensionAPI): void {
         const secretEnv: Record<string, string> = {};
 
         if (!redactProtectedReadOutput && autoAllowedDotenvPaths.length === 0
-          && protectedReadPaths.length === 0 && !dockerRequiresSrtForInvocation) {
+          && protectedReadPaths.length === 0 && !dockerRequiresSrtForInvocation && !hasApprovedProtectedWrite) {
           const pushFallback = await resolvePushHostFallback(command, ctx);
           if (pushFallback === "denied") {
             return { block: true, reason: "Sandbox: one-time Git push host execution denied." };

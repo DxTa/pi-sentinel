@@ -28,7 +28,8 @@ let fakeSrtBin = "";
 const canSimulateReadOnlyDirectory = process.platform !== "win32" && process.getuid?.() !== 0;
 
 async function makeTempDir(prefix: string): Promise<string> {
-  const dir = await mkdtemp(path.join(tmpdir(), prefix));
+  // macOS tmpdir() is a symlink into /private; canonical paths keep cwd and targets comparable to the gate's.
+  const dir = await realpath(await mkdtemp(path.join(tmpdir(), prefix)));
   tempPaths.push(dir);
   return dir;
 }

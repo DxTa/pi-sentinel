@@ -1,14 +1,16 @@
 import { homedir } from "node:os";
 import { join } from "node:path";
-import { mkdirSync, mkdtempSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import { linkSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, statSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 
 import { afterAll, describe, expect, it } from "vitest";
 
 import { extractTokensForPathRules } from "./handlers/gates/bash-path-extractor";
-import { isProtectedCredentialReadPath, protectedBashReadPaths } from "./protected-read";
+import { isProtectedCredentialReadPath, prepareApprovedTarget, protectedBashReadPaths, protectedWriteRefusal } from "./protected-read";
+import { DEFAULT_MASKED_PATTERNS } from "./sandbox/masked-file-gate";
 
-const cwd = mkdtempSync(join(tmpdir(), "pi-protected-read-workspace-"));
+// macOS tmpdir() is a symlink into /private; the code under test returns canonical paths.
+const cwd = realpathSync.native(mkdtempSync(join(tmpdir(), "pi-protected-read-workspace-")));
 const sshConfig = join(homedir(), ".ssh", "config");
 const appConfig = join(homedir(), ".config", "app", "settings.json");
 const awsCredentials = join(homedir(), ".aws", "credentials");
@@ -109,5 +111,63 @@ describe("protectedBashReadPaths", () => {
       .resolves.toEqual([missingPath]);
     await expect(protectedBashReadPaths(`python3 -c "open('${missingPath}', 'w').write('x')"`, cwd))
       .resolves.toEqual([missingPath]);
+  });
+});
+
+describe("protectedWriteRefusal", () => {
+  const masked = [...DEFAULT_MASKED_PATTERNS, join(cwd, "secretdir", "**"), "**/private.cfg"];
+
+  it("accepts a plain single-file target", () => {
+    expect(protectedWriteRefusal(join(cwd, "plain.txt"), masked)).toBeUndefined();
+  });
+
+  it.each([
+    ["whitespace-padded", join(cwd, "plain.txt") + " ", "whitespace"],
+    ["glob", join(cwd, "*.txt"), "glob"],
+    ["directory", cwd, "regular file"],
+    ["default-masked", credentialsJson, "masked"],
+    ["custom-masked", join(cwd, "private.cfg"), "masked"],
+    ["masked directory root", join(cwd, "secretdir"), "masked"],
+    ["mixed-case masked directory", join(cwd, "SecretDir", "x.json"), "masked"],
+  ])("refuses a %s target", (_label, target, reason) => {
+    expect(protectedWriteRefusal(target, masked)).toContain(reason);
+  });
+});
+
+describe("prepareApprovedTarget", () => {
+  it("creates a missing target as an owner-only empty file", () => {
+    const target = join(cwd, "created.txt");
+    expect(prepareApprovedTarget(target)).toBeUndefined();
+    expect(readFileSync(target, "utf8")).toBe("");
+    expect(statSync(target).mode & 0o077).toBe(0);
+  });
+
+  it("keeps the content of an existing regular file", () => {
+    const target = join(cwd, "existing.txt");
+    writeFileSync(target, "keep", "utf8");
+    expect(prepareApprovedTarget(target)).toBeUndefined();
+    expect(readFileSync(target, "utf8")).toBe("keep");
+  });
+
+  it("refuses a symlink target without following it", () => {
+    const link = join(cwd, "link.txt");
+    symlinkSync(join(cwd, "notes.txt"), link);
+    expect(prepareApprovedTarget(link)).toContain("regular file");
+  });
+
+  it("refuses a hard-linked target", () => {
+    const target = join(cwd, "hard.txt");
+    linkSync(join(cwd, "notes.txt"), target);
+    expect(prepareApprovedTarget(target)).toContain("hard-linked");
+  });
+
+  it("refuses a target under a symlinked directory", () => {
+    const dirLink = join(cwd, "dirlink");
+    symlinkSync(cwd, dirLink);
+    expect(prepareApprovedTarget(join(dirLink, "x.txt"))).toContain("symlinked");
+  });
+
+  it("reports a missing parent directory", () => {
+    expect(prepareApprovedTarget(join(cwd, "nodir", "x.txt"))).toContain("could not be created");
   });
 });
