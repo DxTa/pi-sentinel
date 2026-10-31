@@ -5,6 +5,9 @@
 Standalone Git distribution prepared for `DxTa/pi-sentinel`.
 
 - Renamed the `yolo-auto` mode to `auto`, with no compatibility alias: set `"mode": "auto"`. Environment variables are `PI_SENTINEL_AUTO_MODEL_DIR` and `PI_SENTINEL_AUTO_SOCKET`; the model cache is `runtime/pi-sentinel/auto-mode/models`; calibration logs are `auto-mode-calibration.jsonl`; debug events use the `auto_mode.` prefix.
+- `/sentinel` shows each row's effective value and source scope (`manual (from project, overrides global: auto)`, `on (default)`), with a compact one-line mode chain instead of the paged chain.
+- Fixed `/sentinel` writing effective values to the global file: toggling a log setting copied the effective mode and merged `yoloAskBashPatterns` (including project values) into `~/.pi/agent/permissions.json`. Only the changed key is written now.
+- Fixed the `/sentinel` sandbox row ignoring a project `sandbox.enabled`, and log toggles applying in-session despite a project override.
 - Rewrote the README around a quick start, mode comparison, and the security-relevant defaults.
 
 - Preserved permission, network, sandbox, masked-path, grant, service, and backend behavior.

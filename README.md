@@ -213,13 +213,13 @@ Runtime settings (mode, logs, network, sandbox) merge from layers 1–3. Permiss
 
 `PI_SENTINEL_MODE` overrides the mode for that process only. It does not change config files. Invalid values are ignored and reported as config issues. Child processes inherit it unless their environment removes it.
 
-In `/sentinel`, **Mode saves to** picks where the next mode change is stored:
+In `/sentinel`, every row shows its effective value and the scope it comes from, for example `manual (from project, overrides global: auto)` or `on (default)`. **Save mode to** picks where the next mode change is stored:
 
 - `session`: in memory until the session ends. Overrides `PI_SENTINEL_MODE` and file config.
 - `project`: `<project>/.pi/permissions.json`. A committed file changes the mode for everyone who uses the repository.
 - `global` (default): `~/.pi/agent/permissions.json`. A project mode still overrides it.
 
-Choosing `project` or `global` replaces an active session mode. The header shows the full precedence chain (session, `PI_SENTINEL_MODE`, project, legacy project files, global, legacy global, bundled) and which layer is in effect. Logs and sandbox settings always write to the global file.
+Choosing `project` or `global` replaces an active session mode. The header shows the mode chain on one line (session, `PI_SENTINEL_MODE`, project, legacy project files, global, legacy global, default) with `▶` on the layer in effect. Logs and sandbox settings always write to the global file; when a project file overrides one of them, its row says so and saving warns that the project value still applies.
 
 ### Logs
 

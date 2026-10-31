@@ -331,11 +331,14 @@ export function getModeLayers(
   };
 }
 
-/** Persist logging settings, and the mode when `persistMode`, to the global file. */
+type GlobalSettingChanges = Partial<
+  Pick<PermissionSystemExtensionConfig, "debugLog" | "permissionReviewLog" | "mode">
+>;
+
+/** Persist the changed settings to the global file, leaving every other key as it is. */
 function saveGlobalSettings(
   runtime: ExtensionRuntime,
-  normalized: PermissionSystemExtensionConfig,
-  persistMode: boolean,
+  changes: GlobalSettingChanges,
   ctx: ExtensionCommandContext,
 ): boolean {
   const globalPath = getGlobalConfigPath(runtime.agentDir);
@@ -352,13 +355,10 @@ function saveGlobalSettings(
     return false;
   }
 
-  const merged: Record<string, unknown> = {
-    ...existing,
-    debugLog: normalized.debugLog,
-    permissionReviewLog: normalized.permissionReviewLog,
-    ...(persistMode ? { mode: normalized.mode } : {}),
-    yoloAskBashPatterns: normalized.yoloAskBashPatterns,
-  };
+  // Write only what the user changed: copying effective values here would
+  // persist project-scoped settings (mode, ask patterns) into the global file.
+  const merged: Record<string, unknown> = { ...existing, ...changes };
+  const persistMode = changes.mode !== undefined;
 
   stripLegacyAutoModeMaxLevel(merged);
   if (persistMode) {
@@ -414,18 +414,13 @@ export function saveExtensionConfig(
     return true;
   }
 
-  const modeOverride = normalizeUnifiedConfig({
-    mode: process.env.PI_SENTINEL_MODE,
-  }).config.mode;
+  const changes: GlobalSettingChanges = modeWasExplicitlySelected ? { mode: normalized.mode } : {};
+  for (const key of ["debugLog", "permissionReviewLog"] as const) {
+    if (normalized[key] !== runtime.config?.[key]) changes[key] = normalized[key];
+  }
   const saved = modeWasExplicitlySelected && modeScope === "project"
     ? saveProjectMode(runtime, normalized.mode, ctx)
-    : saveGlobalSettings(
-      runtime,
-      normalized,
-      modeWasExplicitlySelected
-        || (modeOverride === undefined && runtime.sessionMode === undefined),
-      ctx,
-    );
+    : saveGlobalSettings(runtime, changes, ctx);
   if (!saved) return false;
 
   if (modeWasExplicitlySelected) {
@@ -434,11 +429,17 @@ export function saveExtensionConfig(
   const cwd = runtime.runtimeContext?.cwd ?? ctx.cwd ?? "";
   const mergeResult = loadAndMergeConfigs(runtime.agentDir, cwd, EXTENSION_ROOT);
   runtime.modeResolution = createModeResolution(cwd, mergeResult);
+  // Use merged values so a project override stays in effect, matching the next session.
+  const mergedConfig = normalizePermissionSystemConfig(mergeResult.merged);
   applySavedConfig(
     runtime,
     ctx,
-    normalized,
-    normalizePermissionSystemConfig(mergeResult.merged).mode,
+    {
+      ...normalized,
+      debugLog: mergedConfig.debugLog,
+      permissionReviewLog: mergedConfig.permissionReviewLog,
+    },
+    mergedConfig.mode,
   );
   return true;
 }

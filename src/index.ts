@@ -137,6 +137,7 @@ import {
 } from "./sandbox/external-path-gate.js";
 import {
   getScopedConfigPath,
+  getSettingSources,
   loadMergedScopedConfig,
   readConfigFile,
   resolveConfinedConfigPath,
@@ -984,11 +985,27 @@ export default function piPermissionSystemExtension(pi: ExtensionAPI): void {
       runtime.permissionManager.getComposedConfigRules(
         runtime.lastKnownActiveAgentName ?? undefined,
       ),
-    getSandboxEnabled: () => normalizeSandboxConfig(loadConfig().sandbox).enabled,
+    // Read with the session cwd so a project `sandbox.enabled` shows the value Bash actually uses.
+    getSandboxEnabled: () => normalizeSandboxConfig(loadConfig(runtime.runtimeContext?.cwd).sandbox).enabled,
+    getSettingSources: (cwd) => {
+      try {
+        return getSettingSources(getAgentDir(), runtime.runtimeContext?.cwd ?? cwd ?? null);
+      } catch {
+        return undefined;
+      }
+    },
     setSandboxEnabled: (enabled, ctx) => {
       if (!saveSandboxEnabled(runtime, enabled, ctx)) return;
       sandboxRuntime.reloadConfig();
-      ctx.ui.notify(`Bash sandbox ${enabled ? "on" : "off"} (global).`, "info");
+      const effective = normalizeSandboxConfig(loadConfig(runtime.runtimeContext?.cwd).sandbox).enabled;
+      if (effective === enabled) {
+        ctx.ui.notify(`Bash sandbox ${enabled ? "on" : "off"} (saved to global).`, "info");
+      } else {
+        ctx.ui.notify(
+          `Saved Bash sandbox ${enabled ? "on" : "off"} to global, but the project config keeps it ${effective ? "on" : "off"}.`,
+          "warning",
+        );
+      }
     },
     getAutoModeStatus: () => {
       const status = autoModeClient.getStatus();

@@ -15,7 +15,7 @@ vi.mock("@earendil-works/pi-coding-agent", () => ({
 
 
 describe("mode chain formatting", () => {
-  it("shows the selected scope, unset values, effective mode, and write targets", async () => {
+  it("lists every layer on one line, marks the winner, and names both save targets", async () => {
     const { formatModeChain } = await import("./config-modal");
     const formatted = formatModeChain(
       {
@@ -29,12 +29,12 @@ describe("mode chain formatting", () => {
             path: "/workspace/.pi/agent/permissions.json",
             error: "unreadable",
           },
-          { id: "global", name: "global", mode: "manual", path: "/home/user/.pi/agent/permissions.json" },
+          { id: "global", name: "global", mode: "manual", path: "/home/tester/.pi/agent/permissions.json" },
           {
             id: "global-policy-legacy",
             name: "global (legacy)",
             legacyMode: { yoloMode: false },
-            path: "/home/user/.pi/agent/pi-permissions.jsonc",
+            path: "/home/tester/.pi/agent/pi-permissions.jsonc",
           },
           { id: "bundled", name: "bundled", mode: "manual", path: "/extension/config.json" },
         ],
@@ -45,21 +45,14 @@ describe("mode chain formatting", () => {
     );
 
     expect(formatted.split("\n")).toEqual([
-      "Mode chain (top wins):",
-      "  session auto (memory)",
-      "  env — not set (PI_SENTINEL_MODE)",
-      "  project — not set (/workspace/.pi/permissions.json) ← selected",
-      "  project (legacy) — unreadable (/workspace/.pi/agent/permissions.json)",
-      "  global manual (/home/user/.pi/agent/permissions.json)",
-      "  global (legacy) legacy flags: yoloMode=false (/home/user/.pi/agent/pi-permissions.jsonc)",
-      "  bundled manual (/extension/config.json)",
-      "Effective this session: auto (from session)",
-      "Saving Mode writes: /workspace/.pi/permissions.json",
-      "Logs & sandbox always write: /home/user/.pi/agent/permissions.json",
+      "Mode chain (top wins): ▶ session auto · env – · project – · project (legacy) unreadable · " +
+        "global manual · global (legacy) legacy flags: yoloMode=false · default manual",
+      "Mode saves to project: /workspace/.pi/permissions.json",
+      "Other settings save to global: /home/tester/.pi/agent/permissions.json",
     ]);
   });
 
-  it("marks the project fallback row and save path", async () => {
+  it("uses the project's legacy save fallback as the mode save target", async () => {
     const { formatModeChain, formatModeSaveNotice } = await import("./config-modal");
     const legacyPath = "/workspace/.pi/agent/permissions.json";
     const modeLayers = {
@@ -68,50 +61,23 @@ describe("mode chain formatting", () => {
         { id: "environment", name: "env", mode: "manual", path: "PI_SENTINEL_MODE" },
         { id: "project", name: "project", path: "/workspace/.pi/permissions.json", savePath: legacyPath },
         { id: "project-config-legacy", name: "project (legacy)", mode: "yolo", path: legacyPath },
-        { id: "global", name: "global", mode: "manual", path: "/home/user/.pi/agent/permissions.json" },
+        { id: "global", name: "global", mode: "manual", path: "/home/tester/.pi/agent/permissions.json" },
       ],
       effective: "manual",
       source: "environment",
     } as const;
 
     const formatted = formatModeChain(modeLayers, "project");
-    expect(formatted).toContain("project (legacy) yolo (" + legacyPath + ") ← selected");
-    expect(formatted).toContain("Saving Mode writes: " + legacyPath);
+    expect(formatted).toContain("▶ env manual · project – · project (legacy) yolo");
+    expect(formatted).toContain("Mode saves to project: " + legacyPath);
     expect(formatModeSaveNotice("manual", "project", modeLayers)).toContain(
       "project (" + legacyPath + ")",
     );
   });
 
-  it("keeps effective provenance and the selected marker at narrow widths", async () => {
+  it("wraps within narrow widths and shortens project paths", async () => {
     const { formatModeChain } = await import("./config-modal");
-    const formatted = formatModeChain(
-      {
-        layers: [
-          { id: "session", name: "session", path: "memory" },
-          { id: "environment", name: "env", path: "PI_SENTINEL_MODE" },
-          {
-            id: "global",
-            name: "global",
-            mode: "manual",
-            path: "/Users/bob/.pi/agent/permissions.json",
-          },
-        ],
-        effective: "auto",
-        source: "environment",
-      },
-      "global",
-      50,
-      "/workspace",
-    );
-    const lines = formatted.split("\n");
-
-    expect(lines).toContain("Effective this session: auto (from env)");
-    expect(lines.some((line) => line.includes("← selected"))).toBe(true);
-    expect(lines.every((line) => visibleWidth(line) <= 50)).toBe(true);
-  });
-
-  it("keeps a long legacy source and all flag details instead of truncating metadata", async () => {
-    const { formatModeChain } = await import("./config-modal");
+    const globalPath = "/Users/bob/.pi/agent/permissions.json";
     const formatted = formatModeChain({
       layers: [
         {
@@ -120,33 +86,50 @@ describe("mode chain formatting", () => {
           legacyMode: { yoloAutoMode: true },
           path: "/workspace/.pi/agent/pi-sentinel.json",
         },
-        { id: "global", name: "global", path: "/home/user/.pi/agent/permissions.json" },
+        { id: "project", name: "project", path: "/workspace/.pi/permissions.json" },
+        { id: "global", name: "global", mode: "manual", path: globalPath },
       ],
       effective: "auto",
       source: "project-extension-legacy",
-    }, "global", 50, "/workspace");
+    }, "project", 50, "/workspace");
 
-    expect(formatted).toContain("Effective: auto ← project extension (legacy)");
     expect(formatted).toContain("yoloAutoMode=true");
-    expect(formatted).toContain("./.pi/agent/pi-sentinel.json");
-    expect(formatted).toContain("← selected");
+    expect(formatted).toContain("Mode saves to project: ./.pi/permissions.json");
+    expect(formatted.replace(/\s/g, "")).toContain(globalPath);
     expect(formatted.split("\n").every((line) => visibleWidth(line) <= 50)).toBe(true);
   });
+});
 
-  it("keeps both save destinations complete at 50 columns", async () => {
-    const { formatModeChain } = await import("./config-modal");
-    const globalPath = "/Users/bob/.pi/agent/permissions.json";
-    const formatted = formatModeChain({
-      layers: [{ id: "global", name: "global", mode: "manual", path: globalPath }],
-      effective: "manual",
-      source: "global",
-    }, "global", 50);
-    const destinations = formatted.slice(formatted.indexOf("Saving Mode writes:"));
+describe("mode source", () => {
+  const modeLayers = {
+    layers: [
+      { id: "session", name: "session", path: "memory" },
+      { id: "environment", name: "env", path: "PI_SENTINEL_MODE" },
+      { id: "project", name: "project", mode: "manual", path: "/workspace/.pi/permissions.json" },
+      { id: "global", name: "global", mode: "auto", path: "/home/tester/.pi/agent/permissions.json" },
+      { id: "bundled", name: "bundled", mode: "auto", path: "/extension/config.json" },
+    ],
+    effective: "manual",
+    source: "project",
+  } as const;
 
-    const [modeDestination, logsDestination] = destinations.split("Logs & sandbox always write:");
-    expect(modeDestination.replace(/\s/g, "")).toContain(globalPath);
-    expect(logsDestination.replace(/\s/g, "")).toBe(globalPath);
-    expect(formatted.split("\n").every((line) => visibleWidth(line) <= 50)).toBe(true);
+  it("names the source when it is the selected scope", async () => {
+    const { describeModeSource } = await import("./config-modal");
+    expect(describeModeSource(modeLayers, "project")).toBe("project");
+  });
+
+  it("says what a higher layer overrides in the selected scope", async () => {
+    const { describeModeSource } = await import("./config-modal");
+    expect(describeModeSource(modeLayers, "global")).toBe("from project, overrides global: auto");
+    expect(describeModeSource({
+      ...modeLayers,
+      layers: modeLayers.layers.map((layer) => layer.id === "global" ? { ...layer, mode: undefined } : layer),
+    }, "global")).toBe("from project; global unset");
+  });
+
+  it("marks an unset higher scope as inherited", async () => {
+    const { describeModeSource } = await import("./config-modal");
+    expect(describeModeSource(modeLayers, "session")).toBe("inherited from project");
   });
 });
 
@@ -160,14 +143,14 @@ describe("mode save notice", () => {
         { id: "session", name: "session", path: "memory" },
         { id: "environment", name: "env", path: "PI_SENTINEL_MODE" },
         { id: "project", name: "project", mode: "manual", path: "/workspace/.pi/permissions.json" },
-        { id: "global", name: "global", mode: "manual", path: "/home/user/.pi/agent/permissions.json" },
+        { id: "global", name: "global", mode: "manual", path: "/home/tester/.pi/agent/permissions.json" },
       ],
       effective: "manual",
       source: "project",
     };
 
     expect(modal.formatModeSaveNotice("yolo", "global", layers)).toBe(
-      "Saved mode 'yolo' → global (/home/user/.pi/agent/permissions.json). " +
+      "Saved mode 'yolo' → global (/home/tester/.pi/agent/permissions.json). " +
         "Effective: manual (from project, which overrides the saved global value).",
     );
     expect(modal.formatModeSaveNotice("yolo", "session", {
@@ -197,7 +180,7 @@ describe("permission mode settings", () => {
   });
 
 
-  it("shows the configured value from the project's save fallback", async () => {
+  it("compares the effective mode with the project's save fallback", async () => {
     const { buildSettingItems } = await import("./config-modal");
     const modeLayers = {
       layers: [
@@ -209,14 +192,15 @@ describe("permission mode settings", () => {
           savePath: "/workspace/.pi/agent/permissions.json",
         },
         { id: "project-config-legacy", name: "project (legacy)", mode: "yolo", path: "/workspace/.pi/agent/permissions.json" },
-        { id: "global", name: "global", mode: "manual", path: "/home/user/.pi/agent/permissions.json" },
+        { id: "global", name: "global", mode: "manual", path: "/home/tester/.pi/agent/permissions.json" },
       ],
       effective: "manual",
       source: "environment",
     } as const;
 
     expect(buildSettingItems(DEFAULT_EXTENSION_CONFIG, undefined, "project", modeLayers)
-      .find((item) => item.id === "mode")).toMatchObject({ currentValue: "yolo" });
+      .find((item) => item.id === "mode"))
+      .toMatchObject({ currentValue: "manual (from env, overrides project (legacy): yolo)" });
   });
 
   it("keeps the selected mode visible when effective config is env-overridden", async () => {
@@ -257,30 +241,50 @@ describe("permission mode settings", () => {
 });
 
 
-describe("scope-specific mode value", () => {
-  it("shows the saved value or inherited effective mode for the selected scope", async () => {
+describe("per-row provenance", () => {
+  it("shows the effective mode with its source and cycles from the effective value", async () => {
     const { buildSettingItems } = await import("./config-modal");
     const modeLayers = {
       layers: [
         { id: "session", name: "session", path: "memory" },
         { id: "environment", name: "env", path: "PI_SENTINEL_MODE" },
         { id: "project", name: "project", mode: "yolo", path: "/workspace/.pi/permissions.json" },
-        { id: "global", name: "global", mode: "manual", path: "/home/user/.pi/agent/permissions.json" },
+        { id: "global", name: "global", mode: "manual", path: "/home/tester/.pi/agent/permissions.json" },
       ],
-      effective: "manual",
-      source: "global",
+      effective: "yolo",
+      source: "project",
     } as const;
 
-    const selectedItems = buildSettingItems(DEFAULT_EXTENSION_CONFIG, undefined, "project", modeLayers);
-    expect(selectedItems.find((item) => item.id === "mode")).toMatchObject({ currentValue: "yolo" });
-    expect(selectedItems.find((item) => item.id === "modeScope")).toMatchObject({
-      label: "Mode saves to",
-    });
+    const projectMode = buildSettingItems(DEFAULT_EXTENSION_CONFIG, undefined, "project", modeLayers)
+      .find((item) => item.id === "mode");
+    expect(projectMode).toMatchObject({ currentValue: "yolo (project)", values: ["auto", "manual", "yolo"] });
 
-    const inheritedItems = buildSettingItems(DEFAULT_EXTENSION_CONFIG, undefined, "session", modeLayers);
-    const inheritedMode = inheritedItems.find((item) => item.id === "mode");
-    expect(inheritedMode).toMatchObject({ currentValue: "inherits: manual" });
-    expect(inheritedMode?.values).toEqual(["yolo", "auto", "manual"]);
+    const items = buildSettingItems(DEFAULT_EXTENSION_CONFIG, undefined, "session", modeLayers);
+    expect(items.find((item) => item.id === "mode")).toMatchObject({ currentValue: "yolo (inherited from project)" });
+    expect(items.find((item) => item.id === "modeScope")).toMatchObject({ label: "Save mode to" });
+  });
+
+  it("tags toggles with their source and flags project overrides", async () => {
+    const { buildSettingItems } = await import("./config-modal");
+    const items = buildSettingItems(
+      { ...DEFAULT_EXTENSION_CONFIG, debugLog: true },
+      false,
+      "global",
+      undefined,
+      { sandbox: "global", permissionReviewLog: "default", debugLog: "project" },
+    );
+
+    expect(items.find((item) => item.id === "sandbox")).toMatchObject({
+      currentValue: "off (global)",
+      values: ["on", "off"],
+    });
+    expect(items.find((item) => item.id === "permissionReviewLog")).toMatchObject({
+      currentValue: "on (default)",
+      values: ["off", "on"],
+    });
+    expect(items.find((item) => item.id === "debugLog")).toMatchObject({
+      currentValue: "on (project, overrides global)",
+    });
   });
 });
 
@@ -336,7 +340,7 @@ describe("mode scope selector", () => {
     );
   });
 
-  it("updates the chain and inherited Mode value before saving", async () => {
+  it("updates the save target and inherited Mode value before saving", async () => {
     const { registerPermissionSystemCommand } = await import("./config-modal");
     const handlers = new Map<string, { handler: (args: string, ctx: unknown) => Promise<void> }>();
     const setConfig = vi.fn(() => true);
@@ -345,7 +349,7 @@ describe("mode scope selector", () => {
         { id: "session", name: "session", path: "memory" },
         { id: "environment", name: "env", path: "PI_SENTINEL_MODE" },
         { id: "project", name: "project", path: "/workspace/.pi/permissions.json" },
-        { id: "global", name: "global", mode: "manual", path: "/home/user/.pi/agent/permissions.json" },
+        { id: "global", name: "global", mode: "manual", path: "/home/tester/.pi/agent/permissions.json" },
       ],
       effective: "manual",
       source: "global",
@@ -385,12 +389,12 @@ describe("mode scope selector", () => {
 
     await handlers.get("sentinel")?.handler("", ctx);
 
-    expect(beforeScopeChange).toContain("global manual (/home/user/.pi/agent/permissions.json) ← selected");
-    expect(beforeScopeChange).toContain("Saving Mode writes: /home/user/.pi/agent/permissions.json");
-    expect(afterScopeChange).toContain("session — not set (memory) ← selected");
-    expect(afterScopeChange).toContain("Mode saves to");
-    expect(afterScopeChange).toContain("inherits: manual");
-    expect(afterScopeChange).toContain("Saving Mode writes: memory only (lost on exit)");
+    expect(beforeScopeChange).toContain("▶ global manual");
+    expect(beforeScopeChange).toContain("Mode saves to global: /home/tester/.pi/agent/permissions.json");
+    expect(beforeScopeChange).toContain("manual (global)");
+    expect(afterScopeChange).toContain("Mode saves to session: memory only (lost on exit)");
+    expect(afterScopeChange).toContain("Save mode to");
+    expect(afterScopeChange).toContain("manual (inherited from global)");
     expect(setConfig).toHaveBeenCalledWith(
       expect.objectContaining({ mode: "yolo" }),
       ctx,
@@ -399,7 +403,7 @@ describe("mode scope selector", () => {
     );
   });
 
-  it.each([82, 50])("keeps controls and provenance visible while paging a long chain at %i×18", async (width) => {
+  it.each([82, 50])("keeps controls and save targets visible with a long chain at %i×18", async (width) => {
     const { registerPermissionSystemCommand } = await import("./config-modal");
     const handlers = new Map<string, { handler: (args: string, ctx: unknown) => Promise<void> }>();
     const longRoot = "/Users/bob/dev/pi-sentinel/workspaces/a-very-long-project-name/.pi";
@@ -428,13 +432,12 @@ describe("mode scope selector", () => {
         getConfigPath: () => "",
         getModeLayers: () => modeLayers,
         getSandboxEnabled: () => true,
+        getSettingSources: () => ({ sandbox: "global", permissionReviewLog: "default", debugLog: "default" }),
       } as never,
     );
 
-    let visibleLines: string[] = [];
-    let renderedLineCount = 0;
-    let maximumHeight: string | undefined;
     let modal: { render(width: number): string[]; handleInput(data: string): void } | undefined;
+    let maximumHeight: string | undefined;
     const terminal = { rows: 18 };
     const ctx = {
       hasUI: true,
@@ -442,96 +445,54 @@ describe("mode scope selector", () => {
       ui: {
         notify: vi.fn(),
         custom: async (
-          factory: (...args: unknown[]) => {
-            render(width: number): string[];
-            handleInput(data: string): void;
-          },
+          factory: (...args: unknown[]) => { render(width: number): string[]; handleInput(data: string): void },
           options: unknown,
         ) => {
           modal = factory({ terminal, requestRender: vi.fn() }, {}, {}, done);
-          const overlayOptions = (options as { overlayOptions: { maxHeight: string } }).overlayOptions;
-          maximumHeight = overlayOptions.maxHeight;
-          visibleLines = modal.render(width);
-          renderedLineCount = visibleLines.length;
+          maximumHeight = (options as { overlayOptions: { maxHeight: string } }).overlayOptions.maxHeight;
         },
       },
     };
 
     await handlers.get("sentinel")?.handler("", ctx);
-
     expect(maximumHeight).toBe("100%");
-    expect(renderedLineCount).toBeLessThanOrEqual(18);
-    expect(visibleLines.join("\n")).toContain("Bash sandbox");
-    expect(visibleLines.join("\n")).toContain("Permission review log");
-    expect(visibleLines.join("\n")).toContain("Saving Mode writes:");
-    expect(visibleLines.join("\n")).toContain("Logs & sandbox");
-    const destinations = visibleLines.join("\n").split("Saving Mode writes:")[1]
-      .split("Bash sandbox")[0].split("Logs & sandbox always write:");
-    expect(destinations).toHaveLength(2);
-    for (const destination of destinations) {
-      expect(destination.replace(/\s/g, "")).toContain("/Users/bob/.pi/agent/permissions.json");
-    }
-    expect(visibleLines.join("\n")).toContain("Mode saves to");
-    expect(visibleLines.join("\n")).toContain("Debug logging");
-    expect(visibleLines.join("\n")).toContain("Effective this session: manual (from global)");
 
-    expect(visibleLines.join("\n")).toContain("Selected: global ← selected");
-    expect(visibleLines.join("\n")).toContain("PgUp/PgDn");
-    expect(visibleLines.every((line) => visibleWidth(line) <= width)).toBe(true);
-
-    const pages = [visibleLines.join("\n")];
-    for (;;) {
-      modal?.handleInput("\x1b[6~");
+    const labels = ["Bash sandbox", "Mode", "Save mode to", "Permission review log", "Debug logging"];
+    const expectUsable = (rows: number): string => {
       const lines = modal?.render(width) ?? [];
-      expect(lines.length).toBeLessThanOrEqual(18);
-      const rendered = lines.join("\n");
-      expect(rendered).toContain("Selected: global ← selected");
-      expect(rendered).toContain("Effective this session: manual (from global)");
-      expect(rendered).toContain("Debug logging");
-      expect(rendered).toContain("Permission review log");
+      expect(lines.length).toBeLessThanOrEqual(rows);
       expect(lines.every((line) => visibleWidth(line) <= width)).toBe(true);
-      if (rendered === pages.at(-1)) break;
-      pages.push(rendered);
-    }
-    for (const layer of modeLayers.layers) expect(pages.join("\n")).toContain(layer.name);
-    expect(pages.at(-1)).toContain("config.json");
-    expect(pages.join("\n")).toContain("pi-sentinel.json");
-    expect(pages.join("\n")).toContain("config.json");
-    for (let page = 0; page < pages.length; page++) modal?.handleInput("\x1b[5~");
-    expect(modal?.render(width).join("\n")).toBe(pages[0]);
-    expect(setConfig).not.toHaveBeenCalled();
+      const rendered = lines.join("\n");
+      for (const label of labels) expect(rendered).toContain(label);
+      expect(rendered).toContain("Enter/Space to change");
+      return rendered;
+    };
 
-    // Moving the settings cursor must not make its longer descriptions clip controls.
+    const initial = expectUsable(18);
+    expect(initial).toContain("Mode saves to global:");
+    expect(initial).toContain("Other settings save to global:");
+    expect(initial).toContain("manual (global)");
+    expect(initial).toContain("on (global)");
+
+    // Moving the cursor shows longer descriptions; they must not clip controls.
     for (let row = 0; row < 5; row++) {
       modal?.handleInput(DOWN);
-      const lines = modal?.render(width) ?? [];
-      expect(lines.length).toBeLessThanOrEqual(18);
-      const rendered = lines.join("\n");
-      for (const label of ["Bash sandbox", "Mode saves to", "Permission review log", "Debug logging"])
-        expect(rendered).toContain(label);
-      expect(rendered).toContain("Effective this session: manual (from global)");
-      expect(rendered).toContain("Enter/Space to change");
+      expectUsable(18);
     }
     modal?.handleInput(DOWN); // sandbox -> mode
     modal?.handleInput(DOWN); // mode -> scope
     modal?.handleInput(" "); // global -> session
-    const sessionLines = modal?.render(width) ?? [];
-    expect(sessionLines.length).toBeLessThanOrEqual(18);
-    expect(sessionLines.join("\n")).toContain("Selected: session ← selected");
-    expect(sessionLines.join("\n")).toContain("memory only (lost on exit)");
-    expect(sessionLines.join("\n")).toContain("inherits: manual");
+    const session = expectUsable(18);
+    expect(session).toContain("memory only (lost on exit)");
+    // Narrow terminals truncate long values; the source prefix stays readable.
+    expect(session).toContain(width >= 82 ? "manual (inherited from global)" : "manual (inherited");
 
-    terminal.rows = 15;
-    const shorterLines = modal?.render(width) ?? [];
-    expect(shorterLines.length).toBeLessThanOrEqual(15);
-    for (const label of ["Bash sandbox", "Mode saves to", "Permission review log", "Debug logging"])
-      expect(shorterLines.join("\n")).toContain(label);
-    expect(shorterLines.join("\n")).toContain("Selected: session ← selected");
-    expect(shorterLines.join("\n")).toContain("Enter/Space to change");
-    terminal.rows = 20;
-    const tallerLines = modal?.render(width) ?? [];
-    expect(tallerLines.length).toBeLessThanOrEqual(20);
-    expect(tallerLines.join("\n")).toContain("Where the next mode change");
+    terminal.rows = 12;
+    expectUsable(12);
+    terminal.rows = 30;
+    const tall = expectUsable(30);
+    expect(tall.replace(/\s+/g, " ")).toContain("▶ global manual");
+    expect(tall).toContain("Where the next mode change");
     modal?.handleInput("\x1b");
     expect(done).toHaveBeenCalledOnce();
     expect(setConfig).not.toHaveBeenCalled();

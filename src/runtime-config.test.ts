@@ -297,6 +297,8 @@ describe("saveExtensionConfig", () => {
         yoloAskBashPatterns: ["git push *"],
       },
       ctx as never,
+      true,
+      "global",
     );
 
     const saved = JSON.parse(
@@ -310,6 +312,39 @@ describe("saveExtensionConfig", () => {
       mode: "yolo",
     });
     expect(saved).not.toHaveProperty("yoloAutoMaxLevel");
+  });
+
+  it("writes only the changed toggle to global, not project-scoped mode or ask patterns", async () => {
+    const agentDir = await mkdtemp(path.join(tmpdir(), "pi-runtime-toggle-"));
+    const projectDir = await mkdtemp(path.join(tmpdir(), "pi-runtime-toggle-project-"));
+    tempPaths.push(agentDir, projectDir);
+    const globalPath = path.join(agentDir, "permissions.json");
+    await writeFile(globalPath, JSON.stringify({ mode: "auto" }), "utf8");
+    await mkdir(path.join(projectDir, ".pi"), { recursive: true });
+    await writeFile(
+      path.join(projectDir, ".pi", "permissions.json"),
+      JSON.stringify({ mode: "manual", yoloAskBashPatterns: ["terraform *"], debugLog: false }),
+      "utf8",
+    );
+    const effective = {
+      debugLog: false,
+      permissionReviewLog: true,
+      mode: "manual" as const,
+      yoloAskBashPatterns: ["terraform *"],
+    };
+    const runtime = {
+      agentDir,
+      config: effective,
+      runtimeContext: { cwd: projectDir },
+      writeDebugLog: vi.fn(),
+    };
+    const ctx = { cwd: projectDir, ui: { setStatus: vi.fn(), notify: vi.fn() } };
+
+    expect(saveExtensionConfig(runtime as never, { ...effective, debugLog: true }, ctx as never)).toBe(true);
+
+    expect(JSON.parse(await readFile(globalPath, "utf8"))).toEqual({ mode: "auto", debugLog: true });
+    // The project still sets debugLog=false, so the session keeps the merged value.
+    expect((runtime as { config: { debugLog: boolean } }).config.debugLog).toBe(false);
   });
 
   it("does not persist the process mode override when saving another setting", async () => {

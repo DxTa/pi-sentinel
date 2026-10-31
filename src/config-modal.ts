@@ -1,3 +1,4 @@
+import { homedir } from "node:os";
 import { relative, sep } from "node:path";
 
 import {
@@ -6,11 +7,9 @@ import {
   getSettingsListTheme,
 } from "@earendil-works/pi-coding-agent";
 import {
-  matchesKey,
   type SettingItem,
   SettingsList,
   Text,
-  visibleWidth,
   wrapTextWithAnsi,
 } from "@earendil-works/pi-tui";
 
@@ -23,6 +22,7 @@ import {
 } from "./extension-config";
 import type { Ruleset } from "./rule";
 import type { ModeLayer, ModeLayers } from "./runtime";
+import type { SettingSource, SettingSources } from "./scoped-config";
 
 interface PermissionSystemConfigController {
   getConfig(): PermissionSystemExtensionConfig;
@@ -41,6 +41,8 @@ interface PermissionSystemConfigController {
   getAutoModeStatus?(): string;
   /** Optional: effective sandbox state and global toggle. */
   getSandboxEnabled?(): boolean;
+  /** Optional: which config scope supplies each toggle, for per-row provenance. */
+  getSettingSources?(cwd?: string | null): SettingSources | undefined;
   setSandboxEnabled?(enabled: boolean, ctx: ExtensionCommandContext): void;
 }
 
@@ -114,68 +116,122 @@ function summarizeConfig(
   return `${knobs}${workerSuffix}${rulesSuffix}`;
 }
 
+/** User-facing layer name; the bundled config.json reads as "default". */
+function layerLabel(layer: Pick<ModeLayer, "id" | "name">): string {
+  return layer.id === "bundled" ? "default" : layer.name;
+}
+
+function describeLayerMode(layer: ModeLayer): string {
+  if (layer.error) return "unreadable";
+  const legacyFlags = formatLegacyModeFlags(layer);
+  if (layer.mode !== undefined) return legacyFlags ? layer.mode + " (" + legacyFlags + ")" : layer.mode;
+  return legacyFlags ? "legacy flags: " + legacyFlags : "unset";
+}
+
+/** Put the value after `current` first, so the first press moves to the next value. */
+function rotateAfter<T>(values: readonly T[], current: T): T[] {
+  const index = values.indexOf(current);
+  return index < 0 ? [...values] : [...values.slice(index + 1), ...values.slice(0, index + 1)];
+}
+
+/**
+ * Where the effective mode comes from, relative to the scope a change saves to:
+ * - `project`: the selected scope is the source;
+ * - `from project, overrides global: auto`: a higher layer hides the selected one;
+ * - `inherited from global`: the selected scope is unset and a lower layer applies.
+ */
+export function describeModeSource(modeLayers: ModeLayers, selectedScope: ModeScope): string {
+  const selectedLayer = getSelectedModeLayer(modeLayers, selectedScope);
+  const sourceLayer = modeLayers.layers.find((layer) => layer.id === modeLayers.source);
+  const sourceName = sourceLayer ? layerLabel(sourceLayer) : modeLayers.source;
+  if (!selectedLayer || !sourceLayer || selectedLayer === sourceLayer) return sourceName;
+  const selectedIndex = modeLayers.layers.indexOf(selectedLayer);
+  const sourceIndex = modeLayers.layers.indexOf(sourceLayer);
+  if (sourceIndex < selectedIndex) {
+    const selectedValue = describeLayerMode(selectedLayer);
+    return selectedValue === "unset"
+      ? "from " + sourceName + "; " + layerLabel(selectedLayer) + " unset"
+      : "from " + sourceName + ", overrides " + layerLabel(selectedLayer) + ": " + selectedValue;
+  }
+  return "inherited from " + sourceName;
+}
+
+/** Toggles always save to the global file, so a project value is flagged as an override. */
+function describeToggleSource(source: SettingSource): string {
+  return source === "project" ? "project, overrides global" : source;
+}
+
+function withSource(value: string, source: string | undefined): string {
+  return source ? value + " (" + source + ")" : value;
+}
+
+function toggleItem(
+  id: string,
+  label: string,
+  description: string,
+  value: boolean,
+  source: SettingSource | undefined,
+): SettingItem {
+  const raw = toOnOff(value);
+  return {
+    id,
+    label,
+    description,
+    currentValue: withSource(raw, source && describeToggleSource(source)),
+    values: source ? rotateAfter(ON_OFF, raw) : ON_OFF,
+  };
+}
+
 export function buildSettingItems(
   config: PermissionSystemExtensionConfig,
   sandboxEnabled?: boolean,
   modeScope: ModeScope = "global",
   modeLayers?: ModeLayers,
+  sources?: SettingSources,
 ): SettingItem[] {
-  const selectedModeLayer = modeLayers ? getSelectedModeLayer(modeLayers, modeScope) : undefined;
-  const legacyFlags = selectedModeLayer ? formatLegacyModeFlags(selectedModeLayer) : undefined;
-  const modeValue = !modeLayers
-    ? config.mode
-    : selectedModeLayer?.error
-      ? "unreadable"
-      : selectedModeLayer?.mode ?? (legacyFlags
-        ? "legacy flags: " + legacyFlags
-        : "inherits: " + modeLayers.effective);
-  const inheritedModeIndex = modeValue.startsWith("inherits: ") && modeLayers
-    ? MODES.indexOf(modeLayers.effective)
-    : -1;
-  const modeValues = inheritedModeIndex < 0
-    ? MODES
-    : [...MODES.slice(inheritedModeIndex + 1), ...MODES.slice(0, inheritedModeIndex + 1)];
-  const sandboxItem: SettingItem[] = sandboxEnabled === undefined ? [] : [{
-    id: "sandbox",
-    label: "Bash sandbox",
-    description: "Run Bash in SRT sandbox. Off keeps permission prompts, not OS isolation.",
-    currentValue: toOnOff(sandboxEnabled),
-    values: ON_OFF,
-  }];
+  const modeValue = modeLayers
+    ? withSource(modeLayers.effective, describeModeSource(modeLayers, modeScope))
+    : config.mode;
+  const modeValues = modeLayers ? rotateAfter(MODES, modeLayers.effective) : MODES;
+  const sandboxItem: SettingItem[] = sandboxEnabled === undefined ? [] : [toggleItem(
+    "sandbox",
+    "Bash sandbox",
+    "Run Bash in SRT sandbox. Off keeps permission prompts, not OS isolation. Saves to global.",
+    sandboxEnabled,
+    sources?.sandbox,
+  )];
   return [
     ...sandboxItem,
     {
       id: "mode",
       label: "Mode",
       description:
-        "manual prompts; yolo approves everything except hard rules; auto adds a local classifier for workspace reads, writes, and sandboxed Bash",
+        "manual prompts; yolo approves everything except hard rules; auto adds a local classifier for workspace reads, writes, and sandboxed Bash. Saves to the scope below.",
       currentValue: modeValue,
       values: modeValues,
     },
     {
       id: "modeScope",
-      label: "Mode saves to",
+      label: "Save mode to",
       description:
         "Where the next mode change is stored: this session only, this project's permissions file (reuses the legacy file when present), or the global config",
       currentValue: modeScope,
       values: MODE_SCOPES,
     },
-    {
-      id: "permissionReviewLog",
-      label: "Permission review log",
-      description:
-        "Write permission request and decision audit events to the extension logs directory",
-      currentValue: toOnOff(config.permissionReviewLog),
-      values: ON_OFF,
-    },
-    {
-      id: "debugLog",
-      label: "Debug logging",
-      description:
-        "Write verbose pi-sentinel diagnostics to the extension logs directory",
-      currentValue: toOnOff(config.debugLog),
-      values: ON_OFF,
-    },
+    toggleItem(
+      "permissionReviewLog",
+      "Permission review log",
+      "Write permission request and decision audit events to the extension logs directory. Saves to global.",
+      config.permissionReviewLog,
+      sources?.permissionReviewLog,
+    ),
+    toggleItem(
+      "debugLog",
+      "Debug logging",
+      "Write verbose pi-sentinel diagnostics to the extension logs directory. Saves to global.",
+      config.debugLog,
+      sources?.debugLog,
+    ),
   ];
 }
 
@@ -218,8 +274,8 @@ export function formatModeSaveNotice(
     ? "memory only; lost on exit"
     : selectedLayer?.savePath ?? selectedLayer?.path ?? "path unavailable";
   const shadowingLayer = getModeSaveShadowingLayer(modeLayers, scope);
-  const sourceName = modeLayers.layers.find((layer) => layer.id === modeLayers.source)?.name
-    ?? modeLayers.source;
+  const sourceLayer = modeLayers.layers.find((layer) => layer.id === modeLayers.source);
+  const sourceName = sourceLayer ? layerLabel(sourceLayer) : modeLayers.source;
   const effectiveSource = shadowingLayer
     ? "from " + sourceName + ", which overrides the saved " + scope + " value"
     : "from " + sourceName;
@@ -227,56 +283,60 @@ export function formatModeSaveNotice(
     modeLayers.effective + " (" + effectiveSource + ").";
 }
 
-function buildModeChainLines(
+function compactPath(path: string, cwd?: string): string {
+  if (cwd) {
+    const projectPath = relative(cwd, path);
+    if (projectPath && projectPath !== ".." && !projectPath.startsWith(".." + sep)) {
+      return "./" + projectPath;
+    }
+  }
+  const home = homedir();
+  return home && (path === home || path.startsWith(home + sep)) ? "~" + path.slice(home.length) : path;
+}
+
+/**
+ * Compact header: the mode chain on one (wrapped) line with the winning layer
+ * marked, then where each kind of change is written.
+ */
+function buildModeHeaderLines(
   modeLayers: ModeLayers,
   selectedScope: ModeScope,
   maxWidth?: number,
   cwd?: string,
-) {
+): { chain: string[]; saves: string[] } {
   const selectedLayer = getSelectedModeLayer(modeLayers, selectedScope);
-  const compactPath = (id: ModeLayer["id"], path: string): string => {
-    if (maxWidth === undefined || !id.startsWith("project") || !cwd) return path;
-    const projectPath = relative(cwd, path);
-    return projectPath && projectPath !== ".." && !projectPath.startsWith(".." + sep)
-      ? "./" + projectPath
-      : path;
-  };
-  const fitPath = (prefix: string, path: string): string => {
-    if (maxWidth === undefined) return prefix + path;
-    return wrapTextWithAnsi(prefix + path, maxWidth).join("\n");
-  };
-  const rows = modeLayers.layers.flatMap((layer) => {
-    const legacyFlags = formatLegacyModeFlags(layer);
-    const value = layer.error
-      ? "— unreadable"
-      : layer.mode !== undefined
-        ? legacyFlags ? layer.mode + " (" + legacyFlags + ")" : layer.mode
-        : legacyFlags ? "legacy flags: " + legacyFlags : "— not set";
-    const selected = layer === selectedLayer ? " ← selected" : "";
-    const row = "  " + layer.name + " " + value +
-      " (" + compactPath(layer.id, layer.path) + ")" + selected;
-    return maxWidth === undefined ? [row] : wrapTextWithAnsi(row, maxWidth);
-  });
+  const chain = modeLayers.layers
+    .map((layer) => {
+      const value = describeLayerMode(layer);
+      const entry = layerLabel(layer) + " " + (value === "unset" ? "–" : value);
+      return layer.id === modeLayers.source ? "▶ " + entry : entry;
+    })
+    .join(" · ");
   const saveTarget = selectedScope === "session"
     ? "memory only (lost on exit)"
     : selectedLayer
-      ? compactPath(selectedLayer.id, selectedLayer.savePath ?? selectedLayer.path)
+      ? compactPath(selectedLayer.savePath ?? selectedLayer.path, cwd)
       : "(no project directory)";
-  const globalPath = modeLayers.layers.find((layer) => layer.id === "global")?.path
-    ?? "(global config unavailable)";
-  const sourceName = modeLayers.layers.find((layer) => layer.id === modeLayers.source)?.name
-    ?? modeLayers.source;
-
-  const effective = "Effective this session: " + modeLayers.effective + " (from " + sourceName + ")";
+  const globalLayer = modeLayers.layers.find((layer) => layer.id === "global");
+  const globalPath = globalLayer ? compactPath(globalLayer.path, cwd) : "(global config unavailable)";
+  const wrap = (line: string): string[] =>
+    maxWidth === undefined ? [line] : wrapTextWithAnsi(line, maxWidth);
   return {
-    rows,
-    effective: maxWidth !== undefined && visibleWidth(effective) > maxWidth
-      ? "Effective: " + modeLayers.effective + " ← " + sourceName
-      : effective,
-    selected: "Selected: " + (selectedLayer?.name ?? selectedScope) + " ← selected",
-    save: fitPath("Saving Mode writes: ", saveTarget),
-    global: fitPath("Logs & sandbox always write: ", globalPath),
+    chain: wrap("Mode chain (top wins): " + chain),
+    saves: [
+      ...wrap("Mode saves to " + selectedScope + ": " + saveTarget),
+      ...wrap("Other settings save to global: " + globalPath),
+    ],
   };
+}
+
+/** Fit the header into `maxLines`, clipping the chain before the save targets. */
+function fitHeaderLines(header: { chain: string[]; saves: string[] }, maxLines: number): string[] {
+  const chainBudget = Math.max(0, maxLines - header.saves.length);
+  if (header.chain.length <= chainBudget) return [...header.chain, ...header.saves];
+  const chain = header.chain.slice(0, chainBudget);
+  if (chain.length > 0) chain[chain.length - 1] = chain[chain.length - 1].replace(/.?$/, "…");
+  return [...chain, ...header.saves].slice(0, Math.max(0, maxLines));
 }
 
 export function formatModeChain(
@@ -285,14 +345,8 @@ export function formatModeChain(
   maxWidth?: number,
   cwd?: string,
 ): string {
-  const chain = buildModeChainLines(modeLayers, selectedScope, maxWidth, cwd);
-  return [
-    "Mode chain (top wins):",
-    ...chain.rows,
-    chain.effective,
-    chain.save,
-    chain.global,
-  ].join("\n");
+  const header = buildModeHeaderLines(modeLayers, selectedScope, maxWidth, cwd);
+  return [...header.chain, ...header.saves].join("\n");
 }
 
 export function applySetting(
@@ -319,17 +373,6 @@ export function mergeEffectiveConfigWithSelectedMode(
   selectedMode: PermissionMode,
 ): PermissionSystemExtensionConfig {
   return { ...effectiveConfig, mode: selectedMode };
-}
-
-function syncSettingValues(
-  settingsList: SettingsList,
-  config: PermissionSystemExtensionConfig,
-): void {
-  settingsList.updateValue(
-    "permissionReviewLog",
-    toOnOff(config.permissionReviewLog),
-  );
-  settingsList.updateValue("debugLog", toOnOff(config.debugLog));
 }
 
 function getArgumentCompletions(
@@ -364,17 +407,24 @@ async function openSettingsModal(
       let selectedMode = current.mode;
       let modeScope: ModeScope = "global";
       let modeLayers = controller.getModeLayers?.(ctx.cwd);
-      const modeChainText = new Text("", 0, 0);
-      let chainOffset = 0;
-      let chainPageSize = 1;
-      let chainRowCount = 0;
+      let sources = controller.getSettingSources?.(ctx.cwd);
+      const headerText = new Text("", 0, 0);
 
-      const settingItems = buildSettingItems(
+      const buildItems = (): SettingItem[] => buildSettingItems(
         current,
         controller.getSandboxEnabled?.(),
         modeScope,
         modeLayers,
+        sources,
       );
+      const settingItems = buildItems();
+      const warnIfProjectOverrides = (id: "permissionReviewLog" | "debugLog", label: string): void => {
+        if (sources?.[id] !== "project") return;
+        ctx.ui.notify(
+          "Saved " + label + " to global, but the project config keeps it " + toOnOff(current[id]) + ".",
+          "warning",
+        );
+      };
       const settingsList = new SettingsList(
         settingItems,
         10,
@@ -382,51 +432,43 @@ async function openSettingsModal(
         (id, newValue) => {
           if (id === "sandbox") {
             controller.setSandboxEnabled?.(newValue === "on", ctx);
-            const enabled = controller.getSandboxEnabled?.();
-            if (enabled !== undefined) settingsList.updateValue("sandbox", toOnOff(enabled));
-            return;
-          }
-          if (id === "modeScope") {
+          } else if (id === "modeScope") {
             modeScope = newValue as ModeScope;
-            refreshModeDisplay();
-            return;
+          } else {
+            const next = applySetting(current, id, newValue);
+            const modeWasExplicitlySelected = id === "mode";
+            const saved = controller.setConfig(next, ctx, modeWasExplicitlySelected, modeScope);
+            const effectiveConfig = controller.getConfig();
+            if (modeWasExplicitlySelected) {
+              selectedMode = saved ? next.mode : effectiveConfig.mode;
+            }
+            current = mergeEffectiveConfigWithSelectedMode(effectiveConfig, selectedMode);
+            modeLayers = controller.getModeLayers?.(ctx.cwd);
+            sources = controller.getSettingSources?.(ctx.cwd);
+            if (modeWasExplicitlySelected && saved && modeLayers) {
+              ctx.ui.notify(
+                formatModeSaveNotice(next.mode, modeScope, modeLayers),
+                getModeSaveShadowingLayer(modeLayers, modeScope) ? "warning" : "info",
+              );
+            } else if (saved && (id === "permissionReviewLog" || id === "debugLog")) {
+              warnIfProjectOverrides(id, id === "debugLog" ? "Debug logging" : "Permission review log");
+            }
           }
-          const next = applySetting(current, id, newValue);
-          const modeWasExplicitlySelected = id === "mode";
-          const saved = controller.setConfig(next, ctx, modeWasExplicitlySelected, modeScope);
-          const effectiveConfig = controller.getConfig();
-          if (modeWasExplicitlySelected) {
-            selectedMode = saved ? next.mode : effectiveConfig.mode;
-          }
-          current = mergeEffectiveConfigWithSelectedMode(effectiveConfig, selectedMode);
-          syncSettingValues(settingsList, current);
-          modeLayers = controller.getModeLayers?.(ctx.cwd);
-          if (modeWasExplicitlySelected && saved && modeLayers) {
-            ctx.ui.notify(
-              formatModeSaveNotice(next.mode, modeScope, modeLayers),
-              getModeSaveShadowingLayer(modeLayers, modeScope) ? "warning" : "info",
-            );
-          }
-          refreshModeDisplay();
+          refreshItems();
         },
         () => done(),
       );
 
-      const refreshModeDisplay = (): void => {
-        const modeItem = buildSettingItems(
-          current,
-          controller.getSandboxEnabled?.(),
-          modeScope,
-          modeLayers,
-        ).find((item) => item.id === "mode");
-        if (modeItem) {
-          const settingModeItem = settingItems.find((item) => item.id === "mode");
-          if (settingModeItem) settingModeItem.values = modeItem.values;
-          settingsList.updateValue("mode", modeItem.currentValue);
+      const refreshItems = (): void => {
+        sources = controller.getSettingSources?.(ctx.cwd);
+        for (const fresh of buildItems()) {
+          const item = settingItems.find((candidate) => candidate.id === fresh.id);
+          if (!item) continue;
+          item.values = fresh.values;
+          settingsList.updateValue(fresh.id, fresh.currentValue);
         }
-        chainOffset = 0;
         settingsList.invalidate();
-        modeChainText.invalidate();
+        headerText.invalidate();
       };
 
       return {
@@ -434,51 +476,24 @@ async function openSettingsModal(
           let settingsLines = settingsList.render(width);
           if (!modeLayers) return settingsLines;
           const height = tui.terminal?.rows ?? 24;
-          const chain = buildModeChainLines(modeLayers, modeScope, width, ctx.cwd);
-          const title = "Mode chain (top wins) · PgUp/PgDn";
-          // Reserve the longest page indicator, including any wrapping at narrow widths.
-          const budgetTitle = title + " " + chain.rows.length + "/" + chain.rows.length;
-          modeChainText.setText([
-            budgetTitle, chain.effective, chain.selected, chain.save, chain.global,
-          ].join("\n"));
-          const fixedHeaderHeight = modeChainText.render(width).length;
-          if (settingsLines.length + fixedHeaderHeight + 1 > height) {
+          const header = buildModeHeaderLines(modeLayers, modeScope, width, ctx.cwd);
+          const headerHeight = header.chain.length + header.saves.length;
+          if (settingsLines.length + headerHeight > height) {
             // Descriptions are supplementary; never let them push controls off-screen.
             const descriptions = settingItems.map((item) => item.description);
             for (const item of settingItems) item.description = undefined;
             settingsLines = settingsList.render(width);
             settingItems.forEach((item, index) => { item.description = descriptions[index]; });
           }
-          chainPageSize = Math.max(1, height - settingsLines.length - fixedHeaderHeight);
-          chainRowCount = chain.rows.length;
-          const lastPage = Math.max(0, Math.ceil(chainRowCount / chainPageSize) - 1);
-          chainOffset = Math.min(Math.floor(chainOffset / chainPageSize), lastPage) * chainPageSize;
-          const pageTitle = chainRowCount > chainPageSize
-            ? title + " " + (Math.floor(chainOffset / chainPageSize) + 1) + "/" + (lastPage + 1)
-            : "Mode chain (top wins):";
-          modeChainText.setText([
-            pageTitle,
-            chain.effective,
-            chain.selected,
-            ...chain.rows.slice(chainOffset, chainOffset + chainPageSize),
-            chain.save,
-            chain.global,
-          ].join("\n"));
-          return [...modeChainText.render(width), ...settingsLines];
+          headerText.setText(fitHeaderLines(header, height - settingsLines.length).join("\n"));
+          return [...(height - settingsLines.length > 0 ? headerText.render(width) : []), ...settingsLines];
         },
         invalidate() {
           settingsList.invalidate();
-          modeChainText.invalidate();
+          headerText.invalidate();
         },
         handleInput(data: string) {
-          if (matchesKey(data, "pageUp")) {
-            chainOffset = Math.max(0, chainOffset - chainPageSize);
-          } else if (matchesKey(data, "pageDown")) {
-            const lastPage = Math.max(0, Math.ceil(chainRowCount / chainPageSize) - 1);
-            chainOffset = Math.min(lastPage * chainPageSize, chainOffset + chainPageSize);
-          } else {
-            settingsList.handleInput(data);
-          }
+          settingsList.handleInput(data);
           tui.requestRender();
         },
       };

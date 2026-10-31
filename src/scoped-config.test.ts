@@ -6,6 +6,7 @@ import { afterEach, describe, expect, it } from "vitest";
 
 import {
   getScopedConfigPath,
+  getSettingSources,
   loadMergedScopedConfig,
   persistNetworkGrantToConfig,
   persistPermissionRuleToConfig,
@@ -111,6 +112,25 @@ describe("workspace persistence", () => {
     expect(JSON.parse(await readFile(configPath, "utf8"))).toEqual({
       sandbox: { network: true },
     });
+  });
+});
+
+describe("getSettingSources", () => {
+  it("reports the last scope that sets each toggle, including legacy project files", async () => {
+    const agentDir = await makeTempDir("pi-sources-agent-");
+    const cwd = await makeTempDir("pi-sources-repo-");
+    const bundled = path.join(agentDir, "bundled.json");
+    await writeFile(bundled, JSON.stringify({ debugLog: false, permissionReviewLog: true, sandbox: { enabled: true } }), "utf8");
+    await writeFile(path.join(agentDir, "permissions.json"), JSON.stringify({ sandbox: { enabled: false } }), "utf8");
+    await mkdir(path.join(cwd, ".pi", "agent"), { recursive: true });
+    await writeFile(path.join(cwd, ".pi", "agent", "permissions.json"), JSON.stringify({ debugLog: true }), "utf8");
+
+    expect(getSettingSources(agentDir, cwd, bundled)).toEqual({
+      sandbox: "global",
+      permissionReviewLog: "default",
+      debugLog: "project",
+    });
+    expect(getSettingSources(agentDir, null, bundled).debugLog).toBe("default");
   });
 });
 
