@@ -121,20 +121,16 @@ describe("piPermissionSystemExtension workspace config", () => {
       const pi = createFakePi();
       piPermissionSystemExtension(pi as never);
       const notify = vi.fn();
-      const chooseYolo = async (factory: (...args: unknown[]) => { handleInput(data: string): void }) => {
-        const component = factory({ requestRender: vi.fn() }, {}, {}, () => undefined);
-        component.handleInput("\x1b[B"); // sandbox row -> mode row
-        component.handleInput(" "); // manual -> yolo
-      };
       const ctx = {
         cwd: projectDir,
         hasUI: true,
-        ui: { notify, setStatus: vi.fn(), custom: chooseYolo },
+        ui: { notify, setStatus: vi.fn() },
         sessionManager: { getEntries: () => [], getSessionDir: () => null },
       };
 
       notify.mockClear();
-      await pi.commands.get("sentinel")?.handler("", ctx);
+      // The settings picker only offers scopes that take effect; the command can still target global.
+      await pi.commands.get("sentinel")?.handler("mode yolo global", ctx);
 
       expect(notify).toHaveBeenCalledTimes(1);
       expect(notify).toHaveBeenCalledWith(

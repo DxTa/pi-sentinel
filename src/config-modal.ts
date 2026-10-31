@@ -4,9 +4,12 @@ import { relative, sep } from "node:path";
 import {
   type ExtensionAPI,
   type ExtensionCommandContext,
+  getSelectListTheme,
   getSettingsListTheme,
 } from "@earendil-works/pi-coding-agent";
 import {
+  type SelectItem,
+  SelectList,
   type SettingItem,
   SettingsList,
   Text,
@@ -156,6 +159,54 @@ function modeSourceName(modeLayers: ModeLayers): string {
   return sourceLayer ? layerLabel(sourceLayer) : modeLayers.source;
 }
 
+/**
+ * Scopes where saving a mode changes the effective mode: the scope that sets
+ * it now first, then session and project overrides. A scope hidden by a
+ * higher layer is left out (saving to project or global clears a session mode).
+ */
+export function modeTargetScopes(modeLayers: ModeLayers): ModeScope[] {
+  const current = modeSaveScope(modeLayers);
+  const takesEffect = (scope: ModeScope): boolean => {
+    if (scope === "session") return true;
+    const target = getSelectedModeLayer(modeLayers, scope);
+    if (!target) return false;
+    const above = modeLayers.layers.slice(0, modeLayers.layers.indexOf(target));
+    return above.every((layer) => layer.id === "session" || describeLayerMode(layer) === "unset");
+  };
+  return [current, ...MODE_SCOPES.filter((scope) => scope !== current)].filter(takesEffect);
+}
+
+const MODE_CHOICE_SEPARATOR = "@";
+
+const PICKER_SCOPE_DESCRIPTIONS: Readonly<Record<ModeScope, (isCurrent: boolean) => string>> = {
+  session: (isCurrent) => isCurrent ? "set for this session" : "override for this session only",
+  project: (isCurrent) => isCurrent ? "set in this project" : "override in this project",
+  global: () => "set globally",
+};
+
+/** Picker entries for every mode in every scope where it would take effect. */
+export function modeChoices(modeLayers: ModeLayers): SelectItem[] {
+  const current = modeSaveScope(modeLayers);
+  return modeTargetScopes(modeLayers).flatMap((scope) => MODES.map((mode) => {
+    const isCurrent = scope === current && mode === modeLayers.effective;
+    return {
+      value: mode + MODE_CHOICE_SEPARATOR + scope,
+      label: mode.padEnd(7) + scope + (isCurrent ? " ✓" : ""),
+      description: PICKER_SCOPE_DESCRIPTIONS[scope](scope === current),
+    };
+  }));
+}
+
+/** Parse a picker value such as `yolo@session`. */
+export function parseModeChoice(value: string): { mode: PermissionMode; scope?: ModeScope } | undefined {
+  const [mode, scope] = value.split(MODE_CHOICE_SEPARATOR);
+  if (!MODES.includes(mode as PermissionMode)) return undefined;
+  if (scope === undefined) return { mode: mode as PermissionMode };
+  return MODE_SCOPES.includes(scope as ModeScope)
+    ? { mode: mode as PermissionMode, scope: scope as ModeScope }
+    : undefined;
+}
+
 /** Toggles always save to the global file, so a project value is flagged as an override. */
 function describeToggleSource(source: SettingSource): string {
   return source === "project" ? "project, overrides global" : source;
@@ -205,7 +256,7 @@ export function buildSettingItems(
       id: "mode",
       label: "Mode",
       description:
-        "manual prompts; yolo approves everything except hard rules; auto adds a local classifier for workspace reads, writes, and sandboxed Bash. Saves where the current mode is set.",
+        "manual prompts; yolo approves everything except hard rules; auto adds a local classifier for workspace reads, writes, and sandboxed Bash. Enter to pick a mode, or override it for this session or project.",
       currentValue: modeValue,
       values: modeValues,
     },
@@ -347,10 +398,10 @@ export function applySetting(
   value: string,
 ): PermissionSystemExtensionConfig {
   switch (id) {
-    case "mode":
-      return MODES.includes(value as PermissionMode)
-        ? { ...config, mode: value as PermissionMode }
-        : config;
+    case "mode": {
+      const choice = parseModeChoice(value);
+      return choice ? { ...config, mode: choice.mode } : config;
+    }
     case "permissionReviewLog":
       return { ...config, permissionReviewLog: value === "on" };
     case "debugLog":
@@ -367,18 +418,47 @@ export function mergeEffectiveConfigWithSelectedMode(
   return { ...effectiveConfig, mode: selectedMode };
 }
 
-function getArgumentCompletions(
+const MODE_DESCRIPTIONS: Readonly<Record<PermissionMode, string>> = {
+  manual: "Prompt for every gated request",
+  yolo: "Approve everything except the hard rules",
+  auto: "Local classifier approves eligible workspace requests",
+};
+
+const SCOPE_DESCRIPTIONS: Readonly<Record<ModeScope, string>> = {
+  session: "This session only, in memory",
+  project: "This project's .pi/permissions.json",
+  global: "All projects: ~/.pi/agent/permissions.json",
+};
+
+/**
+ * Pi passes the whole argument text as the prefix and replaces it with the
+ * chosen value, so each completion carries the full argument string.
+ */
+export function getArgumentCompletions(
   argumentPrefix: string,
 ): Array<{ value: string; label: string; description: string }> | null {
-  const normalized = argumentPrefix.trim().toLowerCase();
-  if (normalized.includes(" ")) {
+  const words = argumentPrefix.trimStart().toLowerCase().split(/\s+/);
+  let items: Array<{ value: string; label: string; description: string }>;
+  if (words.length === 1) {
+    items = COMMAND_ARGUMENTS
+      .filter((item) => item.value.startsWith(words[0]))
+      .map((item) => item.value === "mode" ? { ...item, value: "mode " } : { ...item });
+  } else if (words[0] === "mode" && words.length === 2) {
+    items = MODES
+      .filter((mode) => mode.startsWith(words[1]))
+      .map((mode) => ({ value: "mode " + mode + " ", label: mode, description: MODE_DESCRIPTIONS[mode] }));
+  } else if (words[0] === "mode" && words.length === 3 && MODES.includes(words[1] as PermissionMode)) {
+    items = MODE_SCOPES
+      .filter((scope) => scope.startsWith(words[2]))
+      .map((scope) => ({
+        value: "mode " + words[1] + " " + scope,
+        label: scope,
+        description: SCOPE_DESCRIPTIONS[scope],
+      }));
+  } else {
     return null;
   }
-
-  const filtered = COMMAND_ARGUMENTS.filter((item) =>
-    item.value.startsWith(normalized),
-  );
-  return filtered.length > 0 ? [...filtered] : null;
+  return items.length > 0 ? items : null;
 }
 
 async function openSettingsModal(
@@ -401,12 +481,23 @@ async function openSettingsModal(
       let sources = controller.getSettingSources?.(ctx.cwd);
       const headerText = new Text("", 0, 0);
 
+      const modePicker = (_currentValue: string, choose: (value?: string) => void): SelectList => {
+        const choices = modeLayers ? modeChoices(modeLayers) : [];
+        const picker = new SelectList(choices, Math.min(choices.length, 9), getSelectListTheme());
+        const currentIndex = choices.findIndex((choice) => choice.label.endsWith(" ✓"));
+        if (currentIndex >= 0) picker.setSelectedIndex(currentIndex);
+        picker.onSelect = (item) => choose(item.value);
+        picker.onCancel = () => choose();
+        return picker;
+      };
       const buildItems = (): SettingItem[] => buildSettingItems(
         current,
         controller.getSandboxEnabled?.(),
         modeLayers,
         sources,
-      );
+      ).map((item) => item.id === "mode" && modeLayers
+        ? { ...item, values: undefined, submenu: modePicker }
+        : item);
       const settingItems = buildItems();
       const warnIfProjectOverrides = (id: "permissionReviewLog" | "debugLog", label: string): void => {
         if (sources?.[id] !== "project") return;
@@ -425,7 +516,8 @@ async function openSettingsModal(
           } else {
             const next = applySetting(current, id, newValue);
             const modeWasExplicitlySelected = id === "mode";
-            const modeScope = modeLayers ? modeSaveScope(modeLayers) : "global";
+            const modeScope = (modeWasExplicitlySelected ? parseModeChoice(newValue)?.scope : undefined)
+              ?? (modeLayers ? modeSaveScope(modeLayers) : "global");
             const saved = controller.setConfig(next, ctx, modeWasExplicitlySelected, modeScope);
             const effectiveConfig = controller.getConfig();
             if (modeWasExplicitlySelected) {
@@ -454,6 +546,7 @@ async function openSettingsModal(
           const item = settingItems.find((candidate) => candidate.id === fresh.id);
           if (!item) continue;
           item.values = fresh.values;
+          item.submenu = fresh.submenu;
           settingsList.updateValue(fresh.id, fresh.currentValue);
         }
         settingsList.invalidate();

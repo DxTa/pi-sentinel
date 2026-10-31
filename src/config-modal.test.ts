@@ -11,6 +11,13 @@ vi.mock("@earendil-works/pi-coding-agent", () => ({
     cursor: ">",
     hint: (text: string) => text,
   }),
+  getSelectListTheme: () => ({
+    selectedPrefix: (text: string) => text,
+    selectedText: (text: string) => text,
+    description: (text: string) => text,
+    scrollInfo: (text: string) => text,
+    noMatch: (text: string) => text,
+  }),
 }));
 
 
@@ -278,6 +285,81 @@ describe("per-row provenance", () => {
   });
 });
 
+describe("/sentinel argument completions", () => {
+  const values = async (prefix: string) => {
+    const { getArgumentCompletions } = await import("./config-modal");
+    return getArgumentCompletions(prefix)?.map((item) => item.value) ?? null;
+  };
+
+  it("completes the subcommand, then the mode, then the scope", async () => {
+    expect(await values("")).toEqual(["show", "path", "mode ", "reset", "help"]);
+    expect(await values("mo")).toEqual(["mode "]);
+    expect(await values("mode ")).toEqual(["mode manual ", "mode yolo ", "mode auto "]);
+    expect(await values("mode y")).toEqual(["mode yolo "]);
+    expect(await values("mode yolo ")).toEqual(["mode yolo session", "mode yolo project", "mode yolo global"]);
+    expect(await values("mode yolo p")).toEqual(["mode yolo project"]);
+    expect(await values("MODE Auto S")).toEqual(["mode auto session"]);
+  });
+
+  it("stops completing after an invalid mode or a complete command", async () => {
+    expect(await values("mode invalid ")).toBeNull();
+    expect(await values("mode auto global ")).toBeNull();
+    expect(await values("show ")).toBeNull();
+  });
+});
+
+describe("mode picker targets", () => {
+  const layers = (source: string, set: Record<string, string>) => ({
+    layers: [
+      { id: "session", name: "session", path: "memory", mode: set.session },
+      { id: "environment", name: "env", path: "PI_SENTINEL_MODE", mode: set.environment },
+      { id: "project", name: "project", path: "/workspace/.pi/permissions.json", mode: set.project },
+      { id: "global", name: "global", path: "/home/tester/.pi/agent/permissions.json", mode: set.global },
+      { id: "bundled", name: "bundled", path: "/extension/config.json", mode: "auto" },
+    ],
+    effective: (set[source] ?? "auto") as "auto",
+    source,
+  }) as never;
+
+  it("lists the current scope first and only scopes that would take effect", async () => {
+    const { modeTargetScopes } = await import("./config-modal");
+    expect(modeTargetScopes(layers("global", { global: "manual" }))).toEqual(["global", "session", "project"]);
+    expect(modeTargetScopes(layers("bundled", {}))).toEqual(["global", "session", "project"]);
+    // A project mode hides global, so a global save would not take effect.
+    expect(modeTargetScopes(layers("project", { project: "yolo", global: "manual" }))).toEqual(["project", "session"]);
+    // Saving to project clears the session override, so project stays available.
+    expect(modeTargetScopes(layers("session", { session: "yolo", project: "manual" }))).toEqual(["session", "project"]);
+    // PI_SENTINEL_MODE hides every file layer.
+    expect(modeTargetScopes(layers("environment", { environment: "manual" }))).toEqual(["session"]);
+  });
+
+  it("omits project without a project directory", async () => {
+    const { modeTargetScopes } = await import("./config-modal");
+    expect(modeTargetScopes({
+      layers: [
+        { id: "session", name: "session", path: "memory" },
+        { id: "global", name: "global", mode: "manual", path: "/home/tester/.pi/agent/permissions.json" },
+      ],
+      effective: "manual",
+      source: "global",
+    })).toEqual(["global", "session"]);
+  });
+
+  it("encodes mode and scope in picker values and marks the current choice", async () => {
+    const { modeChoices, parseModeChoice } = await import("./config-modal");
+    const choices = modeChoices(layers("project", { project: "yolo" }));
+    expect(choices.map((choice) => choice.value)).toEqual([
+      "manual@project", "yolo@project", "auto@project",
+      "manual@session", "yolo@session", "auto@session",
+    ]);
+    expect(choices.filter((choice) => choice.label.endsWith("✓")).map((choice) => choice.value)).toEqual(["yolo@project"]);
+    expect(parseModeChoice("auto@session")).toEqual({ mode: "auto", scope: "session" });
+    expect(parseModeChoice("auto")).toEqual({ mode: "auto" });
+    expect(parseModeChoice("auto@nowhere")).toBeUndefined();
+    expect(parseModeChoice("invalid@session")).toBeUndefined();
+  });
+});
+
 describe("mode changes in the settings modal", () => {
   const DOWN = "\x1b[B";
 
@@ -331,11 +413,38 @@ describe("mode changes in the settings modal", () => {
     const setConfig = vi.fn(() => true);
     const { ctx, rendered } = await openModal(
       { setConfig, getModeLayers: () => modeLayersFrom(source) },
-      [" "], // Mode is the first row: manual -> yolo
+      [" ", DOWN, "\r"], // open the picker on the current mode, move to yolo, choose
     );
 
     expect(rendered[0]).toContain(header);
     expect(setConfig).toHaveBeenCalledWith(expect.objectContaining({ mode: "yolo" }), ctx, true, scope);
+  });
+
+  it("offers session and project overrides in the picker", async () => {
+    const setConfig = vi.fn(() => true);
+    const { rendered } = await openModal(
+      { setConfig, getModeLayers: () => modeLayersFrom("global") },
+      [" "],
+    );
+    expect(rendered[1]).toContain("manual global ✓");
+    expect(rendered[1]).toContain("override for this session only");
+    expect(rendered[1]).toContain("override in this project");
+
+    const session = await openModal(
+      { setConfig, getModeLayers: () => modeLayersFrom("global") },
+      [" ", DOWN, DOWN, DOWN, DOWN, "\r"], // global x3, then yolo@session
+    );
+    expect(setConfig).toHaveBeenLastCalledWith(expect.objectContaining({ mode: "yolo" }), session.ctx, true, "session");
+  });
+
+  it("closes the picker without saving on Escape", async () => {
+    const setConfig = vi.fn(() => true);
+    const { rendered } = await openModal(
+      { setConfig, getModeLayers: () => modeLayersFrom("project") },
+      [" ", DOWN, "\x1b"],
+    );
+    expect(setConfig).not.toHaveBeenCalled();
+    expect(rendered[1]).toContain("manual (project)");
   });
 
   it("saves to global when no mode layers are available", async () => {
