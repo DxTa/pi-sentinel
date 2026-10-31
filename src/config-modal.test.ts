@@ -393,7 +393,7 @@ describe("/sentinel mode", () => {
     expect(setConfig).toHaveBeenCalledWith(expect.objectContaining({ mode: "auto" }), ctx, true, "project");
   });
 
-  it.each(["mode", "mode turbo", "mode auto everywhere", "mode auto global extra"])(
+  it.each(["mode", "mode invalid", "mode auto everywhere", "mode auto global extra"])(
     "rejects %j with usage",
     async (args) => {
       const { ctx, setConfig } = await run(args);
