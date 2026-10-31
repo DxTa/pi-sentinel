@@ -14,17 +14,22 @@ Security extension for the [Pi coding agent](https://github.com/earendil-works/p
 
 Node.js `>=23.6.0` and [Pi](https://github.com/earendil-works/pi) `>=0.84.2`. Linux also needs `bubblewrap` and `socat` for the sandbox. ripgrep is bundled.
 
-Ubuntu / Debian (Ubuntu's `apt` Node.js is too old; use [nvm](https://github.com/nvm-sh/nvm) or [NodeSource](https://github.com/nodesource/distributions)):
+Ubuntu / Debian. The `apt` Node.js is too old; install Node.js 24 with [nvm](https://github.com/nvm-sh/nvm#installing-and-updating) or [NodeSource](https://github.com/nodesource/distributions) first.
 
 ```bash
 sudo apt install bubblewrap socat
-nvm install 24
 npm install -g @earendil-works/pi-coding-agent
+bwrap --ro-bind / / true && echo "sandbox OK"
+```
 
-# Ubuntu 24.04+ only: AppArmor blocks the user namespaces bubblewrap needs
+If `bwrap` fails with a permission error (Ubuntu 24.04+ restricts unprivileged user namespaces through AppArmor), lift the restriction:
+
+```bash
 echo 'kernel.apparmor_restrict_unprivileged_userns=0' | sudo tee /etc/sysctl.d/60-pi-sentinel-userns.conf
 sudo sysctl --system
 ```
+
+This turns off a system-wide hardening control for every program, not only bubblewrap. Only do it on a machine where you accept that.
 
 macOS (Seatbelt sandbox is built in):
 
