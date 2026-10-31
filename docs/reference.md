@@ -122,7 +122,7 @@ See [`SECURITY.md`](../SECURITY.md) for the full policy and how to report a vuln
 
 ## Platform support
 
-- macOS and Linux: supported. Linux needs `bwrap`, `socat`, and `rg` (SRT uses `rg` to find files to write-protect); macOS needs nothing extra. On Ubuntu 24.04+, bubblewrap also needs unprivileged user namespaces (see the README prerequisites).
+- macOS and Linux: supported. Linux needs `bwrap` and `socat`. SRT also runs ripgrep on Linux to find files to write-protect; pi-sentinel bundles it through `@vscode/ripgrep` and falls back to `rg` on `PATH` when no prebuilt binary exists for the platform. macOS needs nothing extra. On Ubuntu 24.04+, bubblewrap also needs unprivileged user namespaces (see the README prerequisites).
 - `auto` mode needs a prebuilt ONNX Runtime: Linux x64/arm64, macOS on Apple silicon (arm64), and Windows x64/arm64. Intel Macs have none, so use `manual` or `yolo` there; `auto` falls back to prompting.
 - Windows: SRT is unavailable. Set `sandbox.bypassCommands: []` so Bash fails closed instead of running unsandboxed.
 

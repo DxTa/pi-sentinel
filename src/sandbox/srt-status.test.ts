@@ -113,6 +113,23 @@ describe("checkSrtStatus", () => {
     });
   });
 
+  it("checks the configured ripgrep command instead of rg on PATH", () => {
+    const checked: string[] = [];
+    const status = checkSrtStatus({
+      platform: "linux",
+      entrypointPath: "/tmp/sandbox-run.sh",
+      hasEntrypoint: true,
+      packageAvailable: true,
+      commandAvailable: (command) => {
+        checked.push(command);
+        return command !== "rg";
+      },
+      ripgrepCommand: "/pkg/bin/rg",
+    });
+    expect(status.available).toBe(true);
+    expect(checked).toEqual(["/pkg/bin/rg", "bwrap", "socat"]);
+  });
+
   it("fails when configured entrypoint is missing even if package is present", () => {
     expect(
       checkSrtStatus({

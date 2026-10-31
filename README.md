@@ -12,12 +12,12 @@ Security extension for the [Pi coding agent](https://github.com/earendil-works/p
 
 ## Prerequisites
 
-Node.js `>=23.6.0` and [Pi](https://github.com/earendil-works/pi) `>=0.84.2`. Linux also needs `bubblewrap`, `socat`, and `ripgrep` for the sandbox.
+Node.js `>=23.6.0` and [Pi](https://github.com/earendil-works/pi) `>=0.84.2`. Linux also needs `bubblewrap` and `socat` for the sandbox. ripgrep is bundled.
 
 Ubuntu / Debian (Ubuntu's `apt` Node.js is too old; use [nvm](https://github.com/nvm-sh/nvm) or [NodeSource](https://github.com/nodesource/distributions)):
 
 ```bash
-sudo apt install bubblewrap socat ripgrep
+sudo apt install bubblewrap socat
 nvm install 24
 npm install -g @earendil-works/pi-coding-agent
 

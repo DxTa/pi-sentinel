@@ -279,6 +279,50 @@ describe("createSrtBackend", () => {
     expect(result && "command" in result && result.command.includes("/helper.mjs")).toBe(true);
   });
 
+  it.each([
+    { platform: "linux", rg: "/pkg/bin/rg", expected: { command: "/pkg/bin/rg" } },
+    { platform: "linux", rg: "rg", expected: undefined },
+    { platform: "darwin", rg: "/pkg/bin/rg", expected: undefined },
+  ])("passes the bundled ripgrep to SRT only on Linux ($platform, $rg)", async ({ platform, rg, expected }) => {
+    const statusInputs: Array<{ ripgrepCommand?: string }> = [];
+    const backend = createSrtBackend({
+      helperPath: () => "/helper.mjs",
+      processExecPath: () => "/usr/bin/node",
+      platform: () => platform,
+      ripgrepCommand: () => rg,
+      checkSrtStatus: (input) => {
+        statusInputs.push(input);
+        return {
+          available: true,
+          platform,
+          packageAvailable: true,
+          entrypointPath: "/helper.mjs",
+          entrypointExists: true,
+          dependencyChecks: [],
+        };
+      },
+      buildSrtCommandSpec: ({ command }) => makeSrtCommandSpec(command),
+      buildSrtRuntimeConfig: () => ({
+        network: { allowedDomains: [], deniedDomains: [], strictAllowlist: true },
+        filesystem: { allowRead: ["/repo"], allowWrite: ["/repo"], denyRead: [], denyWrite: [] },
+      }),
+    });
+
+    const result = await backend.wrapCommand({
+      command: "git status",
+      sandboxConfig: makeConfig(),
+      cwd: "/repo",
+      preResolvedProfile: makeProfile(),
+    });
+
+    expect(statusInputs[0]?.ripgrepCommand).toBe(rg);
+    const encoded = result && "command" in result
+      ? new RegExp(`${DEFAULT_SRT_HELPER_ENV}='?([A-Za-z0-9+/=]+)`).exec(result.command)?.[1]
+      : undefined;
+    expect(encoded).toBeDefined();
+    expect(JSON.parse(Buffer.from(String(encoded), "base64").toString("utf8")).runtimeConfig.ripgrep).toEqual(expected);
+  });
+
   it("spills oversized wrapper payload to a private file", async () => {
     const command = "x".repeat(100_000);
     const backend = createSrtBackend({
