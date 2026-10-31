@@ -12,7 +12,7 @@ Security extension for the [Pi coding agent](https://github.com/earendil-works/p
 
 ## Prerequisites
 
-Node.js `>=23.6.0`, [Pi](https://github.com/earendil-works/pi) `>=0.84.2`, and `ripgrep`. Linux also needs `bubblewrap` and `socat`.
+Node.js `>=23.6.0` and [Pi](https://github.com/earendil-works/pi) `>=0.84.2`. Linux also needs `bubblewrap`, `socat`, and `ripgrep` for the sandbox.
 
 Ubuntu / Debian (Ubuntu's `apt` Node.js is too old; use [nvm](https://github.com/nvm-sh/nvm) or [NodeSource](https://github.com/nodesource/distributions)):
 
@@ -29,7 +29,7 @@ sudo sysctl --system
 macOS (Seatbelt sandbox is built in):
 
 ```bash
-brew install node ripgrep
+brew install node
 npm install -g @earendil-works/pi-coding-agent
 ```
 
