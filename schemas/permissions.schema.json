@@ -25,7 +25,7 @@
     },
     "mode": {
       "description": "Permission approval mode.",
-      "markdownDescription": "Choose `manual` to prompt for every gated request, `auto` to let a local classifier approve eligible workspace-local reads, listings, writes, edits, and sandboxed Bash, or `yolo` to approve everything except the hard rules. Deterministic gates remain authoritative. The deprecated name `yolo-auto` is still read as `auto`.",
+      "markdownDescription": "Choose `manual` to prompt for every gated request, `auto` to let a local classifier approve eligible workspace-local reads, listings, writes, edits, and sandboxed Bash, or `yolo` to approve everything except the hard rules. Deterministic gates remain authoritative.",
       "enum": ["manual", "yolo", "auto"],
       "default": "auto"
     },

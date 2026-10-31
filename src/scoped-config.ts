@@ -27,7 +27,7 @@ import {
   getLegacyProjectPolicyPath,
   getProjectConfigPath,
 } from "./config-paths";
-import { EXTENSION_ROOT, isLegacyModeAlias, parsePermissionMode } from "./extension-config";
+import { EXTENSION_ROOT } from "./extension-config";
 import { mergeFlatPermissions } from "./permission-merge";
 import type { FlatPermissionConfig, PermissionState } from "./types";
 
@@ -181,7 +181,6 @@ function canonicalizePersistedMode(
   inheritedMode: unknown,
 ): JsonObject {
   const next = { ...config };
-  if (isLegacyModeAlias(next.mode)) next.mode = parsePermissionMode(next.mode)!;
   const mode = next.mode;
   const hasLegacyMode =
     typeof next.yoloMode === "boolean" || typeof next.yoloAutoMode === "boolean";

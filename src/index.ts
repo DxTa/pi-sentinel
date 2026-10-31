@@ -158,7 +158,7 @@ import {
   getMaskedAuthSessionGrants,
 } from "./sandbox/masked-auth-grants.js";
 import { resolveAuthExceptionPolicy, type ResolvedAuthException } from "./sandbox/auth-exception-policy.js";
-import { existsSync, lstatSync, mkdirSync, realpathSync, renameSync, unlinkSync } from "node:fs";
+import { existsSync, lstatSync, realpathSync, unlinkSync } from "node:fs";
 import { dirname, isAbsolute, join, resolve } from "node:path";
 import { homedir } from "node:os";
 import { createPiClipboardTempCleanup } from "./clipboard-temp-cleanup.js";
@@ -200,28 +200,6 @@ interface AutoModeWorkerHandle {
   startupSignal: Promise<void>;
 }
 
-/**
- * Model cache directory. Reuses a cache downloaded under the pre-rename
- * `yolo-auto` directory so upgrading does not trigger a second ~130 MB download.
- */
-function resolveAutoModeModelDir(agentDir: string): string {
-  const fromEnv = process.env.PI_SENTINEL_AUTO_MODEL_DIR?.trim()
-    || process.env.PI_SENTINEL_YOLO_AUTO_MODEL_DIR?.trim();
-  if (fromEnv) return fromEnv;
-  const runtimeDir = join(agentDir, "runtime", "pi-sentinel");
-  const modelDir = join(runtimeDir, "auto-mode", "models");
-  const legacyModelDir = join(runtimeDir, "yolo-auto", "models");
-  if (existsSync(modelDir) || !existsSync(legacyModelDir)) return modelDir;
-  try {
-    mkdirSync(dirname(modelDir), { recursive: true, mode: 0o700 });
-    renameSync(legacyModelDir, modelDir);
-    return modelDir;
-  } catch {
-    // A concurrent session may have moved it first.
-    return existsSync(modelDir) ? modelDir : legacyModelDir;
-  }
-}
-
 async function startAutoModeWorker(
   socketPath: string,
   agentDir: string,
@@ -232,7 +210,8 @@ async function startAutoModeWorker(
     return { startupSignal: Promise.resolve() };
   }
   const workerPath = join(EXTENSION_ROOT, "src", "auto-mode-worker-main.ts");
-  const modelDir = resolveAutoModeModelDir(agentDir);
+  const modelDir = process.env.PI_SENTINEL_AUTO_MODEL_DIR?.trim()
+    || join(agentDir, "runtime", "pi-sentinel", "auto-mode", "models");
   const args = [
     "--experimental-strip-types",
     workerPath,
@@ -801,7 +780,6 @@ export default function piPermissionSystemExtension(pi: ExtensionAPI): void {
   };
   const autoModeSocketPath =
     process.env.PI_SENTINEL_AUTO_SOCKET?.trim()
-    || process.env.PI_SENTINEL_YOLO_AUTO_SOCKET?.trim()
     || join(runtime.agentDir, "runtime", "pi-sentinel", "auto-mode.sock");
   const autoModeClient = new AutoModeClient(
     createUnixSocketWorkerTransport(autoModeSocketPath),

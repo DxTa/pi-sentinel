@@ -4,7 +4,7 @@
 
 Standalone Git distribution prepared for `DxTa/pi-sentinel`.
 
-- Renamed the `yolo-auto` mode to `auto`. `"mode": "yolo-auto"` and `PI_SENTINEL_MODE=yolo-auto` are still accepted with a deprecation notice and rewritten to `auto` on the next save. Environment variables are now `PI_SENTINEL_AUTO_MODEL_DIR` and `PI_SENTINEL_AUTO_SOCKET` (old names still read). The model cache moves to `runtime/pi-sentinel/auto-mode/models` without re-downloading; calibration logs are now `auto-mode-calibration.jsonl` and debug events use the `auto_mode.` prefix.
+- Renamed the `yolo-auto` mode to `auto`, with no compatibility alias: set `"mode": "auto"`. Environment variables are `PI_SENTINEL_AUTO_MODEL_DIR` and `PI_SENTINEL_AUTO_SOCKET`; the model cache is `runtime/pi-sentinel/auto-mode/models`; calibration logs are `auto-mode-calibration.jsonl`; debug events use the `auto_mode.` prefix.
 - Rewrote the README around a quick start, mode comparison, and the security-relevant defaults.
 
 - Preserved permission, network, sandbox, masked-path, grant, service, and backend behavior.

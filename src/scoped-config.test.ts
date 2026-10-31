@@ -114,22 +114,6 @@ describe("workspace persistence", () => {
   });
 });
 
-describe("deprecated mode names", () => {
-  it("rewrites mode yolo-auto to auto when the file is next saved", async () => {
-    const workspace = await makeTempDir("pi-scoped-mode-alias-");
-    const configPath = path.join(workspace, ".pi", "permissions.json");
-    await mkdir(path.dirname(configPath), { recursive: true });
-    await writeFile(configPath, JSON.stringify({ mode: "yolo-auto" }), "utf8");
-
-    persistSandboxNetworkGrantToConfig(configPath, workspace);
-
-    expect(JSON.parse(await readFile(configPath, "utf8"))).toEqual({
-      mode: "auto",
-      sandbox: { network: true },
-    });
-  });
-});
-
 describe("getScopedConfigPath", () => {
   it("builds workspace config path", () => {
     expect(getScopedConfigPath("/agent", "/repo", "workspace")).toBe(

@@ -122,15 +122,6 @@ Read this before trusting the extension:
 | `/sandbox-grant network --domain <domain> [--ttl <duration>]` | Grant a sandbox network domain. |
 | `/sandbox-revoke <grant-id>` | Revoke a sandbox grant. |
 
-## Upgrading from `yolo-auto`
-
-The `yolo-auto` mode is now called `auto`. Existing configs keep working:
-
-- `"mode": "yolo-auto"` and `PI_SENTINEL_MODE=yolo-auto` are read as `auto`, with a deprecation notice. The file is rewritten to `auto` the next time pi-sentinel saves it.
-- `PI_SENTINEL_YOLO_AUTO_MODEL_DIR` and `PI_SENTINEL_YOLO_AUTO_SOCKET` still work; prefer `PI_SENTINEL_AUTO_MODEL_DIR` and `PI_SENTINEL_AUTO_SOCKET`.
-- A model cache in `~/.pi/agent/runtime/pi-sentinel/yolo-auto/models` is moved to `.../auto-mode/models`, so the model is not downloaded again.
-- New calibration records go to `~/.pi/agent/logs/auto-mode-calibration.jsonl` and debug events use the `auto_mode.` prefix. `scripts/calibration-report.mjs` still reads old logs.
-
 ## Reference
 
 ### How it works

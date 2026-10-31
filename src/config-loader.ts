@@ -10,7 +10,7 @@ import {
   getProjectConfigPath,
 } from "./config-paths";
 import { mergeFlatPermissions } from "./permission-merge";
-import { isLegacyModeAlias, parsePermissionMode, type PermissionMode } from "./extension-config";
+import { parsePermissionMode, type PermissionMode } from "./extension-config";
 import type { FlatPermissionConfig } from "./types";
 
 /**
@@ -201,9 +201,6 @@ export function normalizeUnifiedConfig(raw: unknown): UnifiedConfigLoadResult {
 
   const parsedMode = parsePermissionMode(record.mode);
   const explicitMode = parsedMode !== undefined;
-  if (isLegacyModeAlias(record.mode)) {
-    issues.push(`Mode '${String(record.mode)}' is deprecated; use '${parsedMode}'.`);
-  }
   const legacyMode: LegacyModeFlags = {};
   const yoloMode = normalizeOptionalBoolean(record.yoloMode);
   const yoloAutoMode = normalizeOptionalBoolean(record.yoloAutoMode);

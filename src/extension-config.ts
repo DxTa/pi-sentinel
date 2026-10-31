@@ -10,21 +10,11 @@ export type PermissionMode = "manual" | "yolo" | "auto";
 
 export const PERMISSION_MODES: readonly PermissionMode[] = ["manual", "yolo", "auto"];
 
-/** Deprecated mode names that are still read from config files and PI_SENTINEL_MODE. */
-const LEGACY_MODE_ALIASES: Readonly<Record<string, PermissionMode>> = {
-  "yolo-auto": "auto",
-};
-
-/** True when `value` is a deprecated mode name such as `yolo-auto`. */
-export function isLegacyModeAlias(value: unknown): boolean {
-  return typeof value === "string" && Object.hasOwn(LEGACY_MODE_ALIASES, value);
-}
-
-/** Parse a configured mode, mapping deprecated aliases to their current name. */
+/** Return `value` when it is a supported mode name. */
 export function parsePermissionMode(value: unknown): PermissionMode | undefined {
-  if (typeof value !== "string") return undefined;
-  if ((PERMISSION_MODES as readonly string[]).includes(value)) return value as PermissionMode;
-  return Object.hasOwn(LEGACY_MODE_ALIASES, value) ? LEGACY_MODE_ALIASES[value] : undefined;
+  return typeof value === "string" && (PERMISSION_MODES as readonly string[]).includes(value)
+    ? value as PermissionMode
+    : undefined;
 }
 
 /** Where an explicit mode choice is stored. */
