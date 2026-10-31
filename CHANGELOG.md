@@ -12,6 +12,7 @@ Standalone Git distribution prepared for `DxTa/pi-sentinel`.
 - `auto` mode: the worker loads ONNX Runtime before downloading the model, so an unsupported platform or broken install fails immediately instead of after a 130 MB download. Pi warns once when `auto` falls back to prompting, and `/sentinel show` reports `autoModeWorker=stopped` with the log path. A test runs real CPU inference so a broken runtime install fails `npm test`.
 - Rewrote the README around a quick start, mode comparison, and the security-relevant defaults. Detailed reference moved to `docs/reference.md`.
 - Linux sandbox no longer needs a system `ripgrep`: the binary ships through `@vscode/ripgrep` (npm platform packages, no install-time download) and is passed to SRT as `ripgrep.command`. `rg` on `PATH` remains the fallback. `/sandbox-status` checks the binary SRT will actually use.
+- `/sandbox-status` on Linux runs a short bubblewrap test and prints the fix: the install command for missing packages (apt, dnf, pacman, zypper), or a bwrap-only AppArmor profile when Ubuntu 24.04+'s user-namespace restriction blocks it. Commands blocked for missing dependencies point to `/sandbox-status`.
 
 - Preserved permission, network, sandbox, masked-path, grant, service, and backend behavior.
 - Removed content-based credential scanning and approval; configured SRT masks and permission/path rules remain.

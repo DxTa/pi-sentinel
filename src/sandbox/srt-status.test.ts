@@ -47,7 +47,7 @@ describe("checkSrtStatus", () => {
         { name: "bwrap", available: true },
         { name: "socat", available: false },
       ],
-      error: "Missing SRT runtime dependencies: rg, socat.",
+      error: "Missing SRT runtime dependencies: rg, socat. Run /sandbox-status for setup steps.",
     });
   });
 

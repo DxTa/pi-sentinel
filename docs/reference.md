@@ -120,9 +120,31 @@ The header shows the mode chain on one line (session, `PI_SENTINEL_MODE`, projec
 
 See [`SECURITY.md`](../SECURITY.md) for the full policy and how to report a vulnerability.
 
+## Linux sandbox setup
+
+SRT runs Bash inside [bubblewrap](https://github.com/containers/bubblewrap), which needs unprivileged user namespaces. Ubuntu 24.04+ blocks these by default through AppArmor (`kernel.apparmor_restrict_unprivileged_userns=1`), so `bwrap` fails with `setting up uid map: Permission denied` until it is allowed.
+
+`/sandbox-status` runs a short `bwrap` test and, when this restriction is the cause, prints an AppArmor profile that allows user namespaces for the `bwrap` binary only:
+
+```bash
+sudo tee /etc/apparmor.d/bwrap >/dev/null <<'EOF'
+abi <abi/4.0>,
+include <tunables/global>
+profile bwrap /usr/bin/bwrap flags=(unconfined) {
+  userns,
+  include if exists <local/bwrap>
+}
+EOF
+sudo apparmor_parser -r /etc/apparmor.d/bwrap
+```
+
+Any program can then use `bwrap` to create a user namespace, which is the reason Ubuntu added the restriction. That is narrower than the alternative, `sudo sysctl kernel.apparmor_restrict_unprivileged_userns=0`, which lifts the restriction for every program. Use the sysctl only if the profile does not work on your system.
+
+`rg` is bundled through `@vscode/ripgrep`; SRT uses it to find files to write-protect. Without a prebuilt binary for your platform, pi-sentinel falls back to `rg` on `PATH`.
+
 ## Platform support
 
-- macOS and Linux: supported. Linux needs `bwrap` and `socat`. SRT also runs ripgrep on Linux to find files to write-protect; pi-sentinel bundles it through `@vscode/ripgrep` and falls back to `rg` on `PATH` when no prebuilt binary exists for the platform. macOS needs nothing extra. On Ubuntu 24.04+, bubblewrap also needs unprivileged user namespaces (see the README prerequisites).
+- macOS and Linux: supported. Linux needs `bwrap` and `socat` (see [Linux sandbox setup](#linux-sandbox-setup)). macOS needs nothing extra.
 - `auto` mode needs a prebuilt ONNX Runtime: Linux x64/arm64, macOS on Apple silicon (arm64), and Windows x64/arm64. Intel Macs have none, so use `manual` or `yolo` there; `auto` falls back to prompting.
 - Windows: SRT is unavailable. Set `sandbox.bypassCommands: []` so Bash fails closed instead of running unsandboxed.
 

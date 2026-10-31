@@ -119,6 +119,7 @@ import {
 import { isProtectedCredentialReadPath, prepareApprovedTarget, protectedBashReadPaths, protectedWriteRefusal } from "./protected-read";
 
 import { defaultSrtHelperPath, defaultSrtStatus } from "./sandbox/srt-status.js";
+import { diagnoseLinuxSandbox } from "./sandbox/linux-sandbox-doctor.js";
 import { SandboxPolicyManager, type Grant, type GrantDuration } from "./sandbox/policy-manager.js";
 import { createSandboxRuntimeLoader } from "./sandbox/runtime-lazy.js";
 import { promptSandboxGrant } from "./sandbox/sandbox-prompt.js";
@@ -1408,6 +1409,7 @@ export default function piPermissionSystemExtension(pi: ExtensionAPI): void {
       }
       info.push(`Active grants: ${grants.length}`);
       if (status.error) info.push(`Error: ${status.error}`);
+      info.push(...diagnoseLinuxSandbox(status));
       for (const g of grants) {
         const expires = g.expiresAt ? `expires ${g.expiresAt.toISOString()}` : "session end";
         info.push(`  ${g.id}: ${g.type} ${g.value}${g.mode ? ` (${g.mode})` : ""} [${expires}]`);

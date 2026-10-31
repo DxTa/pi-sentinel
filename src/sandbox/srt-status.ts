@@ -130,7 +130,7 @@ export function checkSrtStatus(input: SrtStatusInput): SrtStatus {
       entrypointPath: input.entrypointPath,
       entrypointExists: input.hasEntrypoint,
       dependencyChecks,
-      error: `Missing SRT runtime dependencies: ${missing.join(", ")}.`,
+      error: `Missing SRT runtime dependencies: ${missing.join(", ")}. Run /sandbox-status for setup steps.`,
     };
   }
 

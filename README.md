@@ -10,52 +10,30 @@ Security extension for the [Pi coding agent](https://github.com/earendil-works/p
 
 > Status: `0.1.0`, pre-release. Read [What the defaults do](#what-the-defaults-do) before you rely on it.
 
-## Prerequisites
+## Getting started
 
-Node.js `>=23.6.0` and [Pi](https://github.com/earendil-works/pi) `>=0.84.2`. Linux also needs `bubblewrap` and `socat` for the sandbox. ripgrep is bundled.
+1. Install Node.js `>=23.6.0` and [Pi](https://github.com/earendil-works/pi):
 
-Ubuntu / Debian. The `apt` Node.js is too old; install Node.js 24 with [nvm](https://github.com/nvm-sh/nvm#installing-and-updating) or [NodeSource](https://github.com/nodesource/distributions) first.
+   ```bash
+   brew install node        # macOS. On Ubuntu/Debian apt's Node.js is too old: use nvm or NodeSource
+   npm install -g @earendil-works/pi-coding-agent
+   ```
 
-```bash
-sudo apt install bubblewrap socat
-npm install -g @earendil-works/pi-coding-agent
-bwrap --ro-bind / / true && echo "sandbox OK"
-```
+2. Linux only, for the Bash sandbox (macOS has one built in):
 
-If `bwrap` fails with a permission error (Ubuntu 24.04+ restricts unprivileged user namespaces through AppArmor), lift the restriction:
+   ```bash
+   sudo apt install bubblewrap socat     # Fedora: sudo dnf install bubblewrap socat
+   ```
 
-```bash
-echo 'kernel.apparmor_restrict_unprivileged_userns=0' | sudo tee /etc/sysctl.d/60-pi-sentinel-userns.conf
-sudo sysctl --system
-```
+3. Install pi-sentinel. Pin a reviewed commit or tag, not a branch:
 
-This turns off a system-wide hardening control for every program, not only bubblewrap. Only do it on a machine where you accept that.
+   ```bash
+   pi install git:github.com/DxTa/pi-sentinel@<commit-or-tag>
+   ```
 
-macOS (Seatbelt sandbox is built in):
+4. Start `pi` and run `/sandbox-status`. If something is still missing, it prints the command that fixes it, such as the AppArmor rule Ubuntu 24.04+ needs for bubblewrap ([why](docs/reference.md#linux-sandbox-setup)).
 
-```bash
-brew install node
-npm install -g @earendil-works/pi-coding-agent
-```
-
-`auto` mode needs Apple silicon on macOS. On Intel Macs use `manual` or `yolo`.
-
-## Install
-
-Pin a reviewed commit or tag; do not track a moving branch:
-
-```bash
-pi install git:github.com/DxTa/pi-sentinel@<commit-or-tag>
-```
-
-Start `pi`, then check it:
-
-```text
-/sandbox-status   # SRT and host dependencies are OK
-/sentinel         # active mode and settings
-```
-
-The bundled defaults work as they are.
+That's it: the defaults work as they are. `auto` mode needs Apple silicon on macOS; on Intel Macs use `manual` or `yolo`.
 
 ## Modes
 
