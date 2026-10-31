@@ -17,6 +17,7 @@ import {
 import {
   DEFAULT_EXTENSION_CONFIG,
   type ModeScope,
+  PERMISSION_MODES,
   type PermissionMode,
   type PermissionSystemExtensionConfig,
 } from "./extension-config";
@@ -36,15 +37,15 @@ interface PermissionSystemConfigController {
   getModeLayers?(cwd?: string | null): ModeLayers;
   /** Optional: returns the composed config-layer ruleset for origin display. */
   getComposedRules?(): Ruleset;
-  /** Optional runtime state for model-backed yolo-auto worker diagnostics. */
-  getYoloAutoStatus?(): string;
+  /** Optional runtime state for model-backed auto worker diagnostics. */
+  getAutoModeStatus?(): string;
   /** Optional: effective sandbox state and global toggle. */
   getSandboxEnabled?(): boolean;
   setSandboxEnabled?(enabled: boolean, ctx: ExtensionCommandContext): void;
 }
 
 const ON_OFF = ["on", "off"];
-const MODES: PermissionMode[] = ["manual", "yolo", "yolo-auto"];
+const MODES: PermissionMode[] = [...PERMISSION_MODES];
 const MODE_SCOPES: ModeScope[] = ["session", "project", "global"];
 const COMMAND_ARGUMENTS = [
   {
@@ -101,7 +102,7 @@ function formatRulesSummary(rules: Ruleset): string {
 function summarizeConfig(
   config: PermissionSystemExtensionConfig,
   rules?: Ruleset,
-  yoloAutoStatus?: string,
+  autoModeStatus?: string,
 ): string {
   const knobs = [
     `mode=${config.mode}`,
@@ -109,7 +110,7 @@ function summarizeConfig(
     `debugLog=${toOnOff(config.debugLog)}`,
   ].join(", ");
   const rulesSuffix = rules ? formatRulesSummary(rules) : "";
-  const workerSuffix = yoloAutoStatus ? `, ${yoloAutoStatus}` : "";
+  const workerSuffix = autoModeStatus ? `, ${autoModeStatus}` : "";
   return `${knobs}${workerSuffix}${rulesSuffix}`;
 }
 
@@ -147,7 +148,7 @@ export function buildSettingItems(
       id: "mode",
       label: "Mode",
       description:
-        "Manual prompts; yolo auto-approves safe checks; yolo-auto uses model-backed workspace read/list approval with classic yolo elsewhere",
+        "manual prompts; yolo approves everything except hard rules; auto adds a local classifier for workspace reads, writes, and sandboxed Bash",
       currentValue: modeValue,
       values: modeValues,
     },
@@ -499,7 +500,7 @@ function handleArgs(
   if (normalized === "show") {
     const rules = controller.getComposedRules?.();
     ctx.ui.notify(
-      `pi-sentinel: ${summarizeConfig(controller.getConfig(), rules, controller.getYoloAutoStatus?.())}`,
+      `pi-sentinel: ${summarizeConfig(controller.getConfig(), rules, controller.getAutoModeStatus?.())}`,
       "info",
     );
     return true;

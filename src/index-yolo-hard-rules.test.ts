@@ -282,7 +282,7 @@ describe("yolo mode hard rules", () => {
     expect(context.ui.select).not.toHaveBeenCalled();
   });
 
-  it.each(["manual", "yolo-auto"])("keeps prompting for a write outside the workspace in %s mode", async (mode) => {
+  it.each(["manual", "auto"])("keeps prompting for a write outside the workspace in %s mode", async (mode) => {
     const { run, context, projectDir } = await setup(mode);
     await run("write", { path: path.join(projectDir, "..", "yolo-outside.txt"), content: "x" });
 

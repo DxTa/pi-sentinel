@@ -27,7 +27,7 @@ import {
   getLegacyProjectPolicyPath,
   getProjectConfigPath,
 } from "./config-paths";
-import { EXTENSION_ROOT } from "./extension-config";
+import { EXTENSION_ROOT, isLegacyModeAlias, parsePermissionMode } from "./extension-config";
 import { mergeFlatPermissions } from "./permission-merge";
 import type { FlatPermissionConfig, PermissionState } from "./types";
 
@@ -152,7 +152,7 @@ export function writeConfigFile(
 }
 
 function legacyFlagsForMode(mode: unknown): { yoloMode?: boolean; yoloAutoMode?: boolean } {
-  if (mode === "yolo-auto") return { yoloMode: true, yoloAutoMode: true };
+  if (mode === "auto") return { yoloMode: true, yoloAutoMode: true };
   if (mode === "yolo") return { yoloMode: true, yoloAutoMode: false };
   if (mode === "manual") return { yoloMode: false, yoloAutoMode: false };
   return {};
@@ -181,17 +181,18 @@ function canonicalizePersistedMode(
   inheritedMode: unknown,
 ): JsonObject {
   const next = { ...config };
+  if (isLegacyModeAlias(next.mode)) next.mode = parsePermissionMode(next.mode)!;
   const mode = next.mode;
   const hasLegacyMode =
     typeof next.yoloMode === "boolean" || typeof next.yoloAutoMode === "boolean";
-  if (mode !== "manual" && mode !== "yolo" && mode !== "yolo-auto" && hasLegacyMode) {
+  if (mode !== "manual" && mode !== "yolo" && mode !== "auto" && hasLegacyMode) {
     const inherited = legacyFlagsForMode(inheritedMode);
     const effective = {
       ...inherited,
       ...(typeof next.yoloMode === "boolean" ? { yoloMode: next.yoloMode } : {}),
       ...(typeof next.yoloAutoMode === "boolean" ? { yoloAutoMode: next.yoloAutoMode } : {}),
     };
-    if (effective.yoloAutoMode === true) next.mode = "yolo-auto";
+    if (effective.yoloAutoMode === true) next.mode = "auto";
     else if (effective.yoloMode === true) next.mode = "yolo";
     else if (effective.yoloAutoMode !== undefined || effective.yoloMode !== undefined) {
       next.mode = "manual";

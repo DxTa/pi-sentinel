@@ -2,7 +2,7 @@ import {
   patternKeyFor,
   workspaceScope,
   type HumanAction,
-} from "./yolo-auto-decision-store";
+} from "./auto-mode-decision-store";
 import type { PermissionDecisionState } from "./permission-dialog";
 import { createHash } from "node:crypto";
 import type { ExtensionContext } from "@earendil-works/pi-coding-agent";
@@ -13,10 +13,10 @@ import {
   type PermissionForwardingDeps,
 } from "./forwarded-permissions/polling";
 import { PromptWaitTracker } from "./prompt-state";
-import { decideYoloAuto } from "./yolo-auto-policy";
+import { decideAutoMode } from "./auto-mode-policy";
 import { isReadOnlyBashChain, isReadOnlyBashDiagnostic } from "./bash-command-safety";
-import { buildYoloAutoText, type YoloAutoClient } from "./yolo-auto-client";
-import type { YoloAutoEvaluator } from "./yolo-auto-evaluator";
+import { buildAutoModeText, type AutoModeClient } from "./auto-mode-client";
+import type { AutoModeEvaluator } from "./auto-mode-evaluator";
 import type {
   PermissionPromptDecision,
   RequestPermissionOptions,
@@ -48,25 +48,25 @@ export interface PromptPermissionDetails {
   /** Disable all remembered approval choices for one-time prompts. */
   allowSession?: boolean;
   /** Set only after normal deterministic tool gates pass. */
-  yoloAutoEligible?: boolean;
+  autoModeEligible?: boolean;
   /** Whether eligible request path is workspace-local. */
-  yoloAutoWorkspaceLocal?: boolean;
+  autoModeWorkspaceLocal?: boolean;
   /** Caller-side sensitive-path result; absolute paths never cross this boundary. */
-  yoloAutoHardRuleHit?: boolean;
+  autoModeHardRuleHit?: boolean;
   /** Classifier operation for eligible workspace files or sandboxed Bash. */
-  yoloAutoOperation?: "read" | "list" | "write" | "edit" | "exec";
+  autoModeOperation?: "read" | "list" | "write" | "edit" | "exec";
   /** Prebuilt, privacy-scoped classifier input. */
-  yoloAutoText?: string;
+  autoModeText?: string;
   /** Whether the content preview was truncated to the classifier limit. */
-  yoloAutoTextTruncated?: boolean;
+  autoModeTextTruncated?: boolean;
   /** True only when the Bash request will run inside SRT. */
-  yoloAutoSandboxed?: boolean;
+  autoModeSandboxed?: boolean;
   /** Redacted inner Bash commands, classified one by one. */
-  yoloAutoUnits?: string[];
+  autoModeUnits?: string[];
   /** Inner Bash commands cannot all be read statically. */
-  yoloAutoOpaque?: boolean;
+  autoModeOpaque?: boolean;
   /** Relative path only; never an absolute path or raw input. */
-  yoloAutoWorkspaceRelativePath?: string;
+  autoModeWorkspaceRelativePath?: string;
 }
 
 /** Mockable contract for permission prompting. */
@@ -94,9 +94,9 @@ const HUMAN_ACTION_BY_STATE: Record<PermissionDecisionState, HumanAction> = {
 };
 
 /** Inner Bash commands for per-command classification; omitted when the command could not be split. */
-function yoloAutoUnitFields(details: PromptPermissionDetails): { units?: string[]; opaque?: boolean } {
-  const units = details.yoloAutoUnits;
-  return units?.length ? { units, opaque: details.yoloAutoOpaque === true } : {};
+function autoModeUnitFields(details: PromptPermissionDetails): { units?: string[]; opaque?: boolean } {
+  const units = details.autoModeUnits;
+  return units?.length ? { units, opaque: details.autoModeOpaque === true } : {};
 }
 
 /** Scope and coarse pattern key for the decision store; omitted without a workspace. */
@@ -108,8 +108,8 @@ function decisionStoreFields(
   const patternKey = patternKeyFor({
     toolName: details.toolName ?? "unknown",
     ...(details.command ? { command: details.command } : {}),
-    ...(details.yoloAutoWorkspaceRelativePath
-      ? { workspaceRelativePath: details.yoloAutoWorkspaceRelativePath }
+    ...(details.autoModeWorkspaceRelativePath
+      ? { workspaceRelativePath: details.autoModeWorkspaceRelativePath }
       : {}),
   });
   return { scope: workspaceScope(cwd), ...(patternKey ? { patternKey } : {}) };
@@ -130,13 +130,13 @@ export interface PermissionPrompterDeps {
   /** Optional fallback resolver for parent session id when subagent env markers are absent. */
   resolveFallbackTargetSessionId?: (ctx: ExtensionContext) => string | null;
   /** Optional shared worker client; absent/unavailable always falls back to prompt. */
-  yoloAutoClient?: Pick<YoloAutoClient, "evaluate">;
-  yoloAutoEvaluator?: Pick<YoloAutoEvaluator, "evaluate">;
+  autoModeClient?: Pick<AutoModeClient, "evaluate">;
+  autoModeEvaluator?: Pick<AutoModeEvaluator, "evaluate">;
   /** Label a stored model evaluation with the human decision (D16). */
   recordHumanDecision?: (evaluationId: string, action: HumanAction, ts: number) => void;
   /** Store workspace-scoped, hashed host Bash decisions; never store command text. */
-  /** Wait until extension-managed yolo-auto assets are ready or startup failed. */
-  waitForYoloAutoStartup?: () => Promise<void>;
+  /** Wait until extension-managed auto assets are ready or startup failed. */
+  waitForAutoModeStartup?: () => Promise<void>;
   /** Show the interactive permission dialog in the UI. */
   requestPermissionDecisionFromUi(
     ui: ExtensionContext["ui"],
@@ -181,15 +181,15 @@ export class PermissionPrompter implements PermissionPrompterApi {
         ),
     };
 
-    // YoloAuto approves only model-eligible requests; classic YOLO keeps its broad bypass.
-    const yoloAutoCandidate =
-      config.mode === "yolo-auto"
-      && details.yoloAutoEligible === true
-      && details.yoloAutoWorkspaceLocal === true
-      && Boolean(details.yoloAutoOperation);
+    // AutoMode approves only model-eligible requests; classic YOLO keeps its broad bypass.
+    const autoModeCandidate =
+      config.mode === "auto"
+      && details.autoModeEligible === true
+      && details.autoModeWorkspaceLocal === true
+      && Boolean(details.autoModeOperation);
     if (config.mode === "yolo"
       && shouldAutoApprovePermissionState("ask", config, yoloContext)
-      && !yoloAutoCandidate) {
+      && !autoModeCandidate) {
       this.writeReviewEntry("permission_request.auto_approved", details);
       this.writeDebugPrompt("permission_prompt.resolved", details, {
         approved: true,
@@ -201,13 +201,13 @@ export class PermissionPrompter implements PermissionPrompterApi {
 
     const explicitlyForcedPrompt =
       details.forcePromptInYolo === true
-      || ((config.mode === "yolo" || config.mode === "yolo-auto")
+      || ((config.mode === "yolo" || config.mode === "auto")
         && typeof details.command === "string"
         && matchesBashAskPattern(config.yoloAskBashPatterns ?? [], details.command));
     if (
       details.toolName === "bash"
-      && details.yoloAutoWorkspaceLocal === true
-      && details.yoloAutoHardRuleHit === false
+      && details.autoModeWorkspaceLocal === true
+      && details.autoModeHardRuleHit === false
       && !explicitlyForcedPrompt
       && typeof details.command === "string"
       && (isReadOnlyBashDiagnostic(details.command)
@@ -216,7 +216,7 @@ export class PermissionPrompter implements PermissionPrompterApi {
       this.writeReviewEntry("permission_request.read_only_diagnostic_auto_allowed", {
         ...details,
         resolution: "read_only_diagnostic_auto_allowed",
-        yoloAutoReason: "curated_read_only_diagnostic",
+        autoModeReason: "curated_read_only_diagnostic",
       });
       this.writeDebugPrompt("permission_prompt.resolved", details, {
         approved: true,
@@ -226,18 +226,18 @@ export class PermissionPrompter implements PermissionPrompterApi {
       return { approved: true, state: "approved", autoApproved: true };
     }
 
-    const yoloAutoDecision = await this.evaluateYoloAuto(config, details, ctx.cwd);
-    if (yoloAutoDecision.action === "allow") {
-      this.writeReviewEntry("permission_request.yolo_auto_approved", {
+    const autoModeDecision = await this.evaluateAutoMode(config, details, ctx.cwd);
+    if (autoModeDecision.action === "allow") {
+      this.writeReviewEntry("permission_request.auto_mode_approved", {
         ...details,
-        yoloAutoReason: yoloAutoDecision.reason,
-        evaluationId: yoloAutoDecision.evaluationId,
-        yoloAutoAudit: yoloAutoDecision.audit,
+        autoModeReason: autoModeDecision.reason,
+        evaluationId: autoModeDecision.evaluationId,
+        autoModeAudit: autoModeDecision.audit,
       });
       this.writeDebugPrompt("permission_prompt.resolved", details, {
         approved: true,
-        resolution: "yolo_auto_approved",
-        yoloAutoReason: yoloAutoDecision.reason,
+        resolution: "auto_mode_approved",
+        autoModeReason: autoModeDecision.reason,
         latencyMs: Date.now() - startedAt,
       });
       return { approved: true, state: "approved", autoApproved: true };
@@ -270,7 +270,7 @@ export class PermissionPrompter implements PermissionPrompterApi {
 
       // Only a person's explicit dialog answer is a learning label; failures and timeouts are not.
       if (decision.humanDecided && details.allowSession !== false) {
-        this.labelEvaluation(yoloAutoDecision.evaluationId, decision.state, details);
+        this.labelEvaluation(autoModeDecision.evaluationId, decision.state, details);
       }
 
       this.writeReviewEntry(
@@ -281,8 +281,8 @@ export class PermissionPrompter implements PermissionPrompterApi {
           ...details,
           resolution: decision.state,
           denialReason: decision.denialReason,
-          evaluationId: yoloAutoDecision.evaluationId,
-          yoloAutoAudit: yoloAutoDecision.audit,
+          evaluationId: autoModeDecision.evaluationId,
+          autoModeAudit: autoModeDecision.audit,
         },
       );
       this.writeDebugPrompt("permission_prompt.resolved", details, {
@@ -322,7 +322,7 @@ export class PermissionPrompter implements PermissionPrompterApi {
     }
   }
 
-  private async evaluateYoloAuto(
+  private async evaluateAutoMode(
     config: PermissionSystemExtensionConfig,
     details: PromptPermissionDetails,
     cwd: string | undefined,
@@ -332,56 +332,56 @@ export class PermissionPrompter implements PermissionPrompterApi {
     evaluationId?: string;
     audit?: boolean;
   }> {
-    const operation = details.yoloAutoOperation;
-    if (config.mode !== "yolo-auto" || !operation || !details.yoloAutoWorkspaceLocal) {
+    const operation = details.autoModeOperation;
+    if (config.mode !== "auto" || !operation || !details.autoModeWorkspaceLocal) {
       return { action: "prompt", reason: "disabled_or_ineligible" };
     }
-    if (!details.yoloAutoEligible) {
+    if (!details.autoModeEligible) {
       return { action: "prompt", reason: "not_configured_or_ineligible" };
     }
-    if (this.deps.yoloAutoEvaluator) {
-      return this.deps.yoloAutoEvaluator.evaluate({
+    if (this.deps.autoModeEvaluator) {
+      return this.deps.autoModeEvaluator.evaluate({
         flow: "permission",
         candidate: true,
         enabled: true,
         permissionState: "ask",
         source: details.source,
-        eligible: details.yoloAutoEligible === true,
+        eligible: details.autoModeEligible === true,
         forcedPrompt: details.forcePromptInYolo === true,
-        workspaceLocal: details.yoloAutoWorkspaceLocal === true,
+        workspaceLocal: details.autoModeWorkspaceLocal === true,
         operation,
         toolName: details.toolName ?? "unknown",
-        hardRuleHit: details.yoloAutoHardRuleHit ?? true,
-        sandboxed: details.yoloAutoSandboxed === true,
-        ...(details.yoloAutoWorkspaceRelativePath
-          ? { workspaceRelativePath: details.yoloAutoWorkspaceRelativePath }
+        hardRuleHit: details.autoModeHardRuleHit ?? true,
+        sandboxed: details.autoModeSandboxed === true,
+        ...(details.autoModeWorkspaceRelativePath
+          ? { workspaceRelativePath: details.autoModeWorkspaceRelativePath }
           : {}),
-        ...(details.yoloAutoText !== undefined
+        ...(details.autoModeText !== undefined
           ? {
-              text: details.yoloAutoText,
-              truncated: details.yoloAutoTextTruncated ?? false,
+              text: details.autoModeText,
+              truncated: details.autoModeTextTruncated ?? false,
             }
           : {}),
-        ...yoloAutoUnitFields(details),
+        ...autoModeUnitFields(details),
         toolCallIdPresent: Boolean(details.toolCallId),
         ...(details.toolCallId ? { toolCallId: details.toolCallId } : {}),
         ...decisionStoreFields(details, cwd),
       });
     }
-    if (!this.deps.yoloAutoClient || !details.yoloAutoEligible) {
+    if (!this.deps.autoModeClient || !details.autoModeEligible) {
       return { action: "prompt", reason: "not_configured_or_ineligible" };
     }
 
     try {
-      await this.deps.waitForYoloAutoStartup?.();
+      await this.deps.waitForAutoModeStartup?.();
     } catch {
       return { action: "prompt", reason: "startup_failed" };
     }
-    const result = await this.deps.yoloAutoClient.evaluate(details.yoloAutoText ?? buildYoloAutoText({
+    const result = await this.deps.autoModeClient.evaluate(details.autoModeText ?? buildAutoModeText({
       toolName: details.toolName ?? "unknown",
       operation,
-      ...(details.yoloAutoWorkspaceRelativePath
-        ? { workspaceRelativePath: details.yoloAutoWorkspaceRelativePath }
+      ...(details.autoModeWorkspaceRelativePath
+        ? { workspaceRelativePath: details.autoModeWorkspaceRelativePath }
         : {}),
     }));
     if (result.status === "unavailable") {
@@ -393,14 +393,14 @@ export class PermissionPrompter implements PermissionPrompterApi {
       };
     }
     return {
-      ...decideYoloAuto({
-        enabled: config.mode === "yolo-auto",
+      ...decideAutoMode({
+        enabled: config.mode === "auto",
         permissionState: "ask",
         source: details.source,
-        eligible: details.yoloAutoEligible === true,
+        eligible: details.autoModeEligible === true,
         forcedPrompt: details.forcePromptInYolo === true,
-        workspaceLocal: details.yoloAutoWorkspaceLocal === true,
-        hardRuleHit: details.yoloAutoHardRuleHit ?? true,
+        workspaceLocal: details.autoModeWorkspaceLocal === true,
+        hardRuleHit: details.autoModeHardRuleHit ?? true,
         sandboxed: false,
         operation,
         toolName: details.toolName ?? "unknown",
@@ -436,9 +436,9 @@ export class PermissionPrompter implements PermissionPrompterApi {
     details: PromptPermissionDetails & {
       resolution?: string;
       denialReason?: string;
-      yoloAutoReason?: string;
+      autoModeReason?: string;
       evaluationId?: string;
-      yoloAutoAudit?: boolean;
+      autoModeAudit?: boolean;
     },
   ): void {
     this.deps.writeReviewLog(event, {
@@ -453,12 +453,12 @@ export class PermissionPrompter implements PermissionPrompterApi {
       command: details.command ?? null,
       target: details.target ?? null,
       toolInputPreview: details.toolInputPreview ?? null,
-      yoloAutoEligible: details.yoloAutoEligible ?? false,
-      yoloAutoOperation: details.yoloAutoOperation ?? null,
-      yoloAutoWorkspaceRelativePath: details.yoloAutoWorkspaceRelativePath ?? null,
-      yoloAutoReason: details.yoloAutoReason ?? null,
+      autoModeEligible: details.autoModeEligible ?? false,
+      autoModeOperation: details.autoModeOperation ?? null,
+      autoModeWorkspaceRelativePath: details.autoModeWorkspaceRelativePath ?? null,
+      autoModeReason: details.autoModeReason ?? null,
       ...(details.evaluationId !== undefined ? { evaluationId: details.evaluationId } : {}),
-      ...(details.yoloAutoAudit !== undefined ? { yoloAutoAudit: details.yoloAutoAudit } : {}),
+      ...(details.autoModeAudit !== undefined ? { autoModeAudit: details.autoModeAudit } : {}),
       resolution: details.resolution ?? null,
       denialReason: details.denialReason ?? null,
     });

@@ -9,10 +9,10 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import piPermissionSystemExtension from "./index.ts";
 import { resolveDockerSocketPaths } from "./sandbox/docker-socket.js";
-import { YOLO_AUTO_BUILD_ID } from "./yolo-auto-build";
-import { YOLO_AUTO_LABEL_SCHEMA } from "./yolo-auto-label-schema";
-import type { YoloAutoHeads } from "./yolo-auto-policy";
-import { YoloAutoWorkerServer } from "./yolo-auto-worker";
+import { AUTO_MODE_BUILD_ID } from "./auto-mode-build";
+import { AUTO_MODE_LABEL_SCHEMA } from "./auto-mode-label-schema";
+import type { AutoModeHeads } from "./auto-mode-policy";
+import { AutoModeWorkerServer } from "./auto-mode-worker";
 
 const mockDockerSocketPaths = vi.hoisted(() => vi.fn((): string[] => []));
 vi.mock("./sandbox/docker-socket.js", async (importOriginal) => {
@@ -64,7 +64,7 @@ beforeEach(async () => {
 
 afterEach(async () => {
   delete process.env.PI_CODING_AGENT_DIR;
-  delete process.env.PI_SENTINEL_YOLO_AUTO_SOCKET;
+  delete process.env.PI_SENTINEL_AUTO_SOCKET;
   if (originalPath === undefined) delete process.env.PATH;
   else process.env.PATH = originalPath;
   originalPath = undefined;
@@ -193,7 +193,7 @@ async function setupPushFallback(overrides: Record<string, unknown> = {}) {
   return { agentDir, projectDir, pi, command, run, fail };
 }
 
-function safeYoloAutoHeads(action: string): YoloAutoHeads {
+function safeAutoModeHeads(action: string): AutoModeHeads {
   const winners: Record<string, string> = {
     injection: "benign",
     routing: "tool_operation_request",
@@ -204,7 +204,7 @@ function safeYoloAutoHeads(action: string): YoloAutoHeads {
   };
   return {
     ...Object.fromEntries(
-      Object.entries(YOLO_AUTO_LABEL_SCHEMA)
+      Object.entries(AUTO_MODE_LABEL_SCHEMA)
         .filter(([head]) => head !== "tool_tags")
         .map(([head, labels]) => [
           head,
@@ -215,7 +215,7 @@ function safeYoloAutoHeads(action: string): YoloAutoHeads {
         ]),
     ),
     tool_tags: { "source:sensitive": 0.1, "source:untrusted": 0.1, "sink:external": 0.1 },
-  } as YoloAutoHeads;
+  } as AutoModeHeads;
 }
 
 function extractHelperInput(command: string) {
@@ -609,7 +609,7 @@ describe("piPermissionSystemExtension SRT default smoke", () => {
     });
   });
 
-  it.each(["manual", "yolo", "yolo-auto"] as const)(
+  it.each(["manual", "yolo", "auto"] as const)(
     "auto-allows protected credential reads and fully redacts output in %s mode",
     async (mode) => {
       const agentDir = await makeTempDir("pi-permission-agent-");
@@ -672,7 +672,7 @@ describe("piPermissionSystemExtension SRT default smoke", () => {
     },
   );
 
-  it.each(["manual", "yolo", "yolo-auto"] as const)(
+  it.each(["manual", "yolo", "auto"] as const)(
     "blocks protected credential reads outside SRT in %s mode",
     async (mode) => {
       const agentDir = await makeTempDir("pi-permission-agent-");
@@ -803,7 +803,7 @@ describe("piPermissionSystemExtension SRT default smoke", () => {
     { mode: "manual", surface: "user_bash" },
     { mode: "yolo", surface: "tool_call" },
     { mode: "yolo", surface: "user_bash" },
-    { mode: "yolo-auto", surface: "user_bash" },
+    { mode: "auto", surface: "user_bash" },
   ] as const)(
     "blocks shell-quoted protected paths from a GPG bypass in $mode mode through $surface",
     async ({ mode, surface }) => {
@@ -1484,7 +1484,7 @@ describe("piPermissionSystemExtension SRT default smoke", () => {
     const projectDir = await makeTempDir("pi-permission-project-");
     process.env.PI_CODING_AGENT_DIR = agentDir;
     await writeExtensionConfig(agentDir, {
-      mode: "yolo-auto",
+      mode: "auto",
       yoloAskBashPatterns: [],
       permission: { "*": "ask", bash: { "*": "ask" }, path: { "*": "allow" }, external_directory: { "*": "allow" } },
       sandbox: { enabled: false, backend: "srt", defaultProfile: "online-dev" },
@@ -1507,7 +1507,7 @@ describe("piPermissionSystemExtension SRT default smoke", () => {
     const projectDir = await makeTempDir("pi-permission-project-");
     process.env.PI_CODING_AGENT_DIR = agentDir;
     await writeExtensionConfig(agentDir, {
-      mode: "yolo-auto",
+      mode: "auto",
       yoloAskBashPatterns: [],
       permission: { "*": "ask", bash: { "*": "ask" }, path: { "*": "allow" }, external_directory: { "*": "allow" } },
       sandbox: { enabled: false, backend: "srt", defaultProfile: "online-dev" },
@@ -1526,7 +1526,7 @@ describe("piPermissionSystemExtension SRT default smoke", () => {
     expect(context.ui.select).not.toHaveBeenCalled();
   });
 
-  it.each(["manual", "yolo", "yolo-auto"] as const)(
+  it.each(["manual", "yolo", "auto"] as const)(
     "auto-approves normal workspace file tools in %s mode",
     async (mode) => {
       const agentDir = await makeTempDir("pi-permission-agent-");
@@ -1569,14 +1569,14 @@ describe("piPermissionSystemExtension SRT default smoke", () => {
     },
   );
 
-  it("routes eligible workspace operations through YoloAuto before auto-allow", async () => {
+  it("routes eligible workspace operations through AutoMode before auto-allow", async () => {
     const agentDir = await makeTempDir("pi-permission-agent-");
     const projectDir = await makeTempDir("pi-permission-project-");
     process.env.PI_CODING_AGENT_DIR = agentDir;
     const existingPath = path.join(projectDir, "notes.txt");
     await writeFile(existingPath, "before\n", "utf8");
     await writeExtensionConfig(agentDir, {
-      mode: "yolo-auto",
+      mode: "auto",
       permission: {
         "*": "ask",
         read: "ask",
@@ -1587,12 +1587,12 @@ describe("piPermissionSystemExtension SRT default smoke", () => {
       sandbox: { enabled: true, backend: "srt", defaultProfile: "online-dev", bypassCommands: [] },
     });
 
-    const socketPath = path.join(agentDir, "yolo-auto-test.sock");
-    process.env.PI_SENTINEL_YOLO_AUTO_SOCKET = socketPath;
+    const socketPath = path.join(agentDir, "auto-mode-test.sock");
+    process.env.PI_SENTINEL_AUTO_SOCKET = socketPath;
     const classificationTexts: string[] = [];
-    const worker = new YoloAutoWorkerServer({
+    const worker = new AutoModeWorkerServer({
       socketPath,
-      buildId: YOLO_AUTO_BUILD_ID,
+      buildId: AUTO_MODE_BUILD_ID,
       provider: {
         ready: async () => undefined,
         classify: async (text) => {
@@ -1604,7 +1604,7 @@ describe("piPermissionSystemExtension SRT default smoke", () => {
               : text.startsWith("tool=ls ")
                 ? "list"
                 : "read";
-          return safeYoloAutoHeads(action);
+          return safeAutoModeHeads(action);
         },
       },
     });
@@ -1688,7 +1688,7 @@ describe("piPermissionSystemExtension SRT default smoke", () => {
     expect(result).toMatchObject({ block: true });
   });
 
-  it.each(["manual", "yolo", "yolo-auto"] as const)(
+  it.each(["manual", "yolo", "auto"] as const)(
     "blocks canonical symlink writes in %s mode",
     async (mode) => {
       const agentDir = await makeTempDir("pi-permission-agent-");
@@ -2247,7 +2247,7 @@ describe("piPermissionSystemExtension SRT default smoke", () => {
     }
   });
 
-  it.each(["manual", "yolo-auto"] as const)("auto-allows trusted Pi skill/extension reads and scripts in %s mode", async (mode) => {
+  it.each(["manual", "auto"] as const)("auto-allows trusted Pi skill/extension reads and scripts in %s mode", async (mode) => {
     const agentDir = await makeTempDir("pi-permission-agent-");
     const projectDir = await makeTempDir("pi-permission-project-");
     const skillDir = path.join(agentDir, "skills", "demo");

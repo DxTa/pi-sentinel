@@ -9,7 +9,7 @@ import {
 import {
   loadAndMergeConfigs,
   normalizeUnifiedConfig,
-  stripLegacyYoloAutoMaxLevel,
+  stripLegacyAutoModeMaxLevel,
   type ConfigModeLayer,
   type MergedConfigResult,
   type ModeLayerId,
@@ -360,7 +360,7 @@ function saveGlobalSettings(
     yoloAskBashPatterns: normalized.yoloAskBashPatterns,
   };
 
-  stripLegacyYoloAutoMaxLevel(merged);
+  stripLegacyAutoModeMaxLevel(merged);
   if (persistMode) {
     delete merged.yoloMode;
     delete merged.yoloAutoMode;
@@ -469,7 +469,7 @@ export function resetExtensionConfig(
   delete next.mode;
   delete next.yoloMode;
   delete next.yoloAutoMode;
-  stripLegacyYoloAutoMaxLevel(next);
+  stripLegacyAutoModeMaxLevel(next);
   delete next.yoloAskBashPatterns;
 
   if (!writeConfigFile(globalPath, next)) {

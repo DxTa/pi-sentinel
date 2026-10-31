@@ -11,13 +11,13 @@ import {
   PATH_BEARING_TOOLS,
   READ_ONLY_PATH_BEARING_TOOLS,
 } from "#src/path-utils";
-import { isSensitivePath } from "../../yolo-auto-sensitive-paths";
+import { isSensitivePath } from "../../auto-mode-sensitive-paths";
 import { bashInnerCommands } from "#src/bash-segments";
 import { matchesGitPushCommand } from "#src/yolo-mode";
 import { suggestSessionPattern } from "#src/pattern-suggest";
 import { formatAskPrompt } from "#src/permission-prompts";
 import { getEditReplacementText, getPermissionLogContext } from "#src/tool-input-preview";
-import { buildYoloAutoText } from "../../yolo-auto-client";
+import { buildAutoModeText } from "../../auto-mode-client";
 import type { PermissionCheckResult } from "#src/types";
 import type { GateDescriptor } from "./descriptor";
 import { deriveDecisionValue } from "./helpers";
@@ -101,8 +101,8 @@ export function describeToolGate(
   );
   const toolPath = getPathBearingToolPath(tcc.toolName, tcc.input);
   const inputRecord = toRecord(tcc.input);
-  const yoloAutoCommand = tcc.yoloAutoCommand;
-  const yoloAutoOperation =
+  const autoModeCommand = tcc.autoModeCommand;
+  const autoModeOperation =
     tcc.toolName === "read"
       ? "read"
       : READ_ONLY_PATH_BEARING_TOOLS.has(tcc.toolName)
@@ -110,53 +110,53 @@ export function describeToolGate(
         : tcc.toolName === "write" || tcc.toolName === "edit"
           ? tcc.toolName
           : tcc.toolName === "bash" ? "exec" : undefined;
-  const yoloAutoWorkspaceLocal = yoloAutoOperation === "exec"
-    ? tcc.yoloAutoWorkspaceLocal === true
-      && Boolean(yoloAutoCommand?.trim())
+  const autoModeWorkspaceLocal = autoModeOperation === "exec"
+    ? tcc.autoModeWorkspaceLocal === true
+      && Boolean(autoModeCommand?.trim())
       && Boolean(tcc.cwd)
-    : yoloAutoOperation !== undefined
+    : autoModeOperation !== undefined
       && tcc.cwd !== undefined
       && isWorkspaceLocalFileOperation(tcc.toolName, tcc.input, tcc.cwd, {
         allowWorkspaceEnvRead: true,
       });
-  const yoloAutoWorkspaceRelativePath =
-    yoloAutoWorkspaceLocal && toolPath && tcc.cwd
+  const autoModeWorkspaceRelativePath =
+    autoModeWorkspaceLocal && toolPath && tcc.cwd
       ? relative(tcc.cwd, resolve(tcc.cwd, toolPath)).replaceAll("\\", "/")
       : undefined;
-  const yoloAutoContent = yoloAutoOperation === "write"
+  const autoModeContent = autoModeOperation === "write"
     ? typeof inputRecord.content === "string" ? inputRecord.content : undefined
-    : yoloAutoOperation === "edit" ? getEditReplacementText(inputRecord) : undefined;
-  const yoloAutoTextTruncated = yoloAutoOperation === "exec"
+    : autoModeOperation === "edit" ? getEditReplacementText(inputRecord) : undefined;
+  const autoModeTextTruncated = autoModeOperation === "exec"
     ? false
-    : (yoloAutoContent?.length ?? 0) > 800;
-  const yoloAutoText = yoloAutoWorkspaceLocal && yoloAutoOperation !== undefined
-    ? yoloAutoOperation === "exec" && yoloAutoCommand !== undefined
-      ? buildYoloAutoText({ toolName: tcc.toolName, operation: yoloAutoOperation, command: yoloAutoCommand! })
-      : yoloAutoContent !== undefined
-        ? buildYoloAutoText({
+    : (autoModeContent?.length ?? 0) > 800;
+  const autoModeText = autoModeWorkspaceLocal && autoModeOperation !== undefined
+    ? autoModeOperation === "exec" && autoModeCommand !== undefined
+      ? buildAutoModeText({ toolName: tcc.toolName, operation: autoModeOperation, command: autoModeCommand! })
+      : autoModeContent !== undefined
+        ? buildAutoModeText({
             toolName: tcc.toolName,
-            operation: yoloAutoOperation,
-            ...(yoloAutoWorkspaceRelativePath
-              ? { workspaceRelativePath: yoloAutoWorkspaceRelativePath }
+            operation: autoModeOperation,
+            ...(autoModeWorkspaceRelativePath
+              ? { workspaceRelativePath: autoModeWorkspaceRelativePath }
               : {}),
-            content: yoloAutoContent,
+            content: autoModeContent,
           })
         : undefined
     : undefined;
-  const yoloAutoInner = yoloAutoOperation === "exec" ? bashInnerCommands(yoloAutoCommand ?? "") : null;
+  const autoModeInner = autoModeOperation === "exec" ? bashInnerCommands(autoModeCommand ?? "") : null;
   const forcePromptInYolo =
-    (freshApproval && tcc.mode === "yolo-auto") || hasProtectedEnvSelector(tcc.toolName, tcc.input);
-  const yoloAutoHardRuleTarget = yoloAutoWorkspaceLocal && tcc.cwd
+    (freshApproval && tcc.mode === "auto") || hasProtectedEnvSelector(tcc.toolName, tcc.input);
+  const autoModeHardRuleTarget = autoModeWorkspaceLocal && tcc.cwd
     ? toolPath
       ? normalizePathForComparison(toolPath, tcc.cwd)
-      : yoloAutoOperation === "list"
+      : autoModeOperation === "list"
         ? normalizePathForComparison(tcc.cwd, tcc.cwd)
         : ""
     : "";
-  const yoloAutoHardRuleHit = yoloAutoOperation === "exec"
-    ? tcc.yoloAutoHardRuleHit ?? true
-    : !yoloAutoHardRuleTarget
-      || isSensitivePath(yoloAutoHardRuleTarget, homedir());
+  const autoModeHardRuleHit = autoModeOperation === "exec"
+    ? tcc.autoModeHardRuleHit ?? true
+    : !autoModeHardRuleTarget
+      || isSensitivePath(autoModeHardRuleTarget, homedir());
 
   return {
     surface: tcc.toolName,
@@ -178,29 +178,29 @@ export function describeToolGate(
       ...(sessionLabel ? { sessionLabel } : {}),
       ...(freshApproval ? { allowSession: false } : {}),
       ...permissionLogContext,
-      ...(yoloAutoOperation
+      ...(autoModeOperation
         ? {
-            yoloAutoEligible: check.state === "ask"
-              && yoloAutoWorkspaceLocal
-              && (yoloAutoOperation !== "exec"
+            autoModeEligible: check.state === "ask"
+              && autoModeWorkspaceLocal
+              && (autoModeOperation !== "exec"
                 // Elevated commands always prompt.
-                || (yoloAutoInner?.elevated !== true
+                || (autoModeInner?.elevated !== true
                   && (tcc.sandboxed === true
                     // Host Bash reaches the model only without command substitution.
-                    || yoloAutoInner !== null))),
-            yoloAutoWorkspaceLocal,
-            yoloAutoHardRuleHit,
-            ...(yoloAutoWorkspaceRelativePath
-              ? { yoloAutoWorkspaceRelativePath }
+                    || autoModeInner !== null))),
+            autoModeWorkspaceLocal,
+            autoModeHardRuleHit,
+            ...(autoModeWorkspaceRelativePath
+              ? { autoModeWorkspaceRelativePath }
               : {}),
-            yoloAutoOperation,
-            ...(yoloAutoOperation === "exec"
+            autoModeOperation,
+            ...(autoModeOperation === "exec"
               ? {
-                  yoloAutoSandboxed: tcc.sandboxed === true,
-                  ...(tcc.yoloAutoUnits ? { yoloAutoUnits: [...tcc.yoloAutoUnits], yoloAutoOpaque: tcc.yoloAutoOpaque === true } : {}),
+                  autoModeSandboxed: tcc.sandboxed === true,
+                  ...(tcc.autoModeUnits ? { autoModeUnits: [...tcc.autoModeUnits], autoModeOpaque: tcc.autoModeOpaque === true } : {}),
                 }
               : {}),
-            ...(yoloAutoText !== undefined ? { yoloAutoText, yoloAutoTextTruncated } : {}),
+            ...(autoModeText !== undefined ? { autoModeText, autoModeTextTruncated } : {}),
             ...(forcePromptInYolo ? { forcePromptInYolo: true } : {}),
           }
         : {}),

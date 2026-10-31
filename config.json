@@ -3,7 +3,7 @@
 
   "debugLog": false,
   "permissionReviewLog": true,
-  "mode": "yolo-auto",
+  "mode": "auto",
   "yoloAskBashPatterns": [],
 
   "piInfrastructureReadPaths": [],

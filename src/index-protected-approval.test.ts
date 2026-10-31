@@ -53,7 +53,7 @@ function createContext(cwd: string, options: { hasUI: boolean; choices: string[]
 }
 
 /** Hermetic HOME with a real ~/.config, so protected-path detection never depends on the machine. */
-async function setup(mode: "manual" | "yolo" | "yolo-auto", hasUI: boolean, choices: string[]) {
+async function setup(mode: "manual" | "yolo" | "auto", hasUI: boolean, choices: string[]) {
   const home = await makeTempDir("pi-protected-home-");
   await mkdir(path.join(home, ".config"));
   process.env.HOME = home;
@@ -147,7 +147,7 @@ describe("protected write approval", () => {
     expect(context.ui.select).not.toHaveBeenCalled();
   });
 
-  it.each(["yolo", "yolo-auto"] as const)("still prompts in %s mode and blocks on deny", async (mode) => {
+  it.each(["yolo", "auto"] as const)("still prompts in %s mode and blocks on deny", async (mode) => {
     const { run, context, configTarget } = await setup(mode, true, ["Deny"]);
 
     expect(await run({ command: `echo x > ${configTarget}` })).toMatchObject({ block: true });

@@ -8,9 +8,9 @@
  * - Unified config with permission, network, and sandbox sections
  */
 
-import { scoreWithHistory } from "./yolo-auto-scorer";
-import { NEIGHBOUR_WINDOW_MS, summarizeNeighbours } from "./yolo-auto-neighbours";
-import { openDecisionStore, type DecisionStore } from "./yolo-auto-decision-store";
+import { scoreWithHistory } from "./auto-mode-scorer";
+import { NEIGHBOUR_WINDOW_MS, summarizeNeighbours } from "./auto-mode-neighbours";
+import { openDecisionStore, type DecisionStore } from "./auto-mode-decision-store";
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
 import type { ChildProcess } from "node:child_process";
 import { toRecord } from "./common";
@@ -42,15 +42,15 @@ import { requestPermissionDecisionFromUi } from "./permission-dialog";
 import { registerPermissionRpcHandlers } from "./permission-event-rpc";
 import { emitReadyEvent } from "./permission-events";
 import { PermissionPrompter } from "./permission-prompter";
-import { YoloAutoEvaluator } from "./yolo-auto-evaluator";
-import { writeYoloAutoCalibrationRecord } from "./yolo-auto-calibration";
+import { AutoModeEvaluator } from "./auto-mode-evaluator";
+import { writeAutoModeCalibrationRecord } from "./auto-mode-calibration";
 import {
   createUnixSocketWorkerTransport,
-  YoloAutoBuildMismatchError,
-  YoloAutoClient,
-} from "./yolo-auto-client";
-import { isUnixSocketActive, spawnDetachedYoloAutoWorker, waitForWorkerStartup } from "./yolo-auto-startup";
-import { YOLO_AUTO_BUILD_ID } from "./yolo-auto-build";
+  AutoModeBuildMismatchError,
+  AutoModeClient,
+} from "./auto-mode-client";
+import { isUnixSocketActive, spawnDetachedAutoModeWorker, waitForWorkerStartup } from "./auto-mode-startup";
+import { AUTO_MODE_BUILD_ID } from "./auto-mode-build";
 import { PromptWaitTracker } from "./prompt-state";
 import { getHardBlockedBashMutationPaths } from "./handlers/gates/bash-external-directory.js";
 import { extractExternalPathsFromBashCommand, extractExternalWritePathsFromBashCommand } from "./handlers/gates/bash-path-extractor.js";
@@ -158,7 +158,7 @@ import {
   getMaskedAuthSessionGrants,
 } from "./sandbox/masked-auth-grants.js";
 import { resolveAuthExceptionPolicy, type ResolvedAuthException } from "./sandbox/auth-exception-policy.js";
-import { existsSync, lstatSync, realpathSync, unlinkSync } from "node:fs";
+import { existsSync, lstatSync, mkdirSync, realpathSync, renameSync, unlinkSync } from "node:fs";
 import { dirname, isAbsolute, join, resolve } from "node:path";
 import { homedir } from "node:os";
 import { createPiClipboardTempCleanup } from "./clipboard-temp-cleanup.js";
@@ -195,23 +195,44 @@ function getExtensionDir(): string {
   return join(getAgentDir(), "extensions", "pi-sentinel");
 }
 
-interface YoloAutoWorkerHandle {
+interface AutoModeWorkerHandle {
   process?: ChildProcess;
   startupSignal: Promise<void>;
 }
 
-async function startYoloAutoWorker(
+/**
+ * Model cache directory. Reuses a cache downloaded under the pre-rename
+ * `yolo-auto` directory so upgrading does not trigger a second ~130 MB download.
+ */
+function resolveAutoModeModelDir(agentDir: string): string {
+  const fromEnv = process.env.PI_SENTINEL_AUTO_MODEL_DIR?.trim()
+    || process.env.PI_SENTINEL_YOLO_AUTO_MODEL_DIR?.trim();
+  if (fromEnv) return fromEnv;
+  const runtimeDir = join(agentDir, "runtime", "pi-sentinel");
+  const modelDir = join(runtimeDir, "auto-mode", "models");
+  const legacyModelDir = join(runtimeDir, "yolo-auto", "models");
+  if (existsSync(modelDir) || !existsSync(legacyModelDir)) return modelDir;
+  try {
+    mkdirSync(dirname(modelDir), { recursive: true, mode: 0o700 });
+    renameSync(legacyModelDir, modelDir);
+    return modelDir;
+  } catch {
+    // A concurrent session may have moved it first.
+    return existsSync(modelDir) ? modelDir : legacyModelDir;
+  }
+}
+
+async function startAutoModeWorker(
   socketPath: string,
   agentDir: string,
   writeDebugLog: (event: string, details?: Record<string, unknown>) => void,
-): Promise<YoloAutoWorkerHandle> {
+): Promise<AutoModeWorkerHandle> {
   if (await isUnixSocketActive(socketPath)) {
-    writeDebugLog("yolo_auto.worker_reused", { reason: "active_socket" });
+    writeDebugLog("auto_mode.worker_reused", { reason: "active_socket" });
     return { startupSignal: Promise.resolve() };
   }
-  const workerPath = join(EXTENSION_ROOT, "src", "yolo-auto-worker-main.ts");
-  const modelDir = process.env.PI_SENTINEL_YOLO_AUTO_MODEL_DIR
-    || join(agentDir, "runtime", "pi-sentinel", "yolo-auto", "models");
+  const workerPath = join(EXTENSION_ROOT, "src", "auto-mode-worker-main.ts");
+  const modelDir = resolveAutoModeModelDir(agentDir);
   const args = [
     "--experimental-strip-types",
     workerPath,
@@ -221,15 +242,15 @@ async function startYoloAutoWorker(
     modelDir,
   ];
   try {
-    const worker = await spawnDetachedYoloAutoWorker(agentDir, process.execPath, args);
+    const worker = await spawnDetachedAutoModeWorker(agentDir, process.execPath, args);
     const startupSignal = worker.startupSignal.catch((error: unknown) => {
-      writeDebugLog("yolo_auto.worker_unavailable", { reason: "spawn_error" });
+      writeDebugLog("auto_mode.worker_unavailable", { reason: "spawn_error" });
       throw error;
     });
     void startupSignal.catch(() => undefined);
     return { process: worker.process, startupSignal };
   } catch (error) {
-    writeDebugLog("yolo_auto.worker_unavailable", { reason: "spawn_error" });
+    writeDebugLog("auto_mode.worker_unavailable", { reason: "spawn_error" });
     const startupSignal = Promise.reject(error);
     void startupSignal.catch(() => undefined);
     return { startupSignal };
@@ -240,7 +261,7 @@ async function startYoloAutoWorker(
 interface UnifiedConfig {
   debugLog?: boolean;
   permissionReviewLog?: boolean;
-  mode?: "manual" | "yolo" | "yolo-auto";
+  mode?: "manual" | "yolo" | "auto";
   permission?: Record<string, unknown>;
   network?: DomainGateConfig;
   sandbox?: Record<string, unknown>;
@@ -778,12 +799,13 @@ export default function piPermissionSystemExtension(pi: ExtensionAPI): void {
     }
     return "allowed";
   };
-  const yoloAutoSocketPath =
-    process.env.PI_SENTINEL_YOLO_AUTO_SOCKET?.trim()
-    || join(runtime.agentDir, "runtime", "pi-sentinel", "yolo-auto.sock");
-  const yoloAutoClient = new YoloAutoClient(
-    createUnixSocketWorkerTransport(yoloAutoSocketPath),
-    { expectedBuildId: YOLO_AUTO_BUILD_ID },
+  const autoModeSocketPath =
+    process.env.PI_SENTINEL_AUTO_SOCKET?.trim()
+    || process.env.PI_SENTINEL_YOLO_AUTO_SOCKET?.trim()
+    || join(runtime.agentDir, "runtime", "pi-sentinel", "auto-mode.sock");
+  const autoModeClient = new AutoModeClient(
+    createUnixSocketWorkerTransport(autoModeSocketPath),
+    { expectedBuildId: AUTO_MODE_BUILD_ID },
   );
   const promptWaitTracker = new PromptWaitTracker(pi.events);
   const clipboardTempCleanup = createPiClipboardTempCleanup();
@@ -797,73 +819,73 @@ export default function piPermissionSystemExtension(pi: ExtensionAPI): void {
   }>();
 
   refreshExtensionConfig(runtime);
-  let yoloAutoWorker: YoloAutoWorkerHandle | undefined;
-  let yoloAutoWorkerStart: Promise<YoloAutoWorkerHandle> | undefined = runtime.config.mode === "yolo-auto"
-    ? startYoloAutoWorker(
-      yoloAutoSocketPath,
+  let autoModeWorker: AutoModeWorkerHandle | undefined;
+  let autoModeWorkerStart: Promise<AutoModeWorkerHandle> | undefined = runtime.config.mode === "auto"
+    ? startAutoModeWorker(
+      autoModeSocketPath,
       runtime.agentDir,
       runtime.writeDebugLog.bind(runtime),
     )
     : undefined;
-  const adoptYoloAutoWorker = (worker: YoloAutoWorkerHandle): void => {
-    yoloAutoWorker = worker;
+  const adoptAutoModeWorker = (worker: AutoModeWorkerHandle): void => {
+    autoModeWorker = worker;
     const child = worker.process;
     if (!child || child.exitCode !== null) {
-      if (child?.exitCode !== null) yoloAutoWorker = undefined;
+      if (child?.exitCode !== null) autoModeWorker = undefined;
       return;
     }
     const clearWorker = (): void => {
-      if (yoloAutoWorker?.process === child) yoloAutoWorker = undefined;
+      if (autoModeWorker?.process === child) autoModeWorker = undefined;
     };
     child.once("error", clearWorker);
     child.once("exit", clearWorker);
   };
-  const startOrAdoptYoloAutoWorker = async (): Promise<void> => {
-    if (!yoloAutoWorkerStart && !yoloAutoWorker) {
-      yoloAutoWorkerStart = startYoloAutoWorker(
-        yoloAutoSocketPath,
+  const startOrAdoptAutoModeWorker = async (): Promise<void> => {
+    if (!autoModeWorkerStart && !autoModeWorker) {
+      autoModeWorkerStart = startAutoModeWorker(
+        autoModeSocketPath,
         runtime.agentDir,
         runtime.writeDebugLog.bind(runtime),
       );
     }
-    const starting = yoloAutoWorkerStart;
+    const starting = autoModeWorkerStart;
     if (starting) {
       try {
-        adoptYoloAutoWorker(await starting);
+        adoptAutoModeWorker(await starting);
       } finally {
-        if (yoloAutoWorkerStart === starting) yoloAutoWorkerStart = undefined;
+        if (autoModeWorkerStart === starting) autoModeWorkerStart = undefined;
       }
     }
-    await yoloAutoWorker?.startupSignal;
+    await autoModeWorker?.startupSignal;
   };
-  let yoloAutoReadiness: Promise<void> | undefined;
-  const ensureYoloAutoWorkerReady = async (): Promise<void> => {
-    if (runtime.config.mode !== "yolo-auto") return;
-    if (yoloAutoReadiness) return yoloAutoReadiness;
+  let autoModeReadiness: Promise<void> | undefined;
+  const ensureAutoModeWorkerReady = async (): Promise<void> => {
+    if (runtime.config.mode !== "auto") return;
+    if (autoModeReadiness) return autoModeReadiness;
 
     const readiness = (async () => {
-      await startOrAdoptYoloAutoWorker();
+      await startOrAdoptAutoModeWorker();
       try {
         await waitForWorkerStartup(
-          () => yoloAutoClient.waitUntilReady(),
+          () => autoModeClient.waitUntilReady(),
           async () => {
-            yoloAutoWorker = undefined;
-            yoloAutoWorkerStart = undefined;
-            await startOrAdoptYoloAutoWorker();
+            autoModeWorker = undefined;
+            autoModeWorkerStart = undefined;
+            await startOrAdoptAutoModeWorker();
           },
         );
       } catch (error) {
-        runtime.writeDebugLog("yolo_auto.worker_unavailable", {
-          reason: error instanceof YoloAutoBuildMismatchError ? "build_mismatch" : "handshake_failed",
+        runtime.writeDebugLog("auto_mode.worker_unavailable", {
+          reason: error instanceof AutoModeBuildMismatchError ? "build_mismatch" : "handshake_failed",
         });
         throw error;
       }
     })();
-    yoloAutoReadiness = readiness;
+    autoModeReadiness = readiness;
     try {
       await readiness;
     } finally {
-      if (yoloAutoReadiness === readiness) yoloAutoReadiness = undefined;
+      if (autoModeReadiness === readiness) autoModeReadiness = undefined;
     }
   };
 
@@ -875,12 +897,12 @@ export default function piPermissionSystemExtension(pi: ExtensionAPI): void {
     return decisionStore;
   };
 
-  const yoloAutoEvaluator = new YoloAutoEvaluator({
-    client: yoloAutoClient,
-    waitForStartup: ensureYoloAutoWorkerReady,
+  const autoModeEvaluator = new AutoModeEvaluator({
+    client: autoModeClient,
+    waitForStartup: ensureAutoModeWorkerReady,
     writeReviewLog: runtime.writeReviewLog.bind(runtime),
     writeDebugLog: runtime.writeDebugLog.bind(runtime),
-    writeCalibrationLog: (record) => writeYoloAutoCalibrationRecord(runtime.agentDir, record),
+    writeCalibrationLog: (record) => writeAutoModeCalibrationRecord(runtime.agentDir, record),
     recordEvaluation: (row) => getDecisionStore().recordEvaluation(row),
     summarizeNeighbours: (query) => summarizeNeighbours(
       getDecisionStore().listLabelled(query.toolName, query.operation, query.now - NEIGHBOUR_WINDOW_MS),
@@ -908,9 +930,9 @@ export default function piPermissionSystemExtension(pi: ExtensionAPI): void {
     forwardingDir: runtime.forwardingDir,
     resolveFallbackTargetSessionId: (ctx) =>
       resolveInteractiveSessionFallback(runtime, ctx.cwd),
-    yoloAutoClient,
-    yoloAutoEvaluator,
-    waitForYoloAutoStartup: ensureYoloAutoWorkerReady,
+    autoModeClient,
+    autoModeEvaluator,
+    waitForAutoModeStartup: ensureAutoModeWorkerReady,
     requestPermissionDecisionFromUi,
   });
 
@@ -990,11 +1012,11 @@ export default function piPermissionSystemExtension(pi: ExtensionAPI): void {
       sandboxRuntime.reloadConfig();
       ctx.ui.notify(`Bash sandbox ${enabled ? "on" : "off"} (global).`, "info");
     },
-    getYoloAutoStatus: () => {
-      const status = yoloAutoClient.getStatus();
+    getAutoModeStatus: () => {
+      const status = autoModeClient.getStatus();
       return status.state === "fallback"
-        ? `yoloAutoWorker=fallback:${status.reason}`
-        : `yoloAutoWorker=${status.state}`;
+        ? `autoModeWorker=fallback:${status.reason}`
+        : `autoModeWorker=${status.state}`;
     },
   });
 
@@ -1142,7 +1164,7 @@ export default function piPermissionSystemExtension(pi: ExtensionAPI): void {
     lifecycle.handleResourcesDiscover(event),
   );
   pi.on("session_shutdown", () => {
-    yoloAutoClient.close();
+    autoModeClient.close();
     clipboardTempCleanup.cleanup();
     promptWaitTracker.clear(runtime.runtimeContext ?? undefined);
     sessionBypassApprovals.clear();

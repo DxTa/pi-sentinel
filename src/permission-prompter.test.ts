@@ -2,23 +2,23 @@ import { describe, expect, it, vi } from "vitest";
 
 import { PromptWaitTracker } from "./prompt-state";
 import { PermissionPrompter } from "./permission-prompter";
-import type { YoloAutoHeads } from "./yolo-auto-policy";
-import { YOLO_AUTO_LABEL_SCHEMA } from "./yolo-auto-label-schema";
-import { workspaceScope } from "./yolo-auto-decision-store";
+import type { AutoModeHeads } from "./auto-mode-policy";
+import { AUTO_MODE_LABEL_SCHEMA } from "./auto-mode-label-schema";
+import { workspaceScope } from "./auto-mode-decision-store";
 
 function oneHot(labels: readonly string[], winner: string): Record<string, number> {
   const rest = 0.01 / (labels.length - 1);
   return Object.fromEntries(labels.map((label) => [label, label === winner ? 0.99 : rest]));
 }
 
-const heads: YoloAutoHeads = {
-  injection: oneHot(YOLO_AUTO_LABEL_SCHEMA.injection, "benign"),
-  threat: oneHot(YOLO_AUTO_LABEL_SCHEMA.threat, "benign"),
-  tool_class: oneHot(YOLO_AUTO_LABEL_SCHEMA.tool_class, "file"),
-  tool_action: oneHot(YOLO_AUTO_LABEL_SCHEMA.tool_action, "read"),
+const heads: AutoModeHeads = {
+  injection: oneHot(AUTO_MODE_LABEL_SCHEMA.injection, "benign"),
+  threat: oneHot(AUTO_MODE_LABEL_SCHEMA.threat, "benign"),
+  tool_class: oneHot(AUTO_MODE_LABEL_SCHEMA.tool_class, "file"),
+  tool_action: oneHot(AUTO_MODE_LABEL_SCHEMA.tool_action, "read"),
   tool_tags: { "source:sensitive": 0.1, "source:untrusted": 0.9, "sink:external": 0.1 },
-  sensitive_document: oneHot(YOLO_AUTO_LABEL_SCHEMA.sensitive_document, "source_code"),
-  routing: oneHot(YOLO_AUTO_LABEL_SCHEMA.routing, "tool_operation_request"),
+  sensitive_document: oneHot(AUTO_MODE_LABEL_SCHEMA.sensitive_document, "source_code"),
+  routing: oneHot(AUTO_MODE_LABEL_SCHEMA.routing, "tool_operation_request"),
 }
 
 describe("PermissionPrompter", () => {
@@ -38,8 +38,8 @@ describe("PermissionPrompter", () => {
     const recordHumanDecision = vi.fn();
     const prompter = new PermissionPrompter({
       promptWaitTracker: new PromptWaitTracker({ emit() {} }),
-      getConfig: () => ({ debugLog: false, permissionReviewLog: false, mode: "yolo-auto", yoloAskBashPatterns: [] }),
-      yoloAutoEvaluator: { evaluate },
+      getConfig: () => ({ debugLog: false, permissionReviewLog: false, mode: "auto", yoloAskBashPatterns: [] }),
+      autoModeEvaluator: { evaluate },
       recordHumanDecision,
       writeReviewLog() {},
       subagentSessionsDir: "/tmp/subagents",
@@ -53,11 +53,11 @@ describe("PermissionPrompter", () => {
       agentName: null,
       message: "Need permission",
       toolName: "write",
-      yoloAutoEligible: true,
-      yoloAutoHardRuleHit: false,
-      yoloAutoWorkspaceLocal: true,
-      yoloAutoOperation: "write",
-      yoloAutoWorkspaceRelativePath: "notes.txt",
+      autoModeEligible: true,
+      autoModeHardRuleHit: false,
+      autoModeWorkspaceLocal: true,
+      autoModeOperation: "write",
+      autoModeWorkspaceRelativePath: "notes.txt",
     });
 
     expect(evaluate).toHaveBeenCalledWith(expect.objectContaining({
@@ -84,8 +84,8 @@ describe("PermissionPrompter", () => {
     }));
     const prompter = new PermissionPrompter({
       promptWaitTracker: new PromptWaitTracker({ emit() {} }),
-      getConfig: () => ({ debugLog: false, permissionReviewLog: false, mode: "yolo-auto", yoloAskBashPatterns: [] }),
-      yoloAutoEvaluator: { evaluate },
+      getConfig: () => ({ debugLog: false, permissionReviewLog: false, mode: "auto", yoloAskBashPatterns: [] }),
+      autoModeEvaluator: { evaluate },
       recordHumanDecision,
       writeReviewLog() {},
       subagentSessionsDir: "/tmp/subagents",
@@ -102,10 +102,10 @@ describe("PermissionPrompter", () => {
       command: "git push origin main",
       allowSession: false,
       forcePromptInYolo: true,
-      yoloAutoEligible: true,
-      yoloAutoHardRuleHit: false,
-      yoloAutoWorkspaceLocal: true,
-      yoloAutoOperation: "exec",
+      autoModeEligible: true,
+      autoModeHardRuleHit: false,
+      autoModeWorkspaceLocal: true,
+      autoModeOperation: "exec",
     });
 
     expect(requestPermissionDecisionFromUi).toHaveBeenCalledWith(
@@ -124,8 +124,8 @@ describe("PermissionPrompter", () => {
     }));
     const prompter = new PermissionPrompter({
       promptWaitTracker: new PromptWaitTracker({ emit() {} }),
-      getConfig: () => ({ debugLog: false, permissionReviewLog: false, mode: "yolo-auto", yoloAskBashPatterns: [] }),
-      yoloAutoEvaluator: { evaluate },
+      getConfig: () => ({ debugLog: false, permissionReviewLog: false, mode: "auto", yoloAskBashPatterns: [] }),
+      autoModeEvaluator: { evaluate },
       writeReviewLog() {},
       subagentSessionsDir: "/tmp/subagents",
       forwardingDir: "/tmp/forwarding",
@@ -133,9 +133,9 @@ describe("PermissionPrompter", () => {
     });
     const bash = (command: string) => prompter.prompt({ hasUI: true, cwd: "/work/repo", ui: { setStatus() {} } } as never, {
       requestId: "req-opaque-1", source: "tool_call", agentName: null, message: "Need permission",
-      toolName: "bash", command, yoloAutoEligible: true, yoloAutoHardRuleHit: false,
-      yoloAutoWorkspaceLocal: true, yoloAutoOperation: "exec", yoloAutoText: "tool=bash command=x",
-      yoloAutoUnits: command.startsWith("eval") ? ['eval "$x"'] : ["rm $f"], yoloAutoOpaque: command.startsWith("eval"),
+      toolName: "bash", command, autoModeEligible: true, autoModeHardRuleHit: false,
+      autoModeWorkspaceLocal: true, autoModeOperation: "exec", autoModeText: "tool=bash command=x",
+      autoModeUnits: command.startsWith("eval") ? ['eval "$x"'] : ["rm $f"], autoModeOpaque: command.startsWith("eval"),
     });
 
     await bash('eval "$x"');
@@ -149,8 +149,8 @@ describe("PermissionPrompter", () => {
     const recordHumanDecision = vi.fn();
     const prompter = new PermissionPrompter({
       promptWaitTracker: new PromptWaitTracker({ emit() {} }),
-      getConfig: () => ({ debugLog: false, permissionReviewLog: false, mode: "yolo-auto", yoloAskBashPatterns: [] }),
-      yoloAutoEvaluator: { evaluate: vi.fn(async () => ({
+      getConfig: () => ({ debugLog: false, permissionReviewLog: false, mode: "auto", yoloAskBashPatterns: [] }),
+      autoModeEvaluator: { evaluate: vi.fn(async () => ({
         action: "prompt" as const, reason: "threat_not_benign", candidate: true, attempted: true,
         evaluationId: "eval-system-1", audit: false,
       })) },
@@ -167,11 +167,11 @@ describe("PermissionPrompter", () => {
       agentName: null,
       message: "Need permission",
       toolName: "write",
-      yoloAutoEligible: true,
-      yoloAutoHardRuleHit: false,
-      yoloAutoWorkspaceLocal: true,
-      yoloAutoOperation: "write",
-      yoloAutoWorkspaceRelativePath: "notes.txt",
+      autoModeEligible: true,
+      autoModeHardRuleHit: false,
+      autoModeWorkspaceLocal: true,
+      autoModeOperation: "write",
+      autoModeWorkspaceRelativePath: "notes.txt",
     });
 
     expect(decision.approved).toBe(false);
@@ -183,16 +183,16 @@ describe("PermissionPrompter", () => {
     const evaluate = vi.fn();
     const prompter = new PermissionPrompter({
       promptWaitTracker: new PromptWaitTracker({ emit() {} }),
-      getConfig: () => ({ debugLog: false, permissionReviewLog: false, mode: "yolo-auto", yoloAskBashPatterns: [] }),
-      yoloAutoEvaluator: { evaluate }, writeReviewLog() {},
+      getConfig: () => ({ debugLog: false, permissionReviewLog: false, mode: "auto", yoloAskBashPatterns: [] }),
+      autoModeEvaluator: { evaluate }, writeReviewLog() {},
       subagentSessionsDir: "/tmp/subagents", forwardingDir: "/tmp/forwarding",
       requestPermissionDecisionFromUi,
     });
     const context = { hasUI: true, cwd: process.cwd(), ui: { setStatus() {} } } as never;
     const common = {
       requestId: "req-chain", source: "tool_call" as const, agentName: null, message: "Need permission",
-      toolName: "bash", yoloAutoEligible: false, yoloAutoWorkspaceLocal: true,
-      yoloAutoHardRuleHit: false, yoloAutoSandboxed: false, yoloAutoOperation: "exec" as const,
+      toolName: "bash", autoModeEligible: false, autoModeWorkspaceLocal: true,
+      autoModeHardRuleHit: false, autoModeSandboxed: false, autoModeOperation: "exec" as const,
     };
 
     await expect(prompter.prompt(context, { ...common, command: "cd src && ls && head -5 index.ts | grep x" }))
@@ -202,7 +202,7 @@ describe("PermissionPrompter", () => {
 
     await prompter.prompt(context, { ...common, command: "cd src && rm -rf out" });
     await prompter.prompt(context, { ...common, command: "cd .. && ls" });
-    await prompter.prompt(context, { ...common, command: "cd src && ls", yoloAutoHardRuleHit: true });
+    await prompter.prompt(context, { ...common, command: "cd src && ls", autoModeHardRuleHit: true });
     await prompter.prompt(context, { ...common, command: "cd src && ls", forcePromptInYolo: true });
     expect(requestPermissionDecisionFromUi).toHaveBeenCalledTimes(4);
   });
@@ -218,8 +218,8 @@ describe("PermissionPrompter", () => {
     const context = { hasUI: true, cwd: "/work/repo", ui: { setStatus() {} } } as never;
     const details = {
       requestId: "req-diagnostic", source: "tool_call" as const, agentName: null, message: "Need permission",
-      toolName: "bash", command: "docker port api 8501", yoloAutoWorkspaceLocal: true,
-      yoloAutoHardRuleHit: false, yoloAutoSandboxed: false, yoloAutoOperation: "exec" as const,
+      toolName: "bash", command: "docker port api 8501", autoModeWorkspaceLocal: true,
+      autoModeHardRuleHit: false, autoModeSandboxed: false, autoModeOperation: "exec" as const,
     };
     const allowed = await prompter.prompt(context, details);
     const prompted = await prompter.prompt(context, { ...details, forcePromptInYolo: true });
@@ -229,7 +229,7 @@ describe("PermissionPrompter", () => {
     expect(ui).toHaveBeenCalledOnce();
   });
 
-  it("allows listed Docker diagnostics in yolo-auto but honors configured prompts", async () => {
+  it("allows listed Docker diagnostics in auto but honors configured prompts", async () => {
     const ui = vi.fn(async () => ({ approved: true, state: "approved" as const }));
     const base = {
       promptWaitTracker: new PromptWaitTracker({ emit() {} }),
@@ -239,12 +239,12 @@ describe("PermissionPrompter", () => {
     const context = { hasUI: true, cwd: "/work/repo", ui: { setStatus() {} } } as never;
     const prompter = new PermissionPrompter({
       ...base,
-      getConfig: () => ({ debugLog: false, permissionReviewLog: true, mode: "yolo-auto", yoloAskBashPatterns: [] }),
+      getConfig: () => ({ debugLog: false, permissionReviewLog: true, mode: "auto", yoloAskBashPatterns: [] }),
     });
     const details = {
       requestId: "req-docker-ps", source: "tool_call" as const, agentName: null, message: "Need permission",
-      toolName: "bash", command: "docker ps", yoloAutoEligible: false, yoloAutoWorkspaceLocal: true,
-      yoloAutoHardRuleHit: false, yoloAutoSandboxed: false, yoloAutoOperation: "exec" as const,
+      toolName: "bash", command: "docker ps", autoModeEligible: false, autoModeWorkspaceLocal: true,
+      autoModeHardRuleHit: false, autoModeSandboxed: false, autoModeOperation: "exec" as const,
     };
     const allowed = await prompter.prompt(context, details);
     expect(allowed).toEqual({ approved: true, state: "approved", autoApproved: true });
@@ -252,14 +252,14 @@ describe("PermissionPrompter", () => {
 
     const configured = new PermissionPrompter({
       ...base,
-      getConfig: () => ({ debugLog: false, permissionReviewLog: true, mode: "yolo-auto", yoloAskBashPatterns: ["docker port *"] }),
+      getConfig: () => ({ debugLog: false, permissionReviewLog: true, mode: "auto", yoloAskBashPatterns: ["docker port *"] }),
     });
     const prompted = await configured.prompt(context, { ...details, command: "docker port api 8501" });
     expect(prompted).toEqual({ approved: true, state: "approved" });
     expect(ui).toHaveBeenCalledOnce();
   });
 
-  it("uses model fallback for eligible workspace reads in yolo-auto", async () => {
+  it("uses model fallback for eligible workspace reads in auto", async () => {
     const requestPermissionDecisionFromUi = vi.fn(async () => ({
       approved: true,
       state: "approved" as const,
@@ -281,11 +281,11 @@ describe("PermissionPrompter", () => {
       getConfig: () => ({
         debugLog: false,
         permissionReviewLog: true,
-        mode: "yolo-auto",
+        mode: "auto",
         yoloAskBashPatterns: [],
       }),
-      yoloAutoClient: { evaluate },
-      waitForYoloAutoStartup: async () => { startupOrder.push("startup"); },
+      autoModeClient: { evaluate },
+      waitForAutoModeStartup: async () => { startupOrder.push("startup"); },
       writeReviewLog(event, details) {
         reviewLog.push({ event, details });
       },
@@ -295,16 +295,16 @@ describe("PermissionPrompter", () => {
     });
 
     const result = await prompter.prompt({ hasUI: true, ui: { setStatus() {} } } as never, {
-      requestId: "req-yolo-auto",
+      requestId: "req-auto",
       source: "tool_call",
       agentName: null,
       message: "Need permission",
       toolName: "read",
-      yoloAutoEligible: true,
-      yoloAutoHardRuleHit: false,
-      yoloAutoWorkspaceLocal: true,
-      yoloAutoOperation: "read",
-      yoloAutoWorkspaceRelativePath: "README.md",
+      autoModeEligible: true,
+      autoModeHardRuleHit: false,
+      autoModeWorkspaceLocal: true,
+      autoModeOperation: "read",
+      autoModeWorkspaceRelativePath: "README.md",
     });
 
     expect(result).toEqual({ approved: true, state: "approved", autoApproved: true });
@@ -312,25 +312,25 @@ describe("PermissionPrompter", () => {
     expect(evaluate).toHaveBeenCalledWith("tool=read path=README.md");
     expect(requestPermissionDecisionFromUi).not.toHaveBeenCalled();
     expect(reviewLog.map((entry) => entry.event)).toEqual([
-      "permission_request.yolo_auto_approved",
+      "permission_request.auto_mode_approved",
     ]);
     expect(reviewLog[0]?.details).toMatchObject({
       evaluationId: "prompter-eval-1",
-      yoloAutoAudit: false,
+      autoModeAudit: false,
     });
   });
 
-  it("adds evaluator metadata to yolo-auto approval entries", async () => {
+  it("adds evaluator metadata to auto approval entries", async () => {
     const reviewLog: Array<{ event: string; details: Record<string, unknown> }> = [];
     const prompter = new PermissionPrompter({
       promptWaitTracker: new PromptWaitTracker({ emit() {} }),
       getConfig: () => ({
         debugLog: false,
         permissionReviewLog: true,
-        mode: "yolo-auto",
+        mode: "auto",
         yoloAskBashPatterns: [],
       }),
-      yoloAutoEvaluator: {
+      autoModeEvaluator: {
         evaluate: vi.fn(async () => ({
           action: "allow" as const,
           reason: "thresholds_passed",
@@ -352,23 +352,23 @@ describe("PermissionPrompter", () => {
     });
 
     await prompter.prompt({ hasUI: true, ui: { setStatus() {} } } as never, {
-      requestId: "req-yolo-auto-allow",
+      requestId: "req-auto-mode-allow",
       source: "tool_call",
       agentName: null,
       message: "Need permission",
       toolName: "read",
-      yoloAutoEligible: true,
-      yoloAutoHardRuleHit: false,
-      yoloAutoWorkspaceLocal: true,
-      yoloAutoOperation: "read",
-      yoloAutoWorkspaceRelativePath: "README.md",
+      autoModeEligible: true,
+      autoModeHardRuleHit: false,
+      autoModeWorkspaceLocal: true,
+      autoModeOperation: "read",
+      autoModeWorkspaceRelativePath: "README.md",
     });
 
     expect(reviewLog).toContainEqual(expect.objectContaining({
-      event: "permission_request.yolo_auto_approved",
+      event: "permission_request.auto_mode_approved",
       details: expect.objectContaining({
         evaluationId: "prompter-eval-allow",
-        yoloAutoAudit: false,
+        autoModeAudit: false,
       }),
     }));
   });
@@ -393,10 +393,10 @@ describe("PermissionPrompter", () => {
       getConfig: () => ({
         debugLog: false,
         permissionReviewLog: true,
-        mode: "yolo-auto",
+        mode: "auto",
         yoloAskBashPatterns: [],
       }),
-      yoloAutoEvaluator: { evaluate },
+      autoModeEvaluator: { evaluate },
       writeReviewLog(event, details) {
         reviewLog.push({ event, details });
       },
@@ -406,18 +406,18 @@ describe("PermissionPrompter", () => {
     });
 
     await prompter.prompt({ hasUI: true, ui: { setStatus() {} } } as never, {
-      requestId: "req-yolo-auto-write",
+      requestId: "req-auto-mode-write",
       source: "tool_call",
       agentName: null,
       message: "Need permission",
       toolName: "write",
-      yoloAutoEligible: true,
-      yoloAutoHardRuleHit: false,
-      yoloAutoWorkspaceLocal: true,
-      yoloAutoOperation: "write",
-      yoloAutoWorkspaceRelativePath: "notes.txt",
-      yoloAutoText: text,
-      yoloAutoTextTruncated: true,
+      autoModeEligible: true,
+      autoModeHardRuleHit: false,
+      autoModeWorkspaceLocal: true,
+      autoModeOperation: "write",
+      autoModeWorkspaceRelativePath: "notes.txt",
+      autoModeText: text,
+      autoModeTextTruncated: true,
     });
 
     expect(evaluate).toHaveBeenCalledWith(expect.objectContaining({
@@ -431,7 +431,7 @@ describe("PermissionPrompter", () => {
       event: "permission_request.denied",
       details: expect.objectContaining({
         evaluationId: "prompter-eval-write",
-        yoloAutoAudit: false,
+        autoModeAudit: false,
       }),
     }));
   });
@@ -443,10 +443,10 @@ describe("PermissionPrompter", () => {
       getConfig: () => ({
         debugLog: false,
         permissionReviewLog: true,
-        mode: "yolo-auto",
+        mode: "auto",
         yoloAskBashPatterns: [],
       }),
-      yoloAutoEvaluator: {
+      autoModeEvaluator: {
         evaluate: vi.fn(async () => ({
           action: "prompt" as const,
           reason: "audit_sample",
@@ -468,44 +468,44 @@ describe("PermissionPrompter", () => {
     });
 
     await prompter.prompt({ hasUI: true, ui: { setStatus() {} } } as never, {
-      requestId: "req-yolo-auto-audit",
+      requestId: "req-auto-mode-audit",
       source: "tool_call",
       agentName: null,
       message: "Need permission",
       toolName: "write",
-      yoloAutoEligible: true,
-      yoloAutoHardRuleHit: false,
-      yoloAutoWorkspaceLocal: true,
-      yoloAutoOperation: "write",
-      yoloAutoWorkspaceRelativePath: "notes.txt",
+      autoModeEligible: true,
+      autoModeHardRuleHit: false,
+      autoModeWorkspaceLocal: true,
+      autoModeOperation: "write",
+      autoModeWorkspaceRelativePath: "notes.txt",
     });
 
     expect(reviewLog).toContainEqual(expect.objectContaining({
       event: "permission_request.approved",
       details: expect.objectContaining({
         evaluationId: "prompter-eval-audit",
-        yoloAutoAudit: true,
+        autoModeAudit: true,
       }),
     }));
   });
 
-  it("prompts for non-candidate Bash calls in yolo-auto", async () => {
+  it("prompts for non-candidate Bash calls in auto", async () => {
     const evaluate = vi.fn();
     const requestPermissionDecisionFromUi = vi.fn(async () => ({
       approved: false,
       state: "denied" as const,
     }));
-    const waitForYoloAutoStartup = vi.fn();
+    const waitForAutoModeStartup = vi.fn();
     const prompter = new PermissionPrompter({
       promptWaitTracker: new PromptWaitTracker({ emit() {} }),
       getConfig: () => ({
         debugLog: false,
         permissionReviewLog: true,
-        mode: "yolo-auto",
+        mode: "auto",
         yoloAskBashPatterns: [],
       }),
-      yoloAutoClient: { evaluate },
-      waitForYoloAutoStartup,
+      autoModeClient: { evaluate },
+      waitForAutoModeStartup,
       writeReviewLog() {},
       subagentSessionsDir: "/tmp/subagents",
       forwardingDir: "/tmp/forwarding",
@@ -513,19 +513,19 @@ describe("PermissionPrompter", () => {
     });
 
     await expect(prompter.prompt({ hasUI: true, ui: { setStatus() {} } } as never, {
-      requestId: "req-yolo-auto-classic",
+      requestId: "req-auto-mode-classic",
       source: "tool_call",
       agentName: null,
       message: "Need permission",
       toolName: "bash",
       command: "npm test",
     })).resolves.toEqual({ approved: false, state: "denied" });
-    expect(waitForYoloAutoStartup).not.toHaveBeenCalled();
+    expect(waitForAutoModeStartup).not.toHaveBeenCalled();
     expect(evaluate).not.toHaveBeenCalled();
     expect(requestPermissionDecisionFromUi).toHaveBeenCalledOnce();
   });
 
-  it("falls back to prompt when yolo-auto startup fails", async () => {
+  it("falls back to prompt when auto startup fails", async () => {
     const requestPermissionDecisionFromUi = vi.fn(async () => ({
       approved: false,
       state: "denied" as const,
@@ -536,11 +536,11 @@ describe("PermissionPrompter", () => {
       getConfig: () => ({
         debugLog: false,
         permissionReviewLog: true,
-        mode: "yolo-auto",
+        mode: "auto",
         yoloAskBashPatterns: [],
       }),
-      yoloAutoClient: { evaluate },
-      waitForYoloAutoStartup: async () => { throw new Error("worker unavailable"); },
+      autoModeClient: { evaluate },
+      waitForAutoModeStartup: async () => { throw new Error("worker unavailable"); },
       writeReviewLog() {},
       subagentSessionsDir: "/tmp/subagents",
       forwardingDir: "/tmp/forwarding",
@@ -553,10 +553,10 @@ describe("PermissionPrompter", () => {
       agentName: null,
       message: "Need permission",
       toolName: "read",
-      yoloAutoEligible: true,
-      yoloAutoWorkspaceLocal: true,
-      yoloAutoOperation: "read",
-      yoloAutoWorkspaceRelativePath: "README.md",
+      autoModeEligible: true,
+      autoModeWorkspaceLocal: true,
+      autoModeOperation: "read",
+      autoModeWorkspaceRelativePath: "README.md",
     })).resolves.toEqual({ approved: false, state: "denied" });
     expect(evaluate).not.toHaveBeenCalled();
     expect(requestPermissionDecisionFromUi).toHaveBeenCalledOnce();
@@ -899,7 +899,7 @@ describe("PermissionPrompter", () => {
 });
 
 
-it("prompts for yolo-auto requests outside the model-eligible scope", async () => {
+it("prompts for auto requests outside the model-eligible scope", async () => {
   const requestPermissionDecisionFromUi = vi.fn(async () => ({
     approved: false,
     state: "denied" as const,
@@ -910,10 +910,10 @@ it("prompts for yolo-auto requests outside the model-eligible scope", async () =
     getConfig: () => ({
       debugLog: false,
       permissionReviewLog: true,
-      mode: "yolo-auto",
+      mode: "auto",
       yoloAskBashPatterns: [],
     }),
-    yoloAutoClient: { evaluate },
+    autoModeClient: { evaluate },
     writeReviewLog() {},
     subagentSessionsDir: "/tmp/subagents",
     forwardingDir: "/tmp/forwarding",
@@ -921,15 +921,15 @@ it("prompts for yolo-auto requests outside the model-eligible scope", async () =
   });
 
   await expect(prompter.prompt({ hasUI: true, ui: { setStatus() {} } } as never, {
-    requestId: "req-yolo-auto-outside-scope",
+    requestId: "req-auto-mode-outside-scope",
     source: "tool_call",
     agentName: null,
     message: "Outside the model-eligible scope",
     toolName: "read",
-    yoloAutoEligible: false,
-    yoloAutoWorkspaceLocal: false,
-    yoloAutoOperation: "read",
-    yoloAutoWorkspaceRelativePath: "../outside.txt",
+    autoModeEligible: false,
+    autoModeWorkspaceLocal: false,
+    autoModeOperation: "read",
+    autoModeWorkspaceRelativePath: "../outside.txt",
   })).resolves.toEqual({ approved: false, state: "denied" });
 
   expect(requestPermissionDecisionFromUi).toHaveBeenCalledOnce();

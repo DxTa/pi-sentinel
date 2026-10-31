@@ -58,9 +58,9 @@ describe("describeToolGate bash session approval", () => {
 describe("describeToolGate git push by mode", () => {
   const command = "git push origin main";
 
-  it("keeps the fresh push prompt in yolo-auto so the model evaluator cannot approve it", () => {
+  it("keeps the fresh push prompt in auto so the model evaluator cannot approve it", () => {
     const descriptor = describeToolGate(
-      { ...context("bash", { command }), mode: "yolo-auto" },
+      { ...context("bash", { command }), mode: "auto" },
       { ...check("bash"), command },
     );
 
@@ -105,7 +105,7 @@ describe("describeToolGate bash approvals use inner commands", () => {
   );
 });
 
-describe("describeToolGate yolo-auto eligibility", () => {
+describe("describeToolGate auto eligibility", () => {
   it("marks workspace-local read requests after deterministic gates", () => {
     const descriptor = describeToolGate(
       context("read", { path: "README.md" }),
@@ -113,9 +113,9 @@ describe("describeToolGate yolo-auto eligibility", () => {
     );
 
     expect(descriptor.promptDetails).toMatchObject({
-      yoloAutoEligible: true,
-      yoloAutoWorkspaceLocal: true,
-      yoloAutoOperation: "read",
+      autoModeEligible: true,
+      autoModeWorkspaceLocal: true,
+      autoModeOperation: "read",
     });
   });
 
@@ -126,8 +126,8 @@ describe("describeToolGate yolo-auto eligibility", () => {
         check("read"),
       );
       expect(safe.promptDetails).toMatchObject({
-        yoloAutoEligible: true,
-        yoloAutoHardRuleHit: false,
+        autoModeEligible: true,
+        autoModeHardRuleHit: false,
       });
       expect(safe.promptDetails).not.toHaveProperty("path");
       expect(JSON.stringify(safe.promptDetails)).not.toContain(workspace);
@@ -137,8 +137,8 @@ describe("describeToolGate yolo-auto eligibility", () => {
         check("read"),
       );
       expect(sensitive.promptDetails).toMatchObject({
-        yoloAutoEligible: false,
-        yoloAutoHardRuleHit: true,
+        autoModeEligible: false,
+        autoModeHardRuleHit: true,
       });
 
       const listing = describeToolGate(
@@ -146,42 +146,42 @@ describe("describeToolGate yolo-auto eligibility", () => {
         check("ls"),
       );
       expect(listing.promptDetails).toMatchObject({
-        yoloAutoEligible: true,
-        yoloAutoHardRuleHit: false,
+        autoModeEligible: true,
+        autoModeHardRuleHit: false,
       });
   });
 
   it("marks workspace-local host Bash eligible unless it uses command substitution", () => {
     const workspace = process.cwd();
     const bash = (command: string) => describeToolGate(
-      { ...context("bash", { command }), cwd: workspace, sandboxed: false, yoloAutoWorkspaceLocal: true, yoloAutoCommand: command, yoloAutoHardRuleHit: false },
+      { ...context("bash", { command }), cwd: workspace, sandboxed: false, autoModeWorkspaceLocal: true, autoModeCommand: command, autoModeHardRuleHit: false },
       check("bash"),
     ).promptDetails;
 
-    expect(bash("cd src && grep -n \"a\\|b\" index.ts")).toMatchObject({ yoloAutoEligible: true, yoloAutoSandboxed: false });
-    expect(bash("cat $(echo x)")).toMatchObject({ yoloAutoEligible: false });
+    expect(bash("cd src && grep -n \"a\\|b\" index.ts")).toMatchObject({ autoModeEligible: true, autoModeSandboxed: false });
+    expect(bash("cat $(echo x)")).toMatchObject({ autoModeEligible: false });
   });
 
   it("passes the redacted inner commands to the evaluator", () => {
     const details = describeToolGate(
-      { ...context("bash", { command: "cd src && rm x" }), cwd: process.cwd(), sandboxed: false, yoloAutoWorkspaceLocal: true,
-        yoloAutoCommand: "cd src && rm x", yoloAutoHardRuleHit: false, yoloAutoUnits: ["cd src", "rm x"], yoloAutoOpaque: false },
+      { ...context("bash", { command: "cd src && rm x" }), cwd: process.cwd(), sandboxed: false, autoModeWorkspaceLocal: true,
+        autoModeCommand: "cd src && rm x", autoModeHardRuleHit: false, autoModeUnits: ["cd src", "rm x"], autoModeOpaque: false },
       check("bash"),
     ).promptDetails;
 
-    expect(details).toMatchObject({ yoloAutoUnits: ["cd src", "rm x"], yoloAutoOpaque: false });
+    expect(details).toMatchObject({ autoModeUnits: ["cd src", "rm x"], autoModeOpaque: false });
   });
 
-  it("keeps elevated Bash away from yolo-auto but leaves unreadable code to the model", () => {
+  it("keeps elevated Bash away from auto but leaves unreadable code to the model", () => {
     const workspace = process.cwd();
     const bash = (command: string, sandboxed: boolean) => describeToolGate(
-      { ...context("bash", { command }), cwd: workspace, sandboxed, yoloAutoWorkspaceLocal: true, yoloAutoCommand: command, yoloAutoHardRuleHit: false },
+      { ...context("bash", { command }), cwd: workspace, sandboxed, autoModeWorkspaceLocal: true, autoModeCommand: command, autoModeHardRuleHit: false },
       check("bash"),
     ).promptDetails;
 
-    expect(bash("sudo rm -rf build", false)).toMatchObject({ yoloAutoEligible: false });
-    expect(bash("sudo rm -rf build", true)).toMatchObject({ yoloAutoEligible: false });
-    expect(bash("python3 -c 'print(1)'", false)).toMatchObject({ yoloAutoEligible: true });
+    expect(bash("sudo rm -rf build", false)).toMatchObject({ autoModeEligible: false });
+    expect(bash("sudo rm -rf build", true)).toMatchObject({ autoModeEligible: false });
+    expect(bash("python3 -c 'print(1)'", false)).toMatchObject({ autoModeEligible: true });
   });
 
   it("does not mark external reads eligible", () => {
@@ -191,9 +191,9 @@ describe("describeToolGate yolo-auto eligibility", () => {
     );
 
     expect(descriptor.promptDetails).toMatchObject({
-      yoloAutoEligible: false,
-      yoloAutoWorkspaceLocal: false,
-      yoloAutoOperation: "read",
+      autoModeEligible: false,
+      autoModeWorkspaceLocal: false,
+      autoModeOperation: "read",
     });
   });
 
@@ -212,8 +212,8 @@ describe("describeToolGate yolo-auto eligibility", () => {
         check("read"),
       );
       expect(descriptor.promptDetails).toMatchObject({
-        yoloAutoEligible: false,
-        yoloAutoWorkspaceLocal: false,
+        autoModeEligible: false,
+        autoModeWorkspaceLocal: false,
       });
     } finally {
       rmSync(workspace, { recursive: true, force: true });
@@ -225,16 +225,16 @@ describe("describeToolGate yolo-auto eligibility", () => {
     const descriptor = describeToolGate(context("ls", {}), check("ls"));
 
     expect(descriptor.promptDetails).toMatchObject({
-      yoloAutoEligible: true,
-      yoloAutoWorkspaceLocal: true,
-      yoloAutoOperation: "list",
+      autoModeEligible: true,
+      autoModeWorkspaceLocal: true,
+      autoModeOperation: "list",
     });
   });
 
 });
 
 
-describe("describeToolGate yolo-auto write/edit candidates", () => {
+describe("describeToolGate auto write/edit candidates", () => {
   it.each(["write", "edit"] as const)(
     "passes only the first 800 replacement characters for %s",
     (toolName) => {
@@ -246,12 +246,12 @@ describe("describeToolGate yolo-auto write/edit candidates", () => {
       const descriptor = describeToolGate(context(toolName, input), check(toolName));
 
       expect(descriptor.promptDetails).toMatchObject({
-        yoloAutoEligible: true,
-        yoloAutoWorkspaceLocal: true,
-        yoloAutoWorkspaceRelativePath: path,
-        yoloAutoOperation: toolName,
-        yoloAutoText: "tool=" + toolName + " path=" + path + " content=" + "x".repeat(800),
-        yoloAutoTextTruncated: true,
+        autoModeEligible: true,
+        autoModeWorkspaceLocal: true,
+        autoModeWorkspaceRelativePath: path,
+        autoModeOperation: toolName,
+        autoModeText: "tool=" + toolName + " path=" + path + " content=" + "x".repeat(800),
+        autoModeTextTruncated: true,
       });
       expect(JSON.stringify(descriptor.promptDetails)).not.toContain(process.cwd());
     },
@@ -264,69 +264,69 @@ describe("describeToolGate yolo-auto write/edit candidates", () => {
     );
 
     expect(descriptor.promptDetails).toMatchObject({
-      yoloAutoEligible: false,
-      yoloAutoWorkspaceLocal: false,
+      autoModeEligible: false,
+      autoModeWorkspaceLocal: false,
     });
   });
 
-  it("does not make an allowed write a yolo-auto candidate", () => {
+  it("does not make an allowed write a auto candidate", () => {
     const descriptor = describeToolGate(
       context("write", { path: "notes.txt", content: "content" }),
       check("write", "allow"),
     );
 
     expect(descriptor.promptDetails).toMatchObject({
-      yoloAutoEligible: false,
-      yoloAutoOperation: "write",
+      autoModeEligible: false,
+      autoModeOperation: "write",
     });
   });
 });
 
 
-describe("describeToolGate yolo-auto Bash eligibility", () => {
+describe("describeToolGate auto Bash eligibility", () => {
   it("passes redacted command text only for a sandboxed workspace-local ask", () => {
     const descriptor = describeToolGate(
-      { ...context("bash", { command: "printf safe" }), sandboxed: true, yoloAutoHardRuleHit: false, yoloAutoWorkspaceLocal: true, yoloAutoCommand: "printf safe" },
+      { ...context("bash", { command: "printf safe" }), sandboxed: true, autoModeHardRuleHit: false, autoModeWorkspaceLocal: true, autoModeCommand: "printf safe" },
       check("bash"),
     );
 
     expect(descriptor.promptDetails).toMatchObject({
-      yoloAutoEligible: true,
-      yoloAutoWorkspaceLocal: true,
-      yoloAutoOperation: "exec",
-      yoloAutoSandboxed: true,
-      yoloAutoHardRuleHit: false,
-      yoloAutoText: "tool=bash command=printf safe",
-      yoloAutoTextTruncated: false,
+      autoModeEligible: true,
+      autoModeWorkspaceLocal: true,
+      autoModeOperation: "exec",
+      autoModeSandboxed: true,
+      autoModeHardRuleHit: false,
+      autoModeText: "tool=bash command=printf safe",
+      autoModeTextTruncated: false,
     });
   });
 
   it("marks workspace-local host Bash eligible with safe workspace metadata", () => {
     const descriptor = describeToolGate(
-      { ...context("bash", { command: "ls" }), sandboxed: false, yoloAutoHardRuleHit: false, yoloAutoWorkspaceLocal: true, yoloAutoCommand: "ls" },
+      { ...context("bash", { command: "ls" }), sandboxed: false, autoModeHardRuleHit: false, autoModeWorkspaceLocal: true, autoModeCommand: "ls" },
       check("bash"),
     );
 
     expect(descriptor.promptDetails).toMatchObject({
-      yoloAutoEligible: true,
-      yoloAutoWorkspaceLocal: true,
-      yoloAutoOperation: "exec",
-      yoloAutoSandboxed: false,
-      yoloAutoHardRuleHit: false,
+      autoModeEligible: true,
+      autoModeWorkspaceLocal: true,
+      autoModeOperation: "exec",
+      autoModeSandboxed: false,
+      autoModeHardRuleHit: false,
     });
   });
 
   it("keeps sensitive Bash paths out of classifier text", () => {
     const descriptor = describeToolGate(
-      { ...context("bash", { command: "cat /etc/hosts" }), sandboxed: true, yoloAutoHardRuleHit: true, yoloAutoWorkspaceLocal: false, yoloAutoCommand: "cat <sensitive-path>" },
+      { ...context("bash", { command: "cat /etc/hosts" }), sandboxed: true, autoModeHardRuleHit: true, autoModeWorkspaceLocal: false, autoModeCommand: "cat <sensitive-path>" },
       check("bash"),
     );
 
     expect(descriptor.promptDetails).toMatchObject({
-      yoloAutoEligible: false,
-      yoloAutoWorkspaceLocal: false,
-      yoloAutoHardRuleHit: true,
+      autoModeEligible: false,
+      autoModeWorkspaceLocal: false,
+      autoModeHardRuleHit: true,
     });
-    expect(descriptor.promptDetails).not.toHaveProperty("yoloAutoText");
+    expect(descriptor.promptDetails).not.toHaveProperty("autoModeText");
   });
 });

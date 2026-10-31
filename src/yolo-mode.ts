@@ -126,7 +126,7 @@ type BundledToolDenyRelaxationOptions = {
 export function isYoloModeEnabled(
   config: PermissionSystemExtensionConfig,
 ): boolean {
-  return config.mode === "yolo" || config.mode === "yolo-auto";
+  return config.mode === "yolo" || config.mode === "auto";
 }
 
 export function matchesYoloAskBashPattern(

@@ -13,11 +13,11 @@ export interface ToolCallContext {
   sandboxed?: boolean;
   /** Active permission mode; classic `yolo` skips forced prompts and legacy external-write blocks. */
   mode?: string;
-  yoloAutoHardRuleHit?: boolean;
-  yoloAutoWorkspaceLocal?: boolean;
-  yoloAutoCommand?: string;
+  autoModeHardRuleHit?: boolean;
+  autoModeWorkspaceLocal?: boolean;
+  autoModeCommand?: string;
   /** Redacted inner Bash commands, classified one by one. */
-  yoloAutoUnits?: readonly string[];
+  autoModeUnits?: readonly string[];
   /** Inner Bash commands cannot all be read statically. */
-  yoloAutoOpaque?: boolean;
+  autoModeOpaque?: boolean;
 }

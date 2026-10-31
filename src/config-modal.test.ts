@@ -20,7 +20,7 @@ describe("mode chain formatting", () => {
     const formatted = formatModeChain(
       {
         layers: [
-          { id: "session", name: "session", mode: "yolo-auto", path: "memory" },
+          { id: "session", name: "session", mode: "auto", path: "memory" },
           { id: "environment", name: "env", path: "PI_SENTINEL_MODE" },
           { id: "project", name: "project", path: "/workspace/.pi/permissions.json" },
           {
@@ -38,7 +38,7 @@ describe("mode chain formatting", () => {
           },
           { id: "bundled", name: "bundled", mode: "manual", path: "/extension/config.json" },
         ],
-        effective: "yolo-auto",
+        effective: "auto",
         source: "session",
       },
       "project",
@@ -46,14 +46,14 @@ describe("mode chain formatting", () => {
 
     expect(formatted.split("\n")).toEqual([
       "Mode chain (top wins):",
-      "  session yolo-auto (memory)",
+      "  session auto (memory)",
       "  env — not set (PI_SENTINEL_MODE)",
       "  project — not set (/workspace/.pi/permissions.json) ← selected",
       "  project (legacy) — unreadable (/workspace/.pi/agent/permissions.json)",
       "  global manual (/home/user/.pi/agent/permissions.json)",
       "  global (legacy) legacy flags: yoloMode=false (/home/user/.pi/agent/pi-permissions.jsonc)",
       "  bundled manual (/extension/config.json)",
-      "Effective this session: yolo-auto (from session)",
+      "Effective this session: auto (from session)",
       "Saving Mode writes: /workspace/.pi/permissions.json",
       "Logs & sandbox always write: /home/user/.pi/agent/permissions.json",
     ]);
@@ -96,7 +96,7 @@ describe("mode chain formatting", () => {
             path: "/Users/bob/.pi/agent/permissions.json",
           },
         ],
-        effective: "yolo-auto",
+        effective: "auto",
         source: "environment",
       },
       "global",
@@ -105,7 +105,7 @@ describe("mode chain formatting", () => {
     );
     const lines = formatted.split("\n");
 
-    expect(lines).toContain("Effective this session: yolo-auto (from env)");
+    expect(lines).toContain("Effective this session: auto (from env)");
     expect(lines.some((line) => line.includes("← selected"))).toBe(true);
     expect(lines.every((line) => visibleWidth(line) <= 50)).toBe(true);
   });
@@ -122,11 +122,11 @@ describe("mode chain formatting", () => {
         },
         { id: "global", name: "global", path: "/home/user/.pi/agent/permissions.json" },
       ],
-      effective: "yolo-auto",
+      effective: "auto",
       source: "project-extension-legacy",
     }, "global", 50, "/workspace");
 
-    expect(formatted).toContain("Effective: yolo-auto ← project extension (legacy)");
+    expect(formatted).toContain("Effective: auto ← project extension (legacy)");
     expect(formatted).toContain("yoloAutoMode=true");
     expect(formatted).toContain("./.pi/agent/pi-sentinel.json");
     expect(formatted).toContain("← selected");
@@ -181,7 +181,7 @@ describe("mode save notice", () => {
 });
 
 describe("permission mode settings", () => {
-  it("offers one mode selector with manual, yolo, and yolo-auto", async () => {
+  it("offers one mode selector with manual, yolo, and auto", async () => {
     const modal = await import("./config-modal") as unknown as Record<string, unknown>;
     expect(typeof modal.buildSettingItems).toBe("function");
 
@@ -192,7 +192,7 @@ describe("permission mode settings", () => {
       id: "mode",
       label: "Mode",
       currentValue: "manual",
-      values: ["manual", "yolo", "yolo-auto"],
+      values: ["manual", "yolo", "auto"],
     });
   });
 
@@ -223,11 +223,11 @@ describe("permission mode settings", () => {
     const { buildSettingItems, mergeEffectiveConfigWithSelectedMode } = await import("./config-modal");
     const effectiveConfig = { ...DEFAULT_EXTENSION_CONFIG, mode: "yolo", debugLog: true };
 
-    const modalConfig = mergeEffectiveConfigWithSelectedMode(effectiveConfig, "yolo-auto");
+    const modalConfig = mergeEffectiveConfigWithSelectedMode(effectiveConfig, "auto");
 
-    expect(modalConfig).toMatchObject({ mode: "yolo-auto", debugLog: true });
+    expect(modalConfig).toMatchObject({ mode: "auto", debugLog: true });
     expect(buildSettingItems(modalConfig).find((item) => item.id === "mode"))
-      .toMatchObject({ currentValue: "yolo-auto" });
+      .toMatchObject({ currentValue: "auto" });
   });
 
   it("applies mode changes without separate yolo flags", async () => {
@@ -235,9 +235,9 @@ describe("permission mode settings", () => {
     expect(typeof modal.applySetting).toBe("function");
 
     const applySetting = modal.applySetting as (config: unknown, id: string, value: string) => Record<string, unknown>;
-    const next = applySetting({ ...DEFAULT_EXTENSION_CONFIG, mode: "manual" }, "mode", "yolo-auto");
+    const next = applySetting({ ...DEFAULT_EXTENSION_CONFIG, mode: "manual" }, "mode", "auto");
 
-    expect(next).toMatchObject({ mode: "yolo-auto" });
+    expect(next).toMatchObject({ mode: "auto" });
     expect(next).not.toHaveProperty("yoloMode");
     expect(next).not.toHaveProperty("yoloAutoMode");
   });
@@ -280,7 +280,7 @@ describe("scope-specific mode value", () => {
     const inheritedItems = buildSettingItems(DEFAULT_EXTENSION_CONFIG, undefined, "session", modeLayers);
     const inheritedMode = inheritedItems.find((item) => item.id === "mode");
     expect(inheritedMode).toMatchObject({ currentValue: "inherits: manual" });
-    expect(inheritedMode?.values).toEqual(["yolo", "yolo-auto", "manual"]);
+    expect(inheritedMode?.values).toEqual(["yolo", "auto", "manual"]);
   });
 });
 
@@ -410,10 +410,10 @@ describe("mode scope selector", () => {
         { id: "project", name: "project", path: longRoot + "/permissions.json" },
         { id: "project-policy-legacy", name: "project policy (legacy)", mode: "manual", path: longRoot + "/agent/pi-permissions.jsonc" },
         { id: "project-extension-legacy", name: "project extension (legacy)", mode: "yolo", path: longRoot + "/agent/pi-sentinel.json" },
-        { id: "project-config-legacy", name: "project config (legacy)", mode: "yolo-auto", path: longRoot + "/agent/permissions.json" },
+        { id: "project-config-legacy", name: "project config (legacy)", mode: "auto", path: longRoot + "/agent/permissions.json" },
         { id: "global", name: "global", mode: "manual", path: "/Users/bob/.pi/agent/permissions.json" },
         { id: "global-policy-legacy", name: "global (legacy)", path: "/Users/bob/.pi/agent/pi-permissions.jsonc" },
-        { id: "bundled", name: "bundled", mode: "yolo-auto", path: "/Users/bob/dev/pi-sentinel/config.json" },
+        { id: "bundled", name: "bundled", mode: "auto", path: "/Users/bob/dev/pi-sentinel/config.json" },
       ],
       effective: "manual",
       source: "global",

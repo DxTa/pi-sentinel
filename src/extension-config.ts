@@ -6,7 +6,26 @@ import { toRecord } from "./common";
 
 export const EXTENSION_ID = "pi-sentinel";
 
-export type PermissionMode = "manual" | "yolo" | "yolo-auto";
+export type PermissionMode = "manual" | "yolo" | "auto";
+
+export const PERMISSION_MODES: readonly PermissionMode[] = ["manual", "yolo", "auto"];
+
+/** Deprecated mode names that are still read from config files and PI_SENTINEL_MODE. */
+const LEGACY_MODE_ALIASES: Readonly<Record<string, PermissionMode>> = {
+  "yolo-auto": "auto",
+};
+
+/** True when `value` is a deprecated mode name such as `yolo-auto`. */
+export function isLegacyModeAlias(value: unknown): boolean {
+  return typeof value === "string" && Object.hasOwn(LEGACY_MODE_ALIASES, value);
+}
+
+/** Parse a configured mode, mapping deprecated aliases to their current name. */
+export function parsePermissionMode(value: unknown): PermissionMode | undefined {
+  if (typeof value !== "string") return undefined;
+  if ((PERMISSION_MODES as readonly string[]).includes(value)) return value as PermissionMode;
+  return Object.hasOwn(LEGACY_MODE_ALIASES, value) ? LEGACY_MODE_ALIASES[value] : undefined;
+}
 
 /** Where an explicit mode choice is stored. */
 export type ModeScope = "session" | "project" | "global";
@@ -14,9 +33,9 @@ export type ModeScope = "session" | "project" | "global";
 export interface PermissionSystemExtensionConfig {
   debugLog: boolean;
   permissionReviewLog: boolean;
-  /** Permission approval mode. yolo-auto uses model flow for eligible reads/lists and classic bypass elsewhere. */
+  /** Permission approval mode. `auto` uses the classifier for eligible workspace requests and classic yolo elsewhere. */
   mode: PermissionMode;
-  /** Bash command patterns that still prompt in yolo and yolo-auto modes. */
+  /** Bash command patterns that still prompt in yolo and auto modes. */
   yoloAskBashPatterns: string[];
   /** Additional directories to auto-allow for reads as Pi infrastructure. */
   piInfrastructureReadPaths?: string[];
@@ -25,7 +44,7 @@ export interface PermissionSystemExtensionConfig {
 export const DEFAULT_EXTENSION_CONFIG: PermissionSystemExtensionConfig = {
   debugLog: false,
   permissionReviewLog: true,
-  mode: "yolo-auto",
+  mode: "auto",
   yoloAskBashPatterns: [],
 };
 
@@ -71,13 +90,12 @@ export function normalizePermissionSystemConfig(
     debugLog: record.debugLog === true,
     permissionReviewLog: record.permissionReviewLog !== false,
     mode:
-      record.mode === "manual" || record.mode === "yolo" || record.mode === "yolo-auto"
-        ? record.mode
-        : record.yoloAutoMode === true
-          ? "yolo-auto"
+      parsePermissionMode(record.mode)
+        ?? (record.yoloAutoMode === true
+          ? "auto"
           : record.yoloMode === true
             ? "yolo"
-            : "manual",
+            : "manual"),
     yoloAskBashPatterns,
   };
   if (piInfrastructureReadPaths !== undefined) {
