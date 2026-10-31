@@ -806,7 +806,14 @@ export default function piPermissionSystemExtension(pi: ExtensionAPI): void {
       runtime.writeDebugLog.bind(runtime),
     )
     : undefined;
+  // Tell the user once when auto mode falls back to prompting; otherwise it
+  // silently behaves like manual mode.
+  let autoModeWorkerFailed = false;
+  let autoModeUnavailableNotified = false;
+  const adoptedAutoModeWorkers = new WeakSet<AutoModeWorkerHandle>();
   const adoptAutoModeWorker = (worker: AutoModeWorkerHandle): void => {
+    if (adoptedAutoModeWorkers.has(worker)) return;
+    adoptedAutoModeWorkers.add(worker);
     autoModeWorker = worker;
     const child = worker.process;
     if (!child || child.exitCode !== null) {
@@ -816,9 +823,30 @@ export default function piPermissionSystemExtension(pi: ExtensionAPI): void {
     const clearWorker = (): void => {
       if (autoModeWorker?.process === child) autoModeWorker = undefined;
     };
-    child.once("error", clearWorker);
-    child.once("exit", clearWorker);
+    child.once("error", () => {
+      autoModeWorkerFailed = true;
+      clearWorker();
+    });
+    child.once("exit", (code) => {
+      if (code !== 0) autoModeWorkerFailed = true;
+      clearWorker();
+    });
   };
+  const notifyAutoModeUnavailable = (): void => {
+    const ctx = runtime.runtimeContext;
+    if (autoModeUnavailableNotified || !ctx?.hasUI) return;
+    autoModeUnavailableNotified = true;
+    const log = join(runtime.agentDir, "runtime", "pi-sentinel", "worker.log");
+    ctx.ui.notify(
+      autoModeWorkerFailed
+        ? "auto mode is unavailable: the classifier worker stopped. Requests prompt as in manual mode. Details: " + log
+        : "auto mode is not ready yet (the first start downloads a ~130 MB classifier). " +
+          "Requests prompt as in manual mode until it is. Details: " + log,
+      "warning",
+    );
+  };
+  // Watch the startup worker now, so an early exit is visible before the first request.
+  void autoModeWorkerStart?.then(adoptAutoModeWorker, () => undefined);
   const startOrAdoptAutoModeWorker = async (): Promise<void> => {
     if (!autoModeWorkerStart && !autoModeWorker) {
       autoModeWorkerStart = startAutoModeWorker(
@@ -857,6 +885,7 @@ export default function piPermissionSystemExtension(pi: ExtensionAPI): void {
         runtime.writeDebugLog("auto_mode.worker_unavailable", {
           reason: error instanceof AutoModeBuildMismatchError ? "build_mismatch" : "handshake_failed",
         });
+        notifyAutoModeUnavailable();
         throw error;
       }
     })();
@@ -1009,9 +1038,11 @@ export default function piPermissionSystemExtension(pi: ExtensionAPI): void {
     },
     getAutoModeStatus: () => {
       const status = autoModeClient.getStatus();
-      return status.state === "fallback"
-        ? `autoModeWorker=fallback:${status.reason}`
-        : `autoModeWorker=${status.state}`;
+      if (status.state === "fallback") return `autoModeWorker=fallback:${status.reason}`;
+      if (status.state === "cold" && autoModeWorkerFailed) {
+        return `autoModeWorker=stopped (see ${join(runtime.agentDir, "runtime", "pi-sentinel", "worker.log")})`;
+      }
+      return `autoModeWorker=${status.state}`;
     },
   });
 

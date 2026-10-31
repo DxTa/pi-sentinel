@@ -1,7 +1,7 @@
 import { parseArgs } from "node:util";
 import { resolve } from "node:path";
 import { fileURLToPath } from "node:url";
-import { ensureModelAssets, createClassifier } from "./auto-mode-model.ts";
+import { ensureModelAssets, createClassifier, loadInferenceRuntime } from "./auto-mode-model.ts";
 import { AUTO_MODE_BUILD_ID } from "./auto-mode-build.ts";
 import { AutoModeWorkerServer } from "./auto-mode-worker.ts";
 
@@ -25,6 +25,8 @@ export function parseAutoModeWorkerArgs(argv: readonly string[]) {
 
 async function startWorker(argv: readonly string[]): Promise<void> {
   const { socketPath, modelDir } = parseAutoModeWorkerArgs(argv);
+  // Fail before the ~130 MB model download when the runtime cannot load here.
+  await loadInferenceRuntime();
   await ensureModelAssets({ dir: modelDir });
   const classifier = await createClassifier(modelDir);
   const server = new AutoModeWorkerServer({

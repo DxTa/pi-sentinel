@@ -60,7 +60,7 @@ Change it in the `/sentinel` settings panel, with a command, in config, or per p
 PI_SENTINEL_MODE=manual pi
 ```
 
-The first time `auto` mode starts, it downloads the classifier (about 130 MB) from Hugging Face and verifies its SHA-256 hashes. Until the model is ready, or if the download fails, requests prompt as in `manual` mode. Set `"mode": "manual"` if you do not want the download.
+`auto` mode runs the classifier locally on CPU. Its runtime (`onnxruntime-node` and `@huggingface/transformers`) installs with the extension; no GPU or CUDA is needed, and the optional CUDA download is skipped. The first time `auto` mode starts, it downloads the model (about 130 MB) from Hugging Face and verifies its SHA-256 hashes. Until the model is ready, or if the runtime or download fails, requests prompt as in `manual` mode: Pi shows a warning once, and `/sentinel show` reports the worker state, with details in `~/.pi/agent/runtime/pi-sentinel/worker.log`. Set `"mode": "manual"` if you do not want the download.
 
 ### Common config changes
 
@@ -252,6 +252,7 @@ See [`SECURITY.md`](SECURITY.md) for the full policy and how to report a vulnera
 ### Platform support
 
 - macOS and Linux: supported. Linux needs `bwrap`, `socat`, and `rg`.
+- `auto` mode needs a prebuilt ONNX Runtime: Linux x64/arm64, macOS on Apple silicon (arm64), and Windows x64/arm64. Intel Macs have none, so use `manual` or `yolo` there; `auto` falls back to prompting.
 - Windows: SRT is unavailable. Set `sandbox.bypassCommands: []` so Bash fails closed instead of running unsandboxed.
 
 ### Service API

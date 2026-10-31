@@ -138,11 +138,36 @@ function outputLogits(outputs: InferenceSession.ReturnType, name: string, size: 
   return output.data;
 }
 
+/**
+ * Load the tokenizer library and ONNX Runtime (CPU). Both are pi-sentinel
+ * dependencies; this fails when the platform has no prebuilt runtime
+ * (for example Intel macOS) or the install is incomplete.
+ */
+export async function loadInferenceRuntime(): Promise<{
+  transformers: typeof import("@huggingface/transformers");
+  ort: typeof import("onnxruntime-node");
+}> {
+  try {
+    const [transformers, ort] = await Promise.all([
+      import("@huggingface/transformers"),
+      import("onnxruntime-node"),
+    ]);
+    return { transformers, ort };
+  } catch (error) {
+    const reason = error instanceof Error ? error.message : String(error);
+    throw new Error(
+      `ONNX Runtime is unavailable on ${process.platform}/${process.arch}: ${reason}. ` +
+        "auto mode needs onnxruntime-node and @huggingface/transformers, which install with pi-sentinel; " +
+        "reinstall the extension, or use manual or yolo mode on unsupported platforms.",
+      { cause: error },
+    );
+  }
+}
+
 /** Load verified local model assets and return a CPU classifier. */
 export async function createClassifier(modelDir: string): Promise<AutoModeClassifier> {
-  const [{ AutoTokenizer, env }, ort, configText] = await Promise.all([
-    import("@huggingface/transformers"),
-    import("onnxruntime-node"),
+  const [{ transformers: { AutoTokenizer, env }, ort }, configText] = await Promise.all([
+    loadInferenceRuntime(),
     readFile(join(modelDir, "config.json"), "utf8"),
   ]);
   const config = JSON.parse(configText) as { label_schema?: unknown };
