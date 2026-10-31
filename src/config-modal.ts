@@ -48,7 +48,7 @@ interface PermissionSystemConfigController {
 
 const ON_OFF = ["on", "off"];
 const MODES: PermissionMode[] = [...PERMISSION_MODES];
-const MODE_SCOPES: ModeScope[] = ["session", "project", "global"];
+const MODE_SCOPES: readonly ModeScope[] = ["session", "project", "global"];
 const COMMAND_ARGUMENTS = [
   {
     value: "show",
@@ -59,6 +59,11 @@ const COMMAND_ARGUMENTS = [
     value: "path",
     label: "Show config path",
     description: "Display bundled, global, and project permission paths",
+  },
+  {
+    value: "mode",
+    label: "Set mode",
+    description: "mode <manual|yolo|auto> [session|project|global]: set the mode, optionally in a specific scope",
   },
   {
     value: "reset",
@@ -72,7 +77,8 @@ const COMMAND_ARGUMENTS = [
   },
 ] as const;
 const USAGE_TEXT =
-  "Usage: /sentinel [show|path|reset|help] (or run /sentinel with no args to open settings modal)";
+  "Usage: /sentinel [show|path|mode <manual|yolo|auto> [session|project|global]|reset|help] " +
+  "(or run /sentinel with no args to open settings modal)";
 
 function cloneDefaultConfig(): PermissionSystemExtensionConfig {
   return {
@@ -135,25 +141,19 @@ function rotateAfter<T>(values: readonly T[], current: T): T[] {
 }
 
 /**
- * Where the effective mode comes from, relative to the scope a change saves to:
- * - `project`: the selected scope is the source;
- * - `from project, overrides global: auto`: a higher layer hides the selected one;
- * - `inherited from global`: the selected scope is unset and a lower layer applies.
+ * Scope a mode change saves to: the scope that supplies the current mode.
+ * `PI_SENTINEL_MODE` cannot be written, so a change applies to the session,
+ * the only layer above it; bundled defaults save to the global file.
  */
-export function describeModeSource(modeLayers: ModeLayers, selectedScope: ModeScope): string {
-  const selectedLayer = getSelectedModeLayer(modeLayers, selectedScope);
+export function modeSaveScope(modeLayers: ModeLayers): ModeScope {
+  const source = modeLayers.source;
+  if (source === "session" || source === "environment") return "session";
+  return source.startsWith("project") ? "project" : "global";
+}
+
+function modeSourceName(modeLayers: ModeLayers): string {
   const sourceLayer = modeLayers.layers.find((layer) => layer.id === modeLayers.source);
-  const sourceName = sourceLayer ? layerLabel(sourceLayer) : modeLayers.source;
-  if (!selectedLayer || !sourceLayer || selectedLayer === sourceLayer) return sourceName;
-  const selectedIndex = modeLayers.layers.indexOf(selectedLayer);
-  const sourceIndex = modeLayers.layers.indexOf(sourceLayer);
-  if (sourceIndex < selectedIndex) {
-    const selectedValue = describeLayerMode(selectedLayer);
-    return selectedValue === "unset"
-      ? "from " + sourceName + "; " + layerLabel(selectedLayer) + " unset"
-      : "from " + sourceName + ", overrides " + layerLabel(selectedLayer) + ": " + selectedValue;
-  }
-  return "inherited from " + sourceName;
+  return sourceLayer ? layerLabel(sourceLayer) : modeLayers.source;
 }
 
 /** Toggles always save to the global file, so a project value is flagged as an override. */
@@ -185,12 +185,11 @@ function toggleItem(
 export function buildSettingItems(
   config: PermissionSystemExtensionConfig,
   sandboxEnabled?: boolean,
-  modeScope: ModeScope = "global",
   modeLayers?: ModeLayers,
   sources?: SettingSources,
 ): SettingItem[] {
   const modeValue = modeLayers
-    ? withSource(modeLayers.effective, describeModeSource(modeLayers, modeScope))
+    ? withSource(modeLayers.effective, modeSourceName(modeLayers))
     : config.mode;
   const modeValues = modeLayers ? rotateAfter(MODES, modeLayers.effective) : MODES;
   const sandboxItem: SettingItem[] = sandboxEnabled === undefined ? [] : [toggleItem(
@@ -206,17 +205,9 @@ export function buildSettingItems(
       id: "mode",
       label: "Mode",
       description:
-        "manual prompts; yolo approves everything except hard rules; auto adds a local classifier for workspace reads, writes, and sandboxed Bash. Saves to the scope below.",
+        "manual prompts; yolo approves everything except hard rules; auto adds a local classifier for workspace reads, writes, and sandboxed Bash. Saves where the current mode is set.",
       currentValue: modeValue,
       values: modeValues,
-    },
-    {
-      id: "modeScope",
-      label: "Save mode to",
-      description:
-        "Where the next mode change is stored: this session only, this project's permissions file (reuses the legacy file when present), or the global config",
-      currentValue: modeScope,
-      values: MODE_SCOPES,
     },
     toggleItem(
       "permissionReviewLog",
@@ -300,10 +291,10 @@ function compactPath(path: string, cwd?: string): string {
  */
 function buildModeHeaderLines(
   modeLayers: ModeLayers,
-  selectedScope: ModeScope,
   maxWidth?: number,
   cwd?: string,
 ): { chain: string[]; saves: string[] } {
+  const selectedScope = modeSaveScope(modeLayers);
   const selectedLayer = getSelectedModeLayer(modeLayers, selectedScope);
   const chain = modeLayers.layers
     .map((layer) => {
@@ -313,7 +304,9 @@ function buildModeHeaderLines(
     })
     .join(" · ");
   const saveTarget = selectedScope === "session"
-    ? "memory only (lost on exit)"
+    ? modeLayers.source === "environment"
+      ? "memory only, above PI_SENTINEL_MODE (lost on exit)"
+      : "memory only (lost on exit)"
     : selectedLayer
       ? compactPath(selectedLayer.savePath ?? selectedLayer.path, cwd)
       : "(no project directory)";
@@ -341,11 +334,10 @@ function fitHeaderLines(header: { chain: string[]; saves: string[] }, maxLines: 
 
 export function formatModeChain(
   modeLayers: ModeLayers,
-  selectedScope: ModeScope,
   maxWidth?: number,
   cwd?: string,
 ): string {
-  const header = buildModeHeaderLines(modeLayers, selectedScope, maxWidth, cwd);
+  const header = buildModeHeaderLines(modeLayers, maxWidth, cwd);
   return [...header.chain, ...header.saves].join("\n");
 }
 
@@ -405,7 +397,6 @@ async function openSettingsModal(
     (tui, _theme, _keybindings, done) => {
       let current = controller.getConfig();
       let selectedMode = current.mode;
-      let modeScope: ModeScope = "global";
       let modeLayers = controller.getModeLayers?.(ctx.cwd);
       let sources = controller.getSettingSources?.(ctx.cwd);
       const headerText = new Text("", 0, 0);
@@ -413,7 +404,6 @@ async function openSettingsModal(
       const buildItems = (): SettingItem[] => buildSettingItems(
         current,
         controller.getSandboxEnabled?.(),
-        modeScope,
         modeLayers,
         sources,
       );
@@ -432,11 +422,10 @@ async function openSettingsModal(
         (id, newValue) => {
           if (id === "sandbox") {
             controller.setSandboxEnabled?.(newValue === "on", ctx);
-          } else if (id === "modeScope") {
-            modeScope = newValue as ModeScope;
           } else {
             const next = applySetting(current, id, newValue);
             const modeWasExplicitlySelected = id === "mode";
+            const modeScope = modeLayers ? modeSaveScope(modeLayers) : "global";
             const saved = controller.setConfig(next, ctx, modeWasExplicitlySelected, modeScope);
             const effectiveConfig = controller.getConfig();
             if (modeWasExplicitlySelected) {
@@ -476,7 +465,7 @@ async function openSettingsModal(
           let settingsLines = settingsList.render(width);
           if (!modeLayers) return settingsLines;
           const height = tui.terminal?.rows ?? 24;
-          const header = buildModeHeaderLines(modeLayers, modeScope, width, ctx.cwd);
+          const header = buildModeHeaderLines(modeLayers, width, ctx.cwd);
           const headerHeight = header.chain.length + header.saves.length;
           if (settingsLines.length + headerHeight > height) {
             // Descriptions are supplementary; never let them push controls off-screen.
@@ -502,6 +491,33 @@ async function openSettingsModal(
   );
 }
 
+function setModeFromArgs(
+  args: string[],
+  ctx: ExtensionCommandContext,
+  controller: PermissionSystemConfigController,
+): void {
+  const [mode, scopeArg, ...rest] = args;
+  if (!MODES.includes(mode as PermissionMode) || rest.length > 0
+    || (scopeArg !== undefined && !MODE_SCOPES.includes(scopeArg as ModeScope))) {
+    ctx.ui.notify("Usage: /sentinel mode <manual|yolo|auto> [session|project|global]", "warning");
+    return;
+  }
+  const layersBefore = controller.getModeLayers?.(ctx.cwd);
+  const scope = (scopeArg as ModeScope | undefined)
+    ?? (layersBefore ? modeSaveScope(layersBefore) : "global");
+  const next = { ...controller.getConfig(), mode: mode as PermissionMode };
+  if (!controller.setConfig(next, ctx, true, scope)) return;
+  const layers = controller.getModeLayers?.(ctx.cwd);
+  if (layers) {
+    ctx.ui.notify(
+      formatModeSaveNotice(next.mode, scope, layers),
+      getModeSaveShadowingLayer(layers, scope) ? "warning" : "info",
+    );
+  } else {
+    ctx.ui.notify("Saved mode '" + next.mode + "' → " + scope + ".", "info");
+  }
+}
+
 function handleArgs(
   args: string,
   ctx: ExtensionCommandContext,
@@ -518,6 +534,11 @@ function handleArgs(
       `pi-sentinel: ${summarizeConfig(controller.getConfig(), rules, controller.getAutoModeStatus?.())}`,
       "info",
     );
+    return true;
+  }
+
+  if (normalized === "mode" || normalized.startsWith("mode ")) {
+    setModeFromArgs(normalized.split(/\s+/).slice(1), ctx, controller);
     return true;
   }
 

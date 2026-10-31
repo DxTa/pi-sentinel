@@ -49,7 +49,12 @@ That is all you need. The bundled defaults are usable as they are; read [What th
 | `auto` (default) | A local classifier approves eligible workspace reads, writes, edits, and already-sandboxed Bash. Anything it is unsure about, plus external paths, `.env*`, and network, still prompts. | Daily work with fewer prompts. |
 | `yolo` | Approves everything except a short list of [hard rules](#yolo-mode-hard-rules) (system paths, `rm`, `ssh`, `git push`, cluster changes). | Throwaway environments only. |
 
-Change it in `/sentinel` (choose whether it saves to this session, this project, or globally), in config, or per process:
+Change it in the `/sentinel` settings panel, with a command, in config, or per process:
+
+```text
+/sentinel mode manual            # saves where the current mode is set
+/sentinel mode auto project      # or pick: session | project | global
+```
 
 ```bash
 PI_SENTINEL_MODE=manual pi
@@ -213,13 +218,18 @@ Runtime settings (mode, logs, network, sandbox) merge from layers 1–3. Permiss
 
 `PI_SENTINEL_MODE` overrides the mode for that process only. It does not change config files. Invalid values are ignored and reported as config issues. Child processes inherit it unless their environment removes it.
 
-In `/sentinel`, every row shows its effective value and the scope it comes from, for example `manual (from project, overrides global: auto)` or `on (default)`. **Save mode to** picks where the next mode change is stored:
+In `/sentinel`, every row shows its effective value and the scope it comes from, for example `manual (project)` or `on (default)`. Changing the mode saves it where the current mode is set, so the change always takes effect:
 
-- `session`: in memory until the session ends. Overrides `PI_SENTINEL_MODE` and file config.
-- `project`: `<project>/.pi/permissions.json`. A committed file changes the mode for everyone who uses the repository.
-- `global` (default): `~/.pi/agent/permissions.json`. A project mode still overrides it.
+| Mode currently set by | Change saves to |
+| --- | --- |
+| session | session (memory, until the session ends) |
+| `PI_SENTINEL_MODE` | session, the only layer above it |
+| project or legacy project file | `<project>/.pi/permissions.json` (or the legacy file in use) |
+| global, legacy global, or default | `~/.pi/agent/permissions.json` |
 
-Choosing `project` or `global` replaces an active session mode. The header shows the mode chain on one line (session, `PI_SENTINEL_MODE`, project, legacy project files, global, legacy global, default) with `▶` on the layer in effect. Logs and sandbox settings always write to the global file; when a project file overrides one of them, its row says so and saving warns that the project value still applies.
+To store the mode somewhere else, for example to add a project override or a session-only mode, use `/sentinel mode <manual|yolo|auto> <session|project|global>`. A committed project file changes the mode for everyone who uses the repository. Saving to `project` or `global` replaces an active session mode.
+
+The header shows the mode chain on one line (session, `PI_SENTINEL_MODE`, project, legacy project files, global, legacy global, default) with `▶` on the layer in effect. Logs and sandbox settings always write to the global file; when a project file overrides one of them, its row says so and saving warns that the project value still applies.
 
 ### Logs
 
