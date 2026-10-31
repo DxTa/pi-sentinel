@@ -1,8 +1,9 @@
 import { existsSync } from "node:fs";
-import { execSync } from "node:child_process";
+import { execFileSync } from "node:child_process";
 import { createRequire } from "node:module";
 import { fileURLToPath } from "node:url";
 import { basename, delimiter, join, resolve } from "node:path";
+import { ripgrepCommand } from "./ripgrep.js";
 
 const require = createRequire(import.meta.url);
 
@@ -17,6 +18,8 @@ export interface SrtStatusInput {
   hasEntrypoint: boolean;
   packageAvailable: boolean;
   commandAvailable: (command: string) => boolean;
+  /** Ripgrep command SRT will run on Linux; defaults to `rg` on PATH. */
+  ripgrepCommand?: string;
 }
 
 export interface SrtStatus {
@@ -54,7 +57,7 @@ export function helperRuntimePath(execPath = process.execPath, pathEnv = process
 
 export function isCommandAvailable(command: string): boolean {
   try {
-    execSync(`command -v ${command}`, { stdio: "ignore" });
+    execFileSync("/bin/sh", ["-c", 'command -v "$1"', "sh", command], { stdio: "ignore" });
     return true;
   } catch {
     return false;
@@ -69,6 +72,7 @@ export function defaultSrtStatus(configRunnerPath: string | null): SrtStatus {
     hasEntrypoint: existsSync(entrypointPath),
     packageAvailable: isSrtPackageAvailable(),
     commandAvailable: isCommandAvailable,
+    ripgrepCommand: ripgrepCommand(),
   });
 }
 
@@ -110,14 +114,11 @@ export function checkSrtStatus(input: SrtStatusInput): SrtStatus {
   }
 
   const dependencyChecks: SrtDependencyCheck[] = [];
-  const requiredCommands = input.platform === "linux"
-    ? ["rg", "bwrap", "socat"]
-    : [];
-  for (const name of requiredCommands) {
-    dependencyChecks.push({
-      name,
-      available: input.commandAvailable(name),
-    });
+  if (input.platform === "linux") {
+    dependencyChecks.push({ name: "rg", available: input.commandAvailable(input.ripgrepCommand ?? "rg") });
+    for (const name of ["bwrap", "socat"]) {
+      dependencyChecks.push({ name, available: input.commandAvailable(name) });
+    }
   }
 
   const missing = dependencyChecks.filter((dep) => !dep.available).map((dep) => dep.name);
@@ -129,7 +130,7 @@ export function checkSrtStatus(input: SrtStatusInput): SrtStatus {
       entrypointPath: input.entrypointPath,
       entrypointExists: input.hasEntrypoint,
       dependencyChecks,
-      error: `Missing SRT runtime dependencies: ${missing.join(", ")}.`,
+      error: `Missing SRT runtime dependencies: ${missing.join(", ")}. Run /sandbox-status for setup steps.`,
     };
   }
 

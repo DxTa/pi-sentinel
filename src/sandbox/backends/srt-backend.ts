@@ -10,6 +10,7 @@ import { maskSecretValues, parseDotenvValues } from "../../env-mask.js";
 import type { SrtCommandSpec } from "../srt-command-spec.js";
 import { buildSrtCommandSpec, buildSrtCommandSpecAsync } from "../srt-command-spec.js";
 import { buildSrtRuntimeConfig } from "../srt-runtime-config.js";
+import { ripgrepCommand } from "../ripgrep.js";
 import { summarizeEnvironmentSizes } from "../spawn-diagnostics.js";
 import {
   checkSrtStatus,
@@ -23,7 +24,7 @@ import {
 export interface SrtHelperInput {
   command: string;
   cwd: string;
-  runtimeConfig: ReturnType<typeof buildSrtRuntimeConfig>;
+  runtimeConfig: ReturnType<typeof buildSrtRuntimeConfig> & { ripgrep?: { command: string } };
   unmatchedHostAction: SrtCommandSpec["networkPlan"]["unmatchedHostAction"];
   maskedShimPlan: SrtCommandSpec["maskedShimPlan"];
   unmaskedPaths: SrtCommandSpec["unmaskedPaths"];
@@ -38,12 +39,14 @@ export interface SrtBackendDeps {
   platform: () => string;
   packageAvailable: () => boolean;
   commandAvailable: (command: string) => boolean;
+  ripgrepCommand: () => string;
   checkSrtStatus: (input: {
     platform: string;
     entrypointPath: string | null;
     hasEntrypoint: boolean;
     packageAvailable: boolean;
     commandAvailable: (command: string) => boolean;
+    ripgrepCommand?: string;
   }) => SrtStatus;
   buildSrtCommandSpec: typeof buildSrtCommandSpec;
   buildSrtCommandSpecAsync?: typeof buildSrtCommandSpecAsync;
@@ -190,6 +193,7 @@ const DEFAULT_DEPS: SrtBackendDeps = {
   platform: () => process.platform,
   packageAvailable: isSrtPackageAvailable,
   commandAvailable: isCommandAvailable,
+  ripgrepCommand,
   checkSrtStatus,
   buildSrtCommandSpec,
   buildSrtCommandSpecAsync,
@@ -224,6 +228,16 @@ function buildSpecInput(
   };
 }
 
+function withRipgrep(
+  deps: SrtBackendDeps,
+  runtimeConfig: ReturnType<typeof buildSrtRuntimeConfig>,
+): SrtHelperInput["runtimeConfig"] {
+  // Only Linux SRT runs ripgrep; omit the key when SRT's own `rg` default applies.
+  const command = deps.ripgrepCommand();
+  if (deps.platform() !== "linux" || command === "rg") return runtimeConfig;
+  return { ...runtimeConfig, ripgrep: { command } };
+}
+
 function helperInputFromSpec(
   deps: SrtBackendDeps,
   spec: SrtCommandSpec,
@@ -231,7 +245,7 @@ function helperInputFromSpec(
   return {
     command: spec.command,
     cwd: spec.cwd,
-    runtimeConfig: deps.buildSrtRuntimeConfig(spec),
+    runtimeConfig: withRipgrep(deps, deps.buildSrtRuntimeConfig(spec)),
     unmatchedHostAction: spec.networkPlan.unmatchedHostAction,
     maskedShimPlan: spec.maskedShimPlan,
     unmaskedPaths: spec.unmaskedPaths,
@@ -372,6 +386,7 @@ export function createSrtBackend(
         hasEntrypoint: existsSync(helperPath),
         packageAvailable: resolvedDeps.packageAvailable(),
         commandAvailable: resolvedDeps.commandAvailable,
+        ripgrepCommand: resolvedDeps.ripgrepCommand(),
       });
       if (!status.available) {
         return { block: true, reason: status.error ?? "SRT backend unavailable." };
@@ -450,6 +465,7 @@ export function createSrtBackend(
             hasEntrypoint: existsSync(helperPath),
             packageAvailable: resolvedDeps.packageAvailable(),
             commandAvailable: resolvedDeps.commandAvailable,
+            ripgrepCommand: resolvedDeps.ripgrepCommand(),
           });
           if (!status.available) {
             outputMasker.onData(Buffer.from(`SRT backend unavailable: ${status.error}\n`));
