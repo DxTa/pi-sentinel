@@ -152,7 +152,7 @@ export function writeConfigFile(
 }
 
 function legacyFlagsForMode(mode: unknown): { yoloMode?: boolean; yoloAutoMode?: boolean } {
-  if (mode === "yolo-auto") return { yoloMode: true, yoloAutoMode: true };
+  if (mode === "auto") return { yoloMode: true, yoloAutoMode: true };
   if (mode === "yolo") return { yoloMode: true, yoloAutoMode: false };
   if (mode === "manual") return { yoloMode: false, yoloAutoMode: false };
   return {};
@@ -184,14 +184,14 @@ function canonicalizePersistedMode(
   const mode = next.mode;
   const hasLegacyMode =
     typeof next.yoloMode === "boolean" || typeof next.yoloAutoMode === "boolean";
-  if (mode !== "manual" && mode !== "yolo" && mode !== "yolo-auto" && hasLegacyMode) {
+  if (mode !== "manual" && mode !== "yolo" && mode !== "auto" && hasLegacyMode) {
     const inherited = legacyFlagsForMode(inheritedMode);
     const effective = {
       ...inherited,
       ...(typeof next.yoloMode === "boolean" ? { yoloMode: next.yoloMode } : {}),
       ...(typeof next.yoloAutoMode === "boolean" ? { yoloAutoMode: next.yoloAutoMode } : {}),
     };
-    if (effective.yoloAutoMode === true) next.mode = "yolo-auto";
+    if (effective.yoloAutoMode === true) next.mode = "auto";
     else if (effective.yoloMode === true) next.mode = "yolo";
     else if (effective.yoloAutoMode !== undefined || effective.yoloMode !== undefined) {
       next.mode = "manual";
@@ -397,6 +397,7 @@ export function loadMergedScopedConfig(
   global: JsonObject;
   workspace: JsonObject;
   merged: JsonObject;
+  scopedLayers: ScopedConfigLayer[];
 } {
   const globalPath = getGlobalConfigPath(agentDir);
   const workspacePath = cwd
@@ -416,22 +417,22 @@ export function loadMergedScopedConfig(
     legacyWorkspacePath ? readConfigLayer(legacyWorkspacePath) : {},
     workspacePath ? readConfigLayer(workspacePath) : {},
   );
-  const layers = [
-    readConfigLayer(bundledConfigPath),
-    readConfigLayer(getLegacyGlobalPolicyPath(agentDir)),
-    global,
+  const scopedLayers: ScopedConfigLayer[] = [
+    { scope: "default", config: readConfigLayer(bundledConfigPath) },
+    { scope: "global", config: readConfigLayer(getLegacyGlobalPolicyPath(agentDir)) },
+    { scope: "global", config: global },
     ...(cwd
       ? [
           legacyProjectPolicyPath ? readConfigLayer(legacyProjectPolicyPath) : {},
           legacyProjectExtensionConfigPath ? readConfigLayer(legacyProjectExtensionConfigPath) : {},
           legacyWorkspacePath ? readConfigLayer(legacyWorkspacePath) : {},
-        ]
+        ].map((config): ScopedConfigLayer => ({ scope: "project", config }))
       : []),
-    workspacePath ? readConfigLayer(workspacePath) : {},
+    { scope: "project", config: workspacePath ? readConfigLayer(workspacePath) : {} },
   ];
 
   let merged: JsonObject = {};
-  for (const layer of layers) {
+  for (const { config: layer } of scopedLayers) {
     const base = merged;
     merged = mergeObject(base, layer);
     const permission = mergePermissionConfig(base.permission, layer.permission);
@@ -442,7 +443,50 @@ export function loadMergedScopedConfig(
     if (sandbox !== undefined) merged.sandbox = sandbox;
   }
 
-  return { bundledPath: bundledConfigPath, globalPath, workspacePath, global, workspace, merged };
+  return { bundledPath: bundledConfigPath, globalPath, workspacePath, global, workspace, merged, scopedLayers };
+}
+
+/** Config file scope that last set a setting. `default` is the bundled config.json. */
+export type SettingSource = "default" | "global" | "project";
+
+export interface ScopedConfigLayer {
+  scope: SettingSource;
+  config: JsonObject;
+}
+
+/** Settings shown in `/sentinel` other than the mode, which has its own layer chain. */
+export interface SettingSources {
+  sandbox: SettingSource;
+  permissionReviewLog: SettingSource;
+  debugLog: SettingSource;
+}
+
+function lastScopeSetting(
+  layers: readonly ScopedConfigLayer[],
+  read: (config: JsonObject) => unknown,
+): SettingSource {
+  let source: SettingSource = "default";
+  for (const layer of layers) {
+    if (typeof read(layer.config) === "boolean") source = layer.scope;
+  }
+  return source;
+}
+
+/** Report which scope supplies each `/sentinel` toggle, using the same layers as the merge. */
+export function getSettingSources(
+  agentDir: string,
+  cwd: string | undefined | null,
+  bundledConfigPath = getBundledConfigPath(EXTENSION_ROOT),
+): SettingSources {
+  const { scopedLayers } = loadMergedScopedConfig(agentDir, cwd, bundledConfigPath);
+  return {
+    sandbox: lastScopeSetting(scopedLayers, (config) =>
+      typeof config.sandbox === "object" && config.sandbox !== null && !Array.isArray(config.sandbox)
+        ? (config.sandbox as JsonObject).enabled
+        : undefined),
+    permissionReviewLog: lastScopeSetting(scopedLayers, (config) => config.permissionReviewLog),
+    debugLog: lastScopeSetting(scopedLayers, (config) => config.debugLog),
+  };
 }
 
 export function persistPermissionRuleToConfig(

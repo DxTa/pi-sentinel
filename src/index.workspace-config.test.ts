@@ -121,20 +121,16 @@ describe("piPermissionSystemExtension workspace config", () => {
       const pi = createFakePi();
       piPermissionSystemExtension(pi as never);
       const notify = vi.fn();
-      const chooseYolo = async (factory: (...args: unknown[]) => { handleInput(data: string): void }) => {
-        const component = factory({ requestRender: vi.fn() }, {}, {}, () => undefined);
-        component.handleInput("\x1b[B"); // sandbox row -> mode row
-        component.handleInput(" "); // manual -> yolo
-      };
       const ctx = {
         cwd: projectDir,
         hasUI: true,
-        ui: { notify, setStatus: vi.fn(), custom: chooseYolo },
+        ui: { notify, setStatus: vi.fn() },
         sessionManager: { getEntries: () => [], getSessionDir: () => null },
       };
 
       notify.mockClear();
-      await pi.commands.get("sentinel")?.handler("", ctx);
+      // The settings picker only offers scopes that take effect; the command can still target global.
+      await pi.commands.get("sentinel")?.handler("mode yolo global", ctx);
 
       expect(notify).toHaveBeenCalledTimes(1);
       expect(notify).toHaveBeenCalledWith(
@@ -210,18 +206,10 @@ describe("piPermissionSystemExtension session mode", () => {
     const pi = createFakePi();
     piPermissionSystemExtension(pi as never);
     const notify = vi.fn();
-    const chooseSessionYolo = async (factory: (...args: unknown[]) => { handleInput(data: string): void }) => {
-      const list = factory({ requestRender: vi.fn() }, {}, {}, () => undefined);
-      list.handleInput("\x1b[B"); // sandbox row -> mode row
-      list.handleInput("\x1b[B"); // select scope row
-      list.handleInput(" "); // global -> session
-      list.handleInput("\x1b[A"); // select mode row
-      list.handleInput(" "); // manual -> yolo
-    };
     const ctx = {
       cwd: projectDir,
       hasUI: true,
-      ui: { notify, setStatus: vi.fn(), custom: chooseSessionYolo },
+      ui: { notify, setStatus: vi.fn() },
       sessionManager: { getEntries: () => [], getSessionDir: () => null },
     };
     const modePattern = new RegExp("mode=([a-z-]+)");
@@ -234,7 +222,7 @@ describe("piPermissionSystemExtension session mode", () => {
     await pi.handlers.get("session_start")?.({ reason: "startup" }, ctx);
     expect(await lastShownMode()).toBe("manual");
 
-    await pi.commands.get("sentinel")?.handler("", ctx);
+    await pi.commands.get("sentinel")?.handler("mode yolo session", ctx);
     expect(await lastShownMode()).toBe("yolo");
 
     await pi.handlers.get("session_start")?.({ reason: "new" }, ctx);

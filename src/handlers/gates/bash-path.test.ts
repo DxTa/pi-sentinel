@@ -59,7 +59,7 @@ describe("describeBashPathGate dotenv reads", () => {
     }
   });
 
-  it.each(["manual", "yolo", "yolo-auto"] as const)(
+  it.each(["manual", "yolo", "auto"] as const)(
     "allows sandboxed Docker dotenv consumers in %s mode",
     async (mode) => {
       const workspace = mkdtempSync(join(tmpdir(), "pi-bash-env-path-"));

@@ -6,6 +6,7 @@ import { afterEach, describe, expect, it } from "vitest";
 
 import {
   getScopedConfigPath,
+  getSettingSources,
   loadMergedScopedConfig,
   persistNetworkGrantToConfig,
   persistPermissionRuleToConfig,
@@ -114,6 +115,25 @@ describe("workspace persistence", () => {
   });
 });
 
+describe("getSettingSources", () => {
+  it("reports the last scope that sets each toggle, including legacy project files", async () => {
+    const agentDir = await makeTempDir("pi-sources-agent-");
+    const cwd = await makeTempDir("pi-sources-repo-");
+    const bundled = path.join(agentDir, "bundled.json");
+    await writeFile(bundled, JSON.stringify({ debugLog: false, permissionReviewLog: true, sandbox: { enabled: true } }), "utf8");
+    await writeFile(path.join(agentDir, "permissions.json"), JSON.stringify({ sandbox: { enabled: false } }), "utf8");
+    await mkdir(path.join(cwd, ".pi", "agent"), { recursive: true });
+    await writeFile(path.join(cwd, ".pi", "agent", "permissions.json"), JSON.stringify({ debugLog: true }), "utf8");
+
+    expect(getSettingSources(agentDir, cwd, bundled)).toEqual({
+      sandbox: "global",
+      permissionReviewLog: "default",
+      debugLog: "project",
+    });
+    expect(getSettingSources(agentDir, null, bundled).debugLog).toBe("default");
+  });
+});
+
 describe("getScopedConfigPath", () => {
   it("builds workspace config path", () => {
     expect(getScopedConfigPath("/agent", "/repo", "workspace")).toBe(
@@ -159,7 +179,7 @@ describe("persistPermissionRuleToConfig", () => {
     persistPermissionRuleToConfig(configPath, "bash", "git push *");
 
     const saved = JSON.parse(await readFile(configPath, "utf8"));
-    expect(saved).toMatchObject({ mode: "yolo-auto" });
+    expect(saved).toMatchObject({ mode: "auto" });
     expect(saved).not.toHaveProperty("yoloMode");
     expect(saved).not.toHaveProperty("yoloAutoMode");
   });

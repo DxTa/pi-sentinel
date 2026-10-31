@@ -42,11 +42,11 @@ function formatCounts(counts) {
 
 function permissionCategory(event) {
   const toolName = typeof event.toolName === "string" ? event.toolName : "unknown";
-  const operation = typeof event.yoloAutoOperation === "string"
-    ? event.yoloAutoOperation
+  const operation = typeof event.autoModeOperation === "string"
+    ? event.autoModeOperation
     : typeof event.operation === "string" ? event.operation : "unknown";
-  const eligible = typeof event.yoloAutoEligible === "boolean"
-    ? String(event.yoloAutoEligible) : "unknown";
+  const eligible = typeof event.autoModeEligible === "boolean"
+    ? String(event.autoModeEligible) : "unknown";
   return toolName + "/" + operation + "/eligible=" + eligible;
 }
 
@@ -89,7 +89,7 @@ function collectEvaluationRecords(reviewEvents, toolCalls, since, until) {
   for (const event of reviewEvents) {
     if (!isWithinWindow(event?.timestamp, since, until)
       || !toolCalls.has(event.toolCallId)
-      || event.event !== "yolo_auto.evaluation") continue;
+      || event.event !== "auto_mode.evaluation") continue;
     const id = typeof event.evaluationId === "string"
       ? event.evaluationId : event.toolCallId + ":" + event.timestamp;
     const timestamp = Date.parse(event.timestamp);
@@ -257,7 +257,7 @@ export function buildCalibrationReport(calibrationRecords, reviewEvents, { since
   const labels = new Map();
   const telemetryById = new Map();
   for (const event of reviewEvents) {
-    if (event?.event === "yolo_auto.evaluation" && typeof event.evaluationId === "string") {
+    if (event?.event === "auto_mode.evaluation" && typeof event.evaluationId === "string") {
       telemetryById.set(event.evaluationId, event);
     }
     const approved = event?.event === "permission_request.approved";
@@ -425,7 +425,7 @@ if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) 
     }
 
     const agentDir = join(homedir(), ".pi", "agent");
-    const calibrationPath = positionals[0] ?? join(agentDir, "logs", "yolo-auto-calibration.jsonl");
+    const calibrationPath = positionals[0] ?? join(agentDir, "logs", "auto-mode-calibration.jsonl");
     const reviewPath = positionals[1] ?? join(agentDir, "extensions", "pi-sentinel", "logs", "pi-sentinel-permission-review.jsonl");
     const calibrationFiles = [calibrationPath + ".1", calibrationPath].filter(existsSync);
     if (calibrationFiles.length === 0) throw new Error("Calibration log not found: " + calibrationPath);

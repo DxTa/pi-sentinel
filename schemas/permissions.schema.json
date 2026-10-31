@@ -25,13 +25,13 @@
     },
     "mode": {
       "description": "Permission approval mode.",
-      "markdownDescription": "Choose `manual` for prompts, `yolo` for classic eligible auto-approval, or `yolo-auto` for model-backed approval of eligible workspace-local reads and listings with classic yolo bypass elsewhere. Deterministic gates remain authoritative.",
-      "enum": ["manual", "yolo", "yolo-auto"],
-      "default": "yolo-auto"
+      "markdownDescription": "Choose `manual` to prompt for every gated request, `auto` to let a local classifier approve eligible workspace-local reads, listings, writes, edits, and sandboxed Bash, or `yolo` to approve everything except the hard rules. Deterministic gates remain authoritative.",
+      "enum": ["manual", "yolo", "auto"],
+      "default": "auto"
     },
     "yoloAskBashPatterns": {
-      "description": "Bash command wildcard patterns that still prompt in yolo and yolo-auto modes.",
-      "markdownDescription": "Bash command wildcard patterns that still prompt in `yolo` and `yolo-auto` modes.\n\nPatterns use the same wildcard matching as `permission.bash` and are matched against the whole command, each segment, and each inner command, so `cd x && git push` and loop bodies match too. Example: `git push *` or `git commit *`.",
+      "description": "Bash command wildcard patterns that still prompt in yolo and auto modes.",
+      "markdownDescription": "Bash command wildcard patterns that still prompt in `yolo` and `auto` modes.\n\nPatterns use the same wildcard matching as `permission.bash` and are matched against the whole command, each segment, and each inner command, so `cd x && git push` and loop bodies match too. Example: `git push *` or `git commit *`.",
       "type": "array",
       "items": {
         "type": "string",

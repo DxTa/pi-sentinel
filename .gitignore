@@ -1,15 +1,14 @@
 node_modules/
 logs/
 *.log
+.DS_Store
+
+# Local Pi state and grants
 .pi/
 project-grants.json
 **/project-grants.json
-.DS_Store
 
-# Local Patronus assets and runtime artifacts
-.pi-sentinel-patronus-bench/
-bin/__pycache__/
-*.py[cod]
+# Test and runtime artifacts
 node-compile-cache/
 forwarded-permission-*/
 sentinel-audit-*/

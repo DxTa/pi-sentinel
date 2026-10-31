@@ -37,7 +37,7 @@ describe("describeExternalDirectoryGate", () => {
   });
 
   it.each(["write", "edit"] as const)(
-    "forces a prompt in yolo-auto and manual for external %s tools",
+    "forces a prompt in auto and manual for external %s tools",
     (toolName) => {
       const result = expectDescriptor(
         describeExternalDirectoryGate(

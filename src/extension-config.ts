@@ -6,7 +6,16 @@ import { toRecord } from "./common";
 
 export const EXTENSION_ID = "pi-sentinel";
 
-export type PermissionMode = "manual" | "yolo" | "yolo-auto";
+export type PermissionMode = "manual" | "yolo" | "auto";
+
+export const PERMISSION_MODES: readonly PermissionMode[] = ["manual", "yolo", "auto"];
+
+/** Return `value` when it is a supported mode name. */
+export function parsePermissionMode(value: unknown): PermissionMode | undefined {
+  return typeof value === "string" && (PERMISSION_MODES as readonly string[]).includes(value)
+    ? value as PermissionMode
+    : undefined;
+}
 
 /** Where an explicit mode choice is stored. */
 export type ModeScope = "session" | "project" | "global";
@@ -14,9 +23,9 @@ export type ModeScope = "session" | "project" | "global";
 export interface PermissionSystemExtensionConfig {
   debugLog: boolean;
   permissionReviewLog: boolean;
-  /** Permission approval mode. yolo-auto uses model flow for eligible reads/lists and classic bypass elsewhere. */
+  /** Permission approval mode. `auto` uses the classifier for eligible workspace requests and classic yolo elsewhere. */
   mode: PermissionMode;
-  /** Bash command patterns that still prompt in yolo and yolo-auto modes. */
+  /** Bash command patterns that still prompt in yolo and auto modes. */
   yoloAskBashPatterns: string[];
   /** Additional directories to auto-allow for reads as Pi infrastructure. */
   piInfrastructureReadPaths?: string[];
@@ -25,7 +34,7 @@ export interface PermissionSystemExtensionConfig {
 export const DEFAULT_EXTENSION_CONFIG: PermissionSystemExtensionConfig = {
   debugLog: false,
   permissionReviewLog: true,
-  mode: "yolo-auto",
+  mode: "auto",
   yoloAskBashPatterns: [],
 };
 
@@ -71,13 +80,12 @@ export function normalizePermissionSystemConfig(
     debugLog: record.debugLog === true,
     permissionReviewLog: record.permissionReviewLog !== false,
     mode:
-      record.mode === "manual" || record.mode === "yolo" || record.mode === "yolo-auto"
-        ? record.mode
-        : record.yoloAutoMode === true
-          ? "yolo-auto"
+      parsePermissionMode(record.mode)
+        ?? (record.yoloAutoMode === true
+          ? "auto"
           : record.yoloMode === true
             ? "yolo"
-            : "manual",
+            : "manual"),
     yoloAskBashPatterns,
   };
   if (piInfrastructureReadPaths !== undefined) {

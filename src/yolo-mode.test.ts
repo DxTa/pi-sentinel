@@ -162,16 +162,16 @@ describe("matchesYoloAskBashPattern", () => {
     expect(shouldAutoApprovePermissionState("ask", yoloConfig, context)).toBe(true);
   });
 
-  it("keeps classic yolo bypass enabled in yolo-auto mode", () => {
+  it("keeps classic yolo bypass enabled in auto mode", () => {
     expect(shouldAutoApprovePermissionState("ask", {
       ...yoloConfig,
-      mode: "yolo-auto",
+      mode: "auto",
     }, { toolName: "read" })).toBe(true);
   });
 
-  it("does not auto-approve forwarded requests in yolo-auto mode", () => {
+  it("does not auto-approve forwarded requests in auto mode", () => {
     expect(shouldAutoApproveForwardedPermissionRequest(
-      { ...yoloConfig, mode: "yolo-auto" },
+      { ...yoloConfig, mode: "auto" },
       { toolName: "read" },
     )).toBe(false);
   });
@@ -253,12 +253,12 @@ describe("shouldRelaxBundledToolDenyInYolo", () => {
     ).toBe(true);
   });
 
-  it("keeps the first external write denied in yolo-auto until external_directory is allowed", () => {
+  it("keeps the first external write denied in auto until external_directory is allowed", () => {
     const relaxer = getBundledDenyRelaxer();
 
     expect(
       relaxer({
-        config: { ...yoloConfig, mode: "yolo-auto" },
+        config: { ...yoloConfig, mode: "auto" },
         toolName: "write",
         path: "/tmp/shared/file.txt",
         cwd: "/tmp/project",

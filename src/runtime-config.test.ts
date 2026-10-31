@@ -73,10 +73,10 @@ describe("getModeLayers", () => {
     tempPaths.push(agentDir, projectDir);
 
     const files = [
-      [getLegacyGlobalPolicyPath(agentDir), "yolo-auto"],
+      [getLegacyGlobalPolicyPath(agentDir), "auto"],
       [getGlobalConfigPath(agentDir), "yolo"],
       [getLegacyProjectPolicyPath(projectDir), "manual"],
-      [getLegacyProjectExtensionConfigPath(projectDir), "yolo-auto"],
+      [getLegacyProjectExtensionConfigPath(projectDir), "auto"],
       [getLegacyProjectConfigPath(projectDir), "yolo"],
       [getProjectConfigPath(projectDir), "manual"],
     ] as const;
@@ -86,20 +86,20 @@ describe("getModeLayers", () => {
     }
 
     const previousMode = process.env.PI_SENTINEL_MODE;
-    process.env.PI_SENTINEL_MODE = "yolo-auto";
+    process.env.PI_SENTINEL_MODE = "auto";
     try {
       const runtime: Record<string, unknown> = { agentDir, sessionMode: "yolo" };
       const result = getModeLayers(runtime as never, projectDir);
       expect(result.layers.map(({ name, mode }) => [name, mode])).toEqual([
         ["session", "yolo"],
-        ["env", "yolo-auto"],
+        ["env", "auto"],
         ["project", "manual"],
         ["project (legacy)", "yolo"],
-        ["project (legacy)", "yolo-auto"],
+        ["project (legacy)", "auto"],
         ["project (legacy)", "manual"],
         ["global", "yolo"],
-        ["global (legacy)", "yolo-auto"],
-        ["bundled", "yolo-auto"],
+        ["global (legacy)", "auto"],
+        ["bundled", "auto"],
       ]);
       expect(result.layers[2].path).toBe(getProjectConfigPath(projectDir));
       expect(result.effective).toBe("yolo");
@@ -107,7 +107,7 @@ describe("getModeLayers", () => {
 
       runtime.sessionMode = undefined;
       expect(getModeLayers(runtime as never, projectDir)).toMatchObject({
-        effective: "yolo-auto",
+        effective: "auto",
         source: "environment",
       });
 
@@ -133,12 +133,12 @@ describe("getModeLayers", () => {
 
       await rm(getGlobalConfigPath(agentDir), { force: true });
       expect(getModeLayers(runtime as never, projectDir)).toMatchObject({
-        effective: "yolo-auto",
+        effective: "auto",
         source: "global-policy-legacy",
       });
 
       await rm(getLegacyGlobalPolicyPath(agentDir), { force: true });
-      expect(getModeLayers(runtime as never, projectDir)).toMatchObject({ effective: "yolo-auto", source: "bundled" });
+      expect(getModeLayers(runtime as never, projectDir)).toMatchObject({ effective: "auto", source: "bundled" });
     } finally {
       if (previousMode === undefined) delete process.env.PI_SENTINEL_MODE;
       else process.env.PI_SENTINEL_MODE = previousMode;
@@ -156,7 +156,7 @@ describe("getModeLayers", () => {
     delete process.env.PI_SENTINEL_MODE;
     try {
       const result = getModeLayers({ agentDir } as never, projectDir);
-      expect(result.effective).toBe("yolo-auto");
+      expect(result.effective).toBe("auto");
       expect(result.source).toBe("bundled");
       expect(result.layers.find((layer) => layer.name === "global (legacy)")).toMatchObject({
         mode: undefined,
@@ -183,7 +183,7 @@ describe("getModeLayers", () => {
       ]) {
         await writeFile(legacyPath, JSON.stringify(flags), "utf8");
         const result = getModeLayers({ agentDir } as never, projectDir);
-        expect(result.effective).toBe("yolo-auto");
+        expect(result.effective).toBe("auto");
         expect(result.source).toBe("global-policy-legacy");
       }
     } finally {
@@ -297,6 +297,8 @@ describe("saveExtensionConfig", () => {
         yoloAskBashPatterns: ["git push *"],
       },
       ctx as never,
+      true,
+      "global",
     );
 
     const saved = JSON.parse(
@@ -310,6 +312,39 @@ describe("saveExtensionConfig", () => {
       mode: "yolo",
     });
     expect(saved).not.toHaveProperty("yoloAutoMaxLevel");
+  });
+
+  it("writes only the changed toggle to global, not project-scoped mode or ask patterns", async () => {
+    const agentDir = await mkdtemp(path.join(tmpdir(), "pi-runtime-toggle-"));
+    const projectDir = await mkdtemp(path.join(tmpdir(), "pi-runtime-toggle-project-"));
+    tempPaths.push(agentDir, projectDir);
+    const globalPath = path.join(agentDir, "permissions.json");
+    await writeFile(globalPath, JSON.stringify({ mode: "auto" }), "utf8");
+    await mkdir(path.join(projectDir, ".pi"), { recursive: true });
+    await writeFile(
+      path.join(projectDir, ".pi", "permissions.json"),
+      JSON.stringify({ mode: "manual", yoloAskBashPatterns: ["terraform *"], debugLog: false }),
+      "utf8",
+    );
+    const effective = {
+      debugLog: false,
+      permissionReviewLog: true,
+      mode: "manual" as const,
+      yoloAskBashPatterns: ["terraform *"],
+    };
+    const runtime = {
+      agentDir,
+      config: effective,
+      runtimeContext: { cwd: projectDir },
+      writeDebugLog: vi.fn(),
+    };
+    const ctx = { cwd: projectDir, ui: { setStatus: vi.fn(), notify: vi.fn() } };
+
+    expect(saveExtensionConfig(runtime as never, { ...effective, debugLog: true }, ctx as never)).toBe(true);
+
+    expect(JSON.parse(await readFile(globalPath, "utf8"))).toEqual({ mode: "auto", debugLog: true });
+    // The project still sets debugLog=false, so the session keeps the merged value.
+    expect((runtime as { config: { debugLog: boolean } }).config.debugLog).toBe(false);
   });
 
   it("does not persist the process mode override when saving another setting", async () => {
@@ -404,7 +439,7 @@ describe("saveExtensionConfig", () => {
     const projectDir = await mkdtemp(path.join(tmpdir(), "pi-runtime-explicit-mode-project-"));
     tempPaths.push(agentDir, projectDir);
     const configPath = path.join(agentDir, "permissions.json");
-    await writeFile(configPath, JSON.stringify({ mode: "yolo-auto" }), "utf8");
+    await writeFile(configPath, JSON.stringify({ mode: "auto" }), "utf8");
 
     const previousMode = process.env.PI_SENTINEL_MODE;
     process.env.PI_SENTINEL_MODE = "yolo";
@@ -483,12 +518,12 @@ describe("saveExtensionConfig", () => {
     await writeFile(globalPath, JSON.stringify({ mode: "manual" }), "utf8");
 
     const previousMode = process.env.PI_SENTINEL_MODE;
-    process.env.PI_SENTINEL_MODE = "yolo-auto";
+    process.env.PI_SENTINEL_MODE = "auto";
     try {
       const runtime: Record<string, unknown> = {
         agentDir,
         runtimeContext: { cwd: projectDir },
-        config: { mode: "yolo-auto" },
+        config: { mode: "auto" },
         writeDebugLog: vi.fn(),
       };
       const ctx = { cwd: projectDir, ui: { setStatus: vi.fn(), notify: vi.fn() } };
@@ -670,7 +705,7 @@ describe("saveExtensionConfig", () => {
 
     resetExtensionConfig(runtime as never, ctx as never);
 
-    expect(runtime.config).toMatchObject({ mode: "yolo-auto" });
+    expect(runtime.config).toMatchObject({ mode: "auto" });
   });
 
   it("removes runtime overrides so bundled defaults become effective", async () => {
@@ -706,7 +741,7 @@ describe("saveExtensionConfig", () => {
     expect(runtime.config).toMatchObject({
       debugLog: false,
       permissionReviewLog: true,
-      mode: "yolo-auto",
+      mode: "auto",
       yoloAskBashPatterns: [],
     });
   });

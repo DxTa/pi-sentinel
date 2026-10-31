@@ -33,7 +33,7 @@ import {
   getToolNameFromValue,
   type ToolRegistry,
 } from "#src/tool-registry";
-import { buildYoloAutoBashContext } from "#src/yolo-auto-bash-context";
+import { buildAutoModeBashContext } from "#src/auto-mode-bash-context";
 import { forbiddenWriteTarget } from "#src/yolo-forbidden-writes";
 import { matchesGitPushCommand, shouldRelaxBundledToolDenyInYolo } from "#src/yolo-mode";
 import { describeBashExternalDirectoryGate } from "./gates/bash-external-directory";
@@ -72,7 +72,7 @@ function requireFreshPushApproval(
     promptDetails: {
       ...result.promptDetails,
       allowSession: false,
-      ...(mode === "yolo-auto" ? { forcePromptInYolo: true } : {}),
+      ...(mode === "auto" ? { forcePromptInYolo: true } : {}),
     },
   };
   return descriptor;
@@ -97,7 +97,7 @@ export class PermissionGateHandler {
   async handleToolCall(
     event: unknown,
     ctx: ExtensionContext,
-    sandboxedForYoloAuto = false,
+    sandboxedForAutoMode = false,
     protectedReadPaths: readonly string[] = [],
   ): Promise<{ block?: true; reason?: string }> {
     const { session } = this;
@@ -140,7 +140,7 @@ export class PermissionGateHandler {
       input,
       toolCallId,
       cwd: ctx.cwd,
-      sandboxed: sandboxedForYoloAuto,
+      sandboxed: sandboxedForAutoMode,
       mode: session.config.mode,
     };
 
@@ -389,18 +389,18 @@ export class PermissionGateHandler {
     const bashPathPolicyTokens = bashPathTokens === undefined
       ? undefined
       : [...new Set([...bashPathTokens, ...protectedPathPolicyTokens])];
-    const yoloAutoBashContext = bashPathTokens !== undefined && bashCommand !== null
-      ? buildYoloAutoBashContext(bashCommand, bashPathTokens, tcc.cwd)
+    const autoModeBashContext = bashPathTokens !== undefined && bashCommand !== null
+      ? buildAutoModeBashContext(bashCommand, bashPathTokens, tcc.cwd)
       : undefined;
-    const toolTcc = yoloAutoBashContext === undefined
+    const toolTcc = autoModeBashContext === undefined
       ? tcc
       : {
           ...tcc,
-          yoloAutoHardRuleHit: yoloAutoBashContext.hardRuleHit,
-          yoloAutoWorkspaceLocal: yoloAutoBashContext.workspaceLocal,
-          yoloAutoCommand: yoloAutoBashContext.command,
-          yoloAutoUnits: yoloAutoBashContext.units,
-          yoloAutoOpaque: yoloAutoBashContext.opaque,
+          autoModeHardRuleHit: autoModeBashContext.hardRuleHit,
+          autoModeWorkspaceLocal: autoModeBashContext.workspaceLocal,
+          autoModeCommand: autoModeBashContext.command,
+          autoModeUnits: autoModeBashContext.units,
+          autoModeOpaque: autoModeBashContext.opaque,
         };
     const bashPathDesc = requireFreshPushApproval(
       await describeBashPathGate(
@@ -463,11 +463,11 @@ export class PermissionGateHandler {
       ? { ...baseToolCheck, state: "ask" as const }
       : baseToolCheck;
 
-    // Let YoloAuto classify workspace operations only when normal policy asks.
-    // Workspace reads never need the model; writes still go through YoloAuto when policy asks.
+    // Let AutoMode classify workspace operations only when normal policy asks.
+    // Workspace reads never need the model; writes still go through AutoMode when policy asks.
     if (
       workspaceLocalFileOperation
-      && (session.config.mode !== "yolo-auto"
+      && (session.config.mode !== "auto"
         || toolCheck.state !== "ask"
         || READ_ONLY_PATH_BEARING_TOOLS.has(tcc.toolName)
         || tcc.toolName === "ls")

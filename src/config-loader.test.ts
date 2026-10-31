@@ -21,20 +21,29 @@ describe("permission mode config", () => {
   it("normalizes one explicit mode", () => {
     expect(normalizeUnifiedConfig({ mode: "manual" }).config).toEqual({ mode: "manual" });
     const legacy = normalizeUnifiedConfig({
-      mode: "yolo-auto",
+      mode: "auto",
       yoloAutoMaxLevel: "l2",
     });
-    expect(legacy.config).toEqual({ mode: "yolo-auto" });
+    expect(legacy.config).toEqual({ mode: "auto" });
     expect(legacy.issues).toHaveLength(1);
     expect(legacy.issues[0]).toContain("yoloAutoMaxLevel");
     expect(normalizeUnifiedConfig({ mode: "invalid" }).config).toEqual({});
     expect(normalizeUnifiedConfig({ mode: "manual", yoloAutoMode: true }).config).toEqual({ mode: "manual" });
   });
 
+  it("rejects the removed yolo-auto mode name", () => {
+    const result = normalizeUnifiedConfig({ mode: "yolo-auto" });
+    expect(result.config).toEqual({});
+    expect(result.issues).toEqual([
+      "Ignoring invalid mode \"yolo-auto\"; expected 'manual', 'yolo', or 'auto'.",
+    ]);
+    expect(normalizePermissionSystemConfig({ mode: "yolo-auto" }).mode).toBe("manual");
+  });
+
   it("migrates legacy boolean modes without exposing them", () => {
-    expect(normalizeUnifiedConfig({ yoloAutoMode: true }).config).toEqual({ mode: "yolo-auto" });
+    expect(normalizeUnifiedConfig({ yoloAutoMode: true }).config).toEqual({ mode: "auto" });
     expect(normalizeUnifiedConfig({ yoloMode: true }).config).toEqual({ mode: "yolo" });
-    expect(normalizeUnifiedConfig({ yoloMode: true, yoloAutoMode: true }).config).toEqual({ mode: "yolo-auto" });
+    expect(normalizeUnifiedConfig({ yoloMode: true, yoloAutoMode: true }).config).toEqual({ mode: "auto" });
     expect(normalizeUnifiedConfig({ yoloAutoMode: false }).config).toEqual({ mode: "manual" });
   });
 
@@ -45,18 +54,18 @@ describe("permission mode config", () => {
     const projectDir = path.join(root, "project");
     const extensionRoot = path.join(root, "extension");
     await Promise.all([agentDir, projectDir, extensionRoot].map((dir) => mkdir(dir, { recursive: true })));
-    await writeFile(path.join(extensionRoot, "config.json"), JSON.stringify({ mode: "yolo-auto" }), "utf8");
+    await writeFile(path.join(extensionRoot, "config.json"), JSON.stringify({ mode: "auto" }), "utf8");
     await mkdir(path.dirname(getGlobalConfigPath(agentDir)), { recursive: true });
     await writeFile(getGlobalConfigPath(agentDir), JSON.stringify({ yoloMode: true }), "utf8");
 
     expect(loadAndMergeConfigs(agentDir, projectDir, extensionRoot).merged).toMatchObject({
-      mode: "yolo-auto",
+      mode: "auto",
     });
   });
 
   it("lets project mode replace global mode", () => {
     expect(mergeUnifiedConfigs(
-      { mode: "yolo-auto" },
+      { mode: "auto" },
       { mode: "manual" },
     )).toEqual({ mode: "manual" });
   });
@@ -90,7 +99,7 @@ describe("permission mode config", () => {
       const invalidResult = loadAndMergeConfigs(agentDir, projectDir, extensionRoot);
       expect(invalidResult.merged.mode).toBe("manual");
       expect(invalidResult.issues).toContain(
-        "Ignoring invalid PI_SENTINEL_MODE; expected 'manual', 'yolo', or 'yolo-auto'.",
+        "Ignoring invalid PI_SENTINEL_MODE; expected 'manual', 'yolo', or 'auto'.",
       );
     } finally {
       if (previousMode === undefined) delete process.env.PI_SENTINEL_MODE;
@@ -155,7 +164,7 @@ describe("permission mode config", () => {
 
   it("defaults extension runtime config to empty list", () => {
     expect(DEFAULT_EXTENSION_CONFIG).toMatchObject({
-      mode: "yolo-auto",
+      mode: "auto",
       yoloAskBashPatterns: [],
     });
     expect(DEFAULT_EXTENSION_CONFIG).not.toHaveProperty("yoloAutoMaxLevel");

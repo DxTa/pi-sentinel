@@ -80,7 +80,7 @@ describe("calibration report", () => {
         review("deny-label", "denied"),
         review("approved-but-gates-fail", "approved"),
         review("denied-and-gates-fail", "denied"),
-        review("automatic-allow-has-no-human-label", "yolo_auto_approved"),
+        review("automatic-allow-has-no-human-label", "auto_mode_approved"),
         review("hard-rule-excluded", "denied"),
       ],
     );
@@ -103,7 +103,7 @@ describe("calibration report", () => {
       { ...calibration("missing-time"), toolName: "bash", operation: "exec", decision: "prompt", reason: "transport_failure" },
     ];
     const telemetry = (evaluationId) => ({
-      event: "yolo_auto.evaluation",
+      event: "auto_mode.evaluation",
       evaluationId,
       flow: "permission",
       candidate: true,
@@ -152,7 +152,7 @@ describe("calibration report", () => {
   it("keeps coverage separate by model build and threshold snapshot", () => {
     const baseThresholds = { minBenignThreat: 0.9, maxInjection: 0.1, maxToolTag: 0.5 };
     const telemetry = (evaluationId, modelBuildId, policyThresholds) => ({
-      event: "yolo_auto.evaluation",
+      event: "auto_mode.evaluation",
       evaluationId,
       flow: "permission",
       candidate: true,
@@ -214,7 +214,7 @@ describe("calibration report", () => {
       ],
       [
         {
-          event: "yolo_auto.evaluation",
+          event: "auto_mode.evaluation",
           evaluationId: "failed-read",
           flow: "secret_read",
           candidate: true,
@@ -223,7 +223,7 @@ describe("calibration report", () => {
           failureReason: "transport_failure",
         },
         {
-          event: "yolo_auto.evaluation",
+          event: "auto_mode.evaluation",
           evaluationId: "routine-skip",
           flow: "secret_read",
           candidate: false,
@@ -232,7 +232,7 @@ describe("calibration report", () => {
           failureReason: "result_scanning_disabled",
         },
         {
-          event: "yolo_auto.evaluation",
+          event: "auto_mode.evaluation",
           evaluationId: "legacy-read",
           flow: "secret_read",
           candidate: true,
@@ -296,7 +296,7 @@ describe("session-scoped report", () => {
     ]);
     writeJsonl(reviewPath, [
       {
-        event: "yolo_auto.evaluation", timestamp: "2026-10-05T10:00:01Z",
+        event: "auto_mode.evaluation", timestamp: "2026-10-05T10:00:01Z",
         evaluationId: "eval-a", toolCallId: "call-a", modelBuildId: "build-a",
         outcome: "prompt", policyAction: "prompt", policyReason: "threat_not_benign", disposition: "attempted",
         toolName: "bash", operation: "exec", command: "PRIVATE_REVIEW_COMMAND",
@@ -304,15 +304,15 @@ describe("session-scoped report", () => {
       {
         event: "permission_request.waiting", timestamp: "2026-10-05T10:00:02Z",
         requestId: "request-a", toolCallId: "call-a", toolName: "bash",
-        yoloAutoOperation: "exec", yoloAutoEligible: false, message: "PRIVATE_PROMPT_BODY",
+        autoModeOperation: "exec", autoModeEligible: false, message: "PRIVATE_PROMPT_BODY",
       },
       {
         event: "permission_request.approved", timestamp: "2026-10-05T10:00:03Z",
         requestId: "request-a", toolCallId: "call-a", toolName: "bash",
-        yoloAutoOperation: "exec", yoloAutoEligible: false, resolution: "approved",
+        autoModeOperation: "exec", autoModeEligible: false, resolution: "approved",
       },
       {
-        event: "yolo_auto.evaluation", timestamp: "2026-10-05T10:00:04Z",
+        event: "auto_mode.evaluation", timestamp: "2026-10-05T10:00:04Z",
         evaluationId: "eval-b", toolCallId: "call-b", modelBuildId: "build-a",
         outcome: "allowed", policyAction: "allow", policyReason: "model_allow", disposition: "attempted",
         toolName: "read", operation: "read",
@@ -320,30 +320,30 @@ describe("session-scoped report", () => {
       {
         event: "permission_request.waiting", timestamp: "2026-10-05T10:00:05Z",
         requestId: "request-c", toolCallId: "call-c", toolName: "bash",
-        yoloAutoOperation: "exec", yoloAutoEligible: false, command: "PRIVATE_PENDING_COMMAND",
+        autoModeOperation: "exec", autoModeEligible: false, command: "PRIVATE_PENDING_COMMAND",
       },
       {
         event: "permission_request.waiting", timestamp: "2026-10-05T10:00:05Z",
         requestId: "request-a", toolCallId: "call-d", toolName: "bash",
-        yoloAutoOperation: "exec", yoloAutoEligible: false,
+        autoModeOperation: "exec", autoModeEligible: false,
       },
       {
         event: "permission_request.denied", timestamp: "2026-10-05T10:00:06Z",
         requestId: "request-a", toolCallId: "call-d", toolName: "bash",
-        yoloAutoOperation: "exec", yoloAutoEligible: false, resolution: "denied",
+        autoModeOperation: "exec", autoModeEligible: false, resolution: "denied",
       },
       {
-        event: "yolo_auto.evaluation", timestamp: "2026-10-05T00:00:00Z",
+        event: "auto_mode.evaluation", timestamp: "2026-10-05T00:00:00Z",
         evaluationId: "eval-since", toolCallId: "call-since", modelBuildId: "build-a",
         outcome: "allowed", policyAction: "allow", policyReason: "model_allow", disposition: "attempted",
       },
       {
-        event: "yolo_auto.evaluation", timestamp: "2026-10-06T00:00:00Z",
+        event: "auto_mode.evaluation", timestamp: "2026-10-06T00:00:00Z",
         evaluationId: "eval-until", toolCallId: "call-until", modelBuildId: "build-x",
         outcome: "prompt", policyAction: "prompt", policyReason: "injection_detected",
       },
       {
-        event: "yolo_auto.evaluation", timestamp: "2026-10-05T10:00:06Z",
+        event: "auto_mode.evaluation", timestamp: "2026-10-05T10:00:06Z",
         evaluationId: "unrelated", toolCallId: "not-in-selected-sessions", modelBuildId: "build-x",
         outcome: "allowed", command: "PRIVATE_UNRELATED_COMMAND",
       },

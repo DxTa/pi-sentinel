@@ -10,17 +10,17 @@ import {
   getProjectConfigPath,
 } from "./config-paths";
 import { mergeFlatPermissions } from "./permission-merge";
-import type { PermissionMode } from "./extension-config";
+import { parsePermissionMode, type PermissionMode } from "./extension-config";
 import type { FlatPermissionConfig } from "./types";
 
 /**
  * Unified config shape combining runtime knobs and flat permission policy.
  * All fields are optional so partial configs (project-only, global-only) work.
  */
-const REMOVED_YOLO_AUTO_MAX_LEVEL_WARNING =
-  "'yoloAutoMaxLevel' is no longer supported; yolo-auto uses fixed model thresholds.";
+const REMOVED_AUTO_MODE_MAX_LEVEL_WARNING =
+  "'yoloAutoMaxLevel' is no longer supported; auto uses fixed model thresholds.";
 
-export function stripLegacyYoloAutoMaxLevel(config: Record<string, unknown>): void {
+export function stripLegacyAutoModeMaxLevel(config: Record<string, unknown>): void {
   delete config.yoloAutoMaxLevel;
 }
 
@@ -186,7 +186,7 @@ export function normalizeUnifiedConfig(raw: unknown): UnifiedConfigLoadResult {
   const issues: string[] = [];
   const config: UnifiedPermissionConfig = {};
   if (Object.hasOwn(record, "yoloAutoMaxLevel")) {
-    issues.push(REMOVED_YOLO_AUTO_MAX_LEVEL_WARNING);
+    issues.push(REMOVED_AUTO_MODE_MAX_LEVEL_WARNING);
   }
 
   // Runtime knobs
@@ -199,8 +199,11 @@ export function normalizeUnifiedConfig(raw: unknown): UnifiedConfigLoadResult {
   if (permissionReviewLog !== undefined)
     config.permissionReviewLog = permissionReviewLog;
 
-  const explicitMode =
-    record.mode === "manual" || record.mode === "yolo" || record.mode === "yolo-auto";
+  const parsedMode = parsePermissionMode(record.mode);
+  const explicitMode = parsedMode !== undefined;
+  if (record.mode !== undefined && !explicitMode) {
+    issues.push(`Ignoring invalid mode ${JSON.stringify(record.mode)}; expected 'manual', 'yolo', or 'auto'.`);
+  }
   const legacyMode: LegacyModeFlags = {};
   const yoloMode = normalizeOptionalBoolean(record.yoloMode);
   const yoloAutoMode = normalizeOptionalBoolean(record.yoloAutoMode);
@@ -208,9 +211,9 @@ export function normalizeUnifiedConfig(raw: unknown): UnifiedConfigLoadResult {
   if (!explicitMode && yoloAutoMode !== undefined) legacyMode.yoloAutoMode = yoloAutoMode;
 
   if (explicitMode) {
-    config.mode = record.mode as PermissionMode;
+    config.mode = parsedMode;
   } else if (yoloAutoMode === true) {
-    config.mode = "yolo-auto";
+    config.mode = "auto";
   } else if (yoloMode === true) {
     config.mode = "yolo";
   } else if (yoloAutoMode !== undefined || yoloMode !== undefined) {
@@ -236,7 +239,7 @@ export function normalizeUnifiedConfig(raw: unknown): UnifiedConfigLoadResult {
 }
 
 function legacyFlagsForMode(mode: PermissionMode | undefined): LegacyModeFlags {
-  if (mode === "yolo-auto") return { yoloMode: true, yoloAutoMode: true };
+  if (mode === "auto") return { yoloMode: true, yoloAutoMode: true };
   if (mode === "yolo") return { yoloMode: true, yoloAutoMode: false };
   if (mode === "manual") return { yoloMode: false, yoloAutoMode: false };
   return {};
@@ -254,7 +257,7 @@ function mergeLoadedConfig(
     ...override.legacyMode,
   };
   if (effective.yoloAutoMode === true) {
-    merged.mode = "yolo-auto";
+    merged.mode = "auto";
   } else if (effective.yoloMode === true) {
     merged.mode = "yolo";
   } else {
@@ -482,7 +485,7 @@ export function loadAndMergeConfigs(
     merged.mode = modeOverride;
     modeSource = "environment";
   } else if (process.env.PI_SENTINEL_MODE !== undefined) {
-    allIssues.push("Ignoring invalid PI_SENTINEL_MODE; expected 'manual', 'yolo', or 'yolo-auto'.");
+    allIssues.push("Ignoring invalid PI_SENTINEL_MODE; expected 'manual', 'yolo', or 'auto'.");
   }
 
   return {
