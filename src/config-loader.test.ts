@@ -32,7 +32,11 @@ describe("permission mode config", () => {
   });
 
   it("rejects the removed yolo-auto mode name", () => {
-    expect(normalizeUnifiedConfig({ mode: "yolo-auto" }).config).toEqual({});
+    const result = normalizeUnifiedConfig({ mode: "yolo-auto" });
+    expect(result.config).toEqual({});
+    expect(result.issues).toEqual([
+      "Ignoring invalid mode \"yolo-auto\"; expected 'manual', 'yolo', or 'auto'.",
+    ]);
     expect(normalizePermissionSystemConfig({ mode: "yolo-auto" }).mode).toBe("manual");
   });
 

@@ -201,6 +201,9 @@ export function normalizeUnifiedConfig(raw: unknown): UnifiedConfigLoadResult {
 
   const parsedMode = parsePermissionMode(record.mode);
   const explicitMode = parsedMode !== undefined;
+  if (record.mode !== undefined && !explicitMode) {
+    issues.push(`Ignoring invalid mode ${JSON.stringify(record.mode)}; expected 'manual', 'yolo', or 'auto'.`);
+  }
   const legacyMode: LegacyModeFlags = {};
   const yoloMode = normalizeOptionalBoolean(record.yoloMode);
   const yoloAutoMode = normalizeOptionalBoolean(record.yoloAutoMode);
