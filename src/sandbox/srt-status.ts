@@ -2,7 +2,7 @@ import { existsSync } from "node:fs";
 import { execFileSync } from "node:child_process";
 import { createRequire } from "node:module";
 import { fileURLToPath } from "node:url";
-import { basename, delimiter, join, resolve } from "node:path";
+import { resolve } from "node:path";
 import { ripgrepCommand } from "./ripgrep.js";
 
 const require = createRequire(import.meta.url);
@@ -46,14 +46,7 @@ export function isSrtPackageAvailable(): boolean {
   }
 }
 
-/**
- * Runtime that launches the sandbox helper script. A compiled host (for example pi-bolt)
- * has a `process.execPath` that treats the script path as a prompt, so use `node` from PATH.
- */
-export function helperRuntimePath(execPath = process.execPath, pathEnv = process.env.PATH ?? ""): string {
-  if (/^(?:node|bun)(?:\.exe)?$/i.test(basename(execPath.replaceAll("\\", "/")))) return execPath;
-  return pathEnv.split(delimiter).map((dir) => join(dir, "node")).find((candidate) => existsSync(candidate)) ?? "node";
-}
+export { helperRuntimePath } from "../host-runtime.js";
 
 export function isCommandAvailable(command: string): boolean {
   try {

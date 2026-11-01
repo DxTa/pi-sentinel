@@ -2,13 +2,16 @@ import { spawn, type ChildProcess } from "node:child_process";
 import { once } from "node:events";
 import { open } from "node:fs/promises";
 
+import { helperRuntimePath } from "./host-runtime.ts";
+
 const LOCK_HOLDER_SCRIPT = 'process.stdout.write("locked\\n"); process.stdin.resume();';
 
 export function lockCommand(
   lockPath: string,
   platform: NodeJS.Platform = process.platform,
+  runtime: string = helperRuntimePath(),
 ): { command: string; args: string[] } {
-  const holderCommand = [process.execPath, "-e", LOCK_HOLDER_SCRIPT];
+  const holderCommand = [runtime, "-e", LOCK_HOLDER_SCRIPT];
   if (platform === "darwin") {
     return { command: "/usr/bin/lockf", args: ["-k", lockPath, ...holderCommand] };
   }

@@ -50,6 +50,7 @@ import {
   AutoModeClient,
 } from "./auto-mode-client";
 import { isUnixSocketActive, spawnDetachedAutoModeWorker, waitForWorkerStartup } from "./auto-mode-startup";
+import { nodeRuntimePath } from "./host-runtime";
 import { AUTO_MODE_BUILD_ID } from "./auto-mode-build";
 import { PromptWaitTracker } from "./prompt-state";
 import { getHardBlockedBashMutationPaths } from "./handlers/gates/bash-external-directory.js";
@@ -223,7 +224,7 @@ async function startAutoModeWorker(
     modelDir,
   ];
   try {
-    const worker = await spawnDetachedAutoModeWorker(agentDir, process.execPath, args);
+    const worker = await spawnDetachedAutoModeWorker(agentDir, nodeRuntimePath(), args);
     const startupSignal = worker.startupSignal.catch((error: unknown) => {
       writeDebugLog("auto_mode.worker_unavailable", { reason: "spawn_error" });
       throw error;
