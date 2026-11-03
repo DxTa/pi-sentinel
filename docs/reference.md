@@ -52,7 +52,7 @@ Limits:
 
 pi-sentinel starts or reuses one shared, detached Node worker. It runs the Apache-2.0 Lion Warden classifier, pinned to revision `77888f617584758f904faefd6f38d4cf926f6d5d`. The model and tokenizer are not bundled; first startup downloads about 130 MB into `~/.pi/agent/runtime/pi-sentinel/auto-mode/models`, verifies SHA-256 hashes, and resumes interrupted downloads. The worker fails closed: unavailable or invalid model assets mean permission requests prompt. No Python is required.
 
-What the classifier sees: path/tool metadata for reads and listings, up to 800 characters of write/edit content, or a redacted Bash command. Read output is not sent, so prompt injection inside a file cannot be detected before reading. Sensitive paths, external targets, network operations, unsandboxed Bash, and model failures prompt. Fixed thresholds are authoritative; 5% of would-allow decisions prompt anyway for audit (20% for allows learned from history).
+What the classifier sees: path/tool metadata for reads and listings, up to 800 characters of write/edit content, a redacted Bash command, or the tool name and arguments of an MCP call (calls whose arguments exceed 800 characters prompt). An MCP call is allowed only when the model reads it as a read or list and every other check passes. Read output is not sent, so prompt injection inside a file cannot be detected before reading. Sensitive paths, external targets, network operations, unsandboxed Bash, and model failures prompt. Fixed thresholds are authoritative; 5% of would-allow decisions prompt anyway for audit (20% for allows learned from history).
 
 Override the model directory or Unix socket when needed:
 
@@ -84,6 +84,8 @@ Bundled defaults live in [`config.json`](../config.json); the full schema is [`s
 3. trusted project `<project>/.pi/permissions.json`;
 4. per-agent configuration (agent frontmatter);
 5. security profile overlay.
+
+MCP tools named `mcp__<server>__<tool>` match `permission.mcp` patterns as `server_tool`, `server:tool`, then `server`, so `"mcp": { "github_*": "allow", "github_delete_*": "deny" }` covers the `github` server. A rule on the full tool name (`"mcp__github__get_issue": "deny"`) wins. Bundled `mcp` defaults do not apply to these tools; unmatched calls use the universal `"*"` rule.
 
 Runtime settings (mode, logs, network, sandbox) merge from layers 1–3. Permission rules also merge from agent frontmatter and the active security-profile overlay; those layers do not override runtime settings.
 

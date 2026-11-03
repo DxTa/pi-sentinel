@@ -81,6 +81,18 @@ function pushMcpToolPermissionTargets(
 }
 
 /**
+ * Permission targets for a pi MCP tool name `mcp__<server>__<tool>`, most specific first:
+ * `server_tool`, `server:tool`, `server`. Returns null for other names.
+ * A bare tool name is not a target, so a rule for one server's tool never covers another server.
+ */
+export function createPiMcpToolTargets(toolName: string): string[] | null {
+  const match = /^mcp__(.+?)__(.+)$/.exec(toolName);
+  if (!match) return null;
+  const [, server, tool] = match as unknown as [string, string, string];
+  return [`${server}_${tool}`, `${server}:${tool}`, server];
+}
+
+/**
  * Derive the ordered list of MCP permission-lookup candidates from a raw MCP
  * tool invocation input.
  *
