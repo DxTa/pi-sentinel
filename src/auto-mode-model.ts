@@ -130,12 +130,26 @@ function probabilities(logits: Float32Array, labels: readonly string[], multiLab
   return Object.fromEntries(labels.map((label, i) => [label, scores[i]! / total]));
 }
 
-function outputLogits(outputs: InferenceSession.ReturnType, name: string, size: number): Float32Array {
+function halfToFloat(bits: number): number {
+  const exponent = (bits >> 10) & 0x1f;
+  const fraction = bits & 0x3ff;
+  const sign = bits & 0x8000 ? -1 : 1;
+  if (exponent === 0) return sign * 2 ** -14 * (fraction / 1024);
+  if (exponent === 0x1f) return fraction ? Number.NaN : sign * Infinity;
+  return sign * 2 ** (exponent - 15) * (1 + fraction / 1024);
+}
+
+/** Logits as float32; FP16 exports return float16 tensors. */
+export function outputLogits(outputs: InferenceSession.ReturnType, name: string, size: number): Float32Array {
   const output = outputs[name] as Tensor | undefined;
-  if (!output || output.type !== "float32" || !(output.data instanceof Float32Array) || output.data.length !== size) {
+  // onnxruntime-node returns float16 data as Float16Array (Node >= 24) or raw Uint16 bits.
+  const data = output?.type === "float16"
+    ? Float32Array.from(output.data as ArrayLike<number>, output.data instanceof Uint16Array ? halfToFloat : Number)
+    : output?.type === "float32" ? output.data : undefined;
+  if (!(data instanceof Float32Array) || data.length !== size) {
     throw new Error(`Invalid model output: ${name}`);
   }
-  return output.data;
+  return data;
 }
 
 /**
