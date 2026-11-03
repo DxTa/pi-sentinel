@@ -2,7 +2,9 @@ import { randomUUID } from "node:crypto";
 import { once } from "node:events";
 import * as net from "node:net";
 
+import { MODEL_PROFILE } from "./auto-mode-build.ts";
 import type { AutoModeHeads } from "./auto-mode-policy.ts";
+import type { ModelInputFormat } from "./auto-mode-profile.ts";
 
 export const AUTO_MODE_PROTOCOL_VERSION = 2;
 export const WORKER_HANDSHAKE_TIMEOUT_MS = 250;
@@ -20,13 +22,21 @@ export interface AutoModePayload {
   command?: string;
 }
 
-export function buildAutoModeText(payload: AutoModePayload): string {
-  if (payload.operation === "exec" && payload.toolName === "bash") {
-    return "tool=bash command=" + (payload.command ?? "");
+const MAX_CONTENT_CHARS = 800;
+
+export function buildAutoModeText(payload: AutoModePayload, format: ModelInputFormat = MODEL_PROFILE.inputFormat): string {
+  const isExec = payload.operation === "exec" && payload.toolName === "bash";
+  const content = payload.content?.slice(0, MAX_CONTENT_CHARS);
+  if (format === "json") {
+    // Keys in sorted order so equal calls give equal text.
+    const args = isExec
+      ? { command: payload.command ?? "" }
+      : { ...(content === undefined ? {} : { content }), ...(payload.workspaceRelativePath ? { path: payload.workspaceRelativePath } : {}) };
+    return JSON.stringify({ arguments: args, tool_name: payload.toolName });
   }
+  if (isExec) return "tool=bash command=" + (payload.command ?? "");
   const path = payload.workspaceRelativePath ? " path=" + payload.workspaceRelativePath : "";
-  const content = payload.content === undefined ? "" : " content=" + payload.content.slice(0, 800);
-  return "tool=" + payload.toolName + path + content;
+  return "tool=" + payload.toolName + path + (content === undefined ? "" : " content=" + content);
 }
 
 export interface AutoModeWorkerRequest {

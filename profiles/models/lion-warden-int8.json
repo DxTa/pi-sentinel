@@ -4,11 +4,28 @@
   "revision": "77888f617584758f904faefd6f38d4cf926f6d5d",
   "onnxPath": "onnx/int8_int4_embeddings/model.onnx",
   "maxSequenceLength": 256,
+  "inputFormat": "kv",
   "assets": [
-    { "path": "config.json", "size": 3961, "sha256": "1a0d7d997fa51a46177cfe5e8d6652a77f68c0939be92715477bdafb81dbd920" },
-    { "path": "tokenizer_config.json", "size": 574, "sha256": "14b147f2a4f939d9b12ab36e9633917040dd948fa78ce283b03402e4cf2c9cba" },
-    { "path": "tokenizer.json", "size": 34363188, "sha256": "609d8f4c067cd3950f88594c5a802616cea245823836ef5848ee4fc40aab5b6f" },
-    { "path": "onnx/int8_int4_embeddings/model.onnx", "size": 96191142, "sha256": "f94571f4ad719105814583cd4fb7fef5e8127da857bb76ac84d538a337214d44" }
+    {
+      "path": "config.json",
+      "size": 3961,
+      "sha256": "1a0d7d997fa51a46177cfe5e8d6652a77f68c0939be92715477bdafb81dbd920"
+    },
+    {
+      "path": "tokenizer_config.json",
+      "size": 574,
+      "sha256": "14b147f2a4f939d9b12ab36e9633917040dd948fa78ce283b03402e4cf2c9cba"
+    },
+    {
+      "path": "tokenizer.json",
+      "size": 34363188,
+      "sha256": "609d8f4c067cd3950f88594c5a802616cea245823836ef5848ee4fc40aab5b6f"
+    },
+    {
+      "path": "onnx/int8_int4_embeddings/model.onnx",
+      "size": 96191142,
+      "sha256": "f94571f4ad719105814583cd4fb7fef5e8127da857bb76ac84d538a337214d44"
+    }
   ],
   "logitOutputs": {
     "injection": "injection_logits",

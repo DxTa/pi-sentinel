@@ -23,6 +23,7 @@ describe("model profiles", () => {
     ["revision", "main"],
     ["repo", "not a repo"],
     ["maxSequenceLength", 0],
+    ["inputFormat", "xml"],
   ])("rejects an invalid %s", (field, bad) => {
     const profile = valid();
     profile[field] = bad;

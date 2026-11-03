@@ -2,6 +2,8 @@ import { readFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
 import { buildAutoModeText } from "../src/auto-mode-client.ts";
+import { MODEL_PROFILE } from "../src/auto-mode-build.ts";
+import { loadModelProfile } from "../src/auto-mode-profile.ts";
 import { splitBashSegments } from "../src/bash-segments.ts";
 import { createClassifier } from "../src/auto-mode-model.ts";
 import { decideAutoMode } from "../src/auto-mode-policy.ts";
@@ -9,9 +11,11 @@ import { decideAutoMode } from "../src/auto-mode-policy.ts";
 const modelDir = process.env.PI_SENTINEL_AUTO_MODEL_DIR
   || join(homedir(), ".pi", "agent", "runtime", "pi-sentinel", "auto-mode", "models");
 const rows = JSON.parse(readFileSync(new URL("./calibration-dataset.json", import.meta.url), "utf8"));
-const classifier = await createClassifier(modelDir);
+// CALIBRATION_PROFILE=<id> evaluates another profile; its model dir comes from PI_SENTINEL_AUTO_MODEL_DIR.
+const profile = process.env.CALIBRATION_PROFILE ? loadModelProfile(process.env.CALIBRATION_PROFILE) : MODEL_PROFILE;
+const classifier = await createClassifier(modelDir, profile);
 
-const FORMAT = process.env.LAYER3_FORMAT ?? "current";
+const FORMAT = process.env.LAYER3_FORMAT ?? profile.inputFormat;
 const POLICY = process.env.LAYER3_POLICY ?? "strict";
 
 // exec-relaxed: drop tool_abuse from the threat head and renormalize, so benign is judged among the other threats.
@@ -23,18 +27,7 @@ function relaxExec(heads) {
 }
 
 function serialize(payload) {
-  if (FORMAT === "current") return buildAutoModeText(payload);
-  const args = payload.operation === "exec" && payload.toolName === "bash"
-    ? { command: payload.command }
-    : { path: payload.path ?? payload.workspaceRelativePath, content: payload.content };
-  return JSON.stringify({ arguments: args, tool_name: payload.toolName }, Object.keys(args).sort().length ? sortKeys : null, 2);
-}
-
-function sortKeys(key, value) {
-  if (value && typeof value === "object" && !Array.isArray(value)) {
-    return Object.fromEntries(Object.keys(value).sort().map((k) => [k, value[k]]));
-  }
-  return value;
+  return buildAutoModeText({ ...payload, workspaceRelativePath: payload.path ?? payload.workspaceRelativePath }, FORMAT);
 }
 
 function texts(row) {

@@ -2,6 +2,9 @@ import { readFileSync } from "node:fs";
 
 import { AUTO_MODE_LABEL_SCHEMA, type AutoModeHeadName } from "./auto-mode-label-schema.ts";
 
+export const MODEL_INPUT_FORMATS = ["kv", "json"] as const;
+export type ModelInputFormat = (typeof MODEL_INPUT_FORMATS)[number];
+
 export interface ModelAsset {
   path: string;
   size: number;
@@ -15,6 +18,8 @@ export interface ModelProfile {
   revision: string;
   onnxPath: string;
   maxSequenceLength: number;
+  /** How a tool call is written as model input: `kv` = `tool=bash command=...`, `json` = `{"arguments":...,"tool_name":...}`. */
+  inputFormat: ModelInputFormat;
   assets: readonly ModelAsset[];
   logitOutputs: Record<AutoModeHeadName, string>;
 }
@@ -32,6 +37,7 @@ export function parseModelProfile(value: unknown): ModelProfile {
   if (!isString(p.revision) || !/^[0-9a-f]{40}$/.test(p.revision)) fail("revision");
   if (!isString(p.onnxPath) || !SAFE_RELATIVE_PATH.test(p.onnxPath)) fail("onnxPath");
   if (!Number.isInteger(p.maxSequenceLength) || (p.maxSequenceLength as number) <= 0) fail("maxSequenceLength");
+  if (!MODEL_INPUT_FORMATS.includes(p.inputFormat as ModelInputFormat)) fail("inputFormat");
   if (!Array.isArray(p.assets) || p.assets.length === 0) fail("assets");
   for (const asset of p.assets as unknown[]) {
     const a = (asset ?? {}) as Record<string, unknown>;

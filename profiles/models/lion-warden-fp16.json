@@ -1,0 +1,39 @@
+{
+  "id": "lion-warden-fp16",
+  "repo": "patronus-studio/lion-warden-ai-security-classifier",
+  "revision": "77888f617584758f904faefd6f38d4cf926f6d5d",
+  "onnxPath": "onnx/onnx_fp16/model_fp16.onnx",
+  "maxSequenceLength": 256,
+  "inputFormat": "json",
+  "assets": [
+    {
+      "path": "config.json",
+      "size": 3961,
+      "sha256": "1a0d7d997fa51a46177cfe5e8d6652a77f68c0939be92715477bdafb81dbd920"
+    },
+    {
+      "path": "tokenizer_config.json",
+      "size": 574,
+      "sha256": "14b147f2a4f939d9b12ab36e9633917040dd948fa78ce283b03402e4cf2c9cba"
+    },
+    {
+      "path": "tokenizer.json",
+      "size": 34363188,
+      "sha256": "609d8f4c067cd3950f88594c5a802616cea245823836ef5848ee4fc40aab5b6f"
+    },
+    {
+      "path": "onnx/onnx_fp16/model_fp16.onnx",
+      "size": 281583182,
+      "sha256": "c29c8aff3db3efb3da923d54da6588a51bc07023d31869c7d1363704d00ca894"
+    }
+  ],
+  "logitOutputs": {
+    "injection": "injection_logits",
+    "threat": "threat_logits",
+    "tool_class": "tool_class_logits",
+    "tool_action": "tool_action_logits",
+    "tool_tags": "tool_tags_logits",
+    "sensitive_document": "sensitive_logits",
+    "routing": "routing_logits"
+  }
+}
