@@ -39,6 +39,16 @@ describe("model profiles", () => {
     expect(() => parseModelProfile(missingHead)).toThrow("logitOutputs.routing");
   });
 
+  it.each([
+    [{}],
+    [{ default: { minBenignThreat: 0.75, maxInjection: 1.5, maxToolTag: 0.5 } }],
+    [{ default: { minBenignThreat: 0.75, maxInjection: 0.25, maxToolTag: 0.5 }, shell: { minBenignThreat: 0.5, maxInjection: 0.25, maxToolTag: 0.5 } }],
+  ])("rejects invalid thresholds %#", (thresholds) => {
+    const profile = valid();
+    profile.thresholds = thresholds;
+    expect(() => parseModelProfile(profile)).toThrow("Invalid model profile: thresholds");
+  });
+
   it("requires the onnx file to be a verified asset", () => {
     const profile = valid();
     profile.onnxPath = "onnx/other/model.onnx";

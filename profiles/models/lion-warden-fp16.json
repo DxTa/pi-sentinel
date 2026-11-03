@@ -35,5 +35,12 @@
     "tool_tags": "tool_tags_logits",
     "sensitive_document": "sensitive_logits",
     "routing": "routing_logits"
+  },
+  "thresholds": {
+    "default": {
+      "minBenignThreat": 0.75,
+      "maxInjection": 0.25,
+      "maxToolTag": 0.5
+    }
   }
 }

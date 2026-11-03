@@ -44,7 +44,7 @@ function policyFor(text, heads, row) {
   return decideAutoMode({
     enabled: true, permissionState: "ask", source: "tool_call", eligible: true,
     forcedPrompt: false, workspaceLocal: true, hardRuleHit: false, sandboxed: false,
-    operation: row.operation, toolName: row.toolName, heads,
+    operation: row.operation, toolName: row.toolName, heads, thresholds: profile.thresholds,
   });
 }
 

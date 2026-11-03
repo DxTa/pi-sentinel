@@ -5,6 +5,18 @@ import { AUTO_MODE_LABEL_SCHEMA, type AutoModeHeadName } from "./auto-mode-label
 export const MODEL_INPUT_FORMATS = ["kv", "json"] as const;
 export type ModelInputFormat = (typeof MODEL_INPUT_FORMATS)[number];
 
+export const AUTO_MODE_OPERATIONS = ["read", "list", "write", "edit", "exec"] as const;
+export type AutoModeOperation = (typeof AUTO_MODE_OPERATIONS)[number];
+
+export interface AutoModeThresholds {
+  minBenignThreat: number;
+  maxInjection: number;
+  maxToolTag: number;
+}
+
+/** `default` applies to every operation without its own entry. */
+export type AutoModeThresholdSet = { default: AutoModeThresholds } & Partial<Record<AutoModeOperation, AutoModeThresholds>>;
+
 export interface ModelAsset {
   path: string;
   size: number;
@@ -22,7 +34,11 @@ export interface ModelProfile {
   inputFormat: ModelInputFormat;
   assets: readonly ModelAsset[];
   logitOutputs: Record<AutoModeHeadName, string>;
+  thresholds: AutoModeThresholdSet;
 }
+
+const THRESHOLD_KEYS = ["minBenignThreat", "maxInjection", "maxToolTag"] as const;
+const isProbability = (value: unknown) => typeof value === "number" && value >= 0 && value <= 1;
 
 const SAFE_RELATIVE_PATH = /^(?!\/)(?!.*(?:^|\/)\.\.(?:\/|$))[\w.\-/]+$/;
 const isString = (value: unknown): value is string => typeof value === "string" && value.length > 0;
@@ -49,6 +65,12 @@ export function parseModelProfile(value: unknown): ModelProfile {
   const outputs = (p.logitOutputs ?? {}) as Record<string, unknown>;
   for (const head of Object.keys(AUTO_MODE_LABEL_SCHEMA)) {
     if (!isString(outputs[head])) fail("logitOutputs." + head);
+  }
+  const thresholds = p.thresholds as Record<string, Record<string, unknown>> | undefined;
+  if (!thresholds || typeof thresholds !== "object" || !thresholds.default) fail("thresholds.default");
+  for (const [key, set] of Object.entries(thresholds!)) {
+    if (key !== "default" && !AUTO_MODE_OPERATIONS.includes(key as AutoModeOperation)) fail("thresholds." + key);
+    if (!set || typeof set !== "object" || THRESHOLD_KEYS.some((k) => !isProbability(set[k]))) fail("thresholds." + key);
   }
   return p as unknown as ModelProfile;
 }

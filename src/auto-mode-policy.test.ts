@@ -122,3 +122,28 @@ describe("decideAutoMode", () => {
     expect(decideAutoMode(input({ heads: heads({}, "exec") })).reason).toBe("tool_action_mismatch");
   });
 });
+
+describe("per-operation thresholds", () => {
+  const strict = { minBenignThreat: 0.99, maxInjection: 0.25, maxToolTag: 0.5 };
+  const loose = { minBenignThreat: 0.5, maxInjection: 0.25, maxToolTag: 0.5 };
+  const benign90 = (action: string) => heads({ threat: distribution(MODEL_LABELS.threat, { benign: 0.9, tool_abuse: 0.1 }) }, action);
+
+  it("uses the operation's own set before the default", () => {
+    const thresholds = { default: loose, exec: strict };
+    expect(decideAutoMode(input({ operation: "write", toolName: "write", heads: benign90("write"), thresholds })).action).toBe("allow");
+    expect(decideAutoMode(input({ operation: "exec", toolName: "bash", heads: benign90("exec"), thresholds }))).toEqual({
+      action: "prompt",
+      reason: "threat_benign_low_confidence",
+    });
+  });
+
+  it("falls back to the default set for operations without an entry", () => {
+    expect(decideAutoMode(input({ heads: benign90("read"), thresholds: { default: strict } })).reason).toBe("threat_benign_low_confidence");
+  });
+
+  it("keeps today's values as the profile default", () => {
+    expect(decideAutoMode(input({ heads: benign90("read") })).action).toBe("allow");
+    expect(decideAutoMode(input({ heads: heads({ threat: distribution(MODEL_LABELS.threat, { benign: 0.7, tool_abuse: 0.3 }) }) })).reason)
+      .toBe("threat_benign_low_confidence");
+  });
+});

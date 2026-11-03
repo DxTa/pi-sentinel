@@ -1,5 +1,7 @@
 import type { PermissionState } from "./types";
 import { AUTO_MODE_LABEL_SCHEMA } from "./auto-mode-label-schema.ts";
+import { MODEL_PROFILE } from "./auto-mode-build.ts";
+import type { AutoModeOperation, AutoModeThresholds, AutoModeThresholdSet } from "./auto-mode-profile.ts";
 
 /** Per-head label probabilities from the Lion Warden classifier. */
 export type AutoModeHeads = Record<keyof typeof AUTO_MODE_LABEL_SCHEMA, Record<string, number>>;
@@ -16,6 +18,8 @@ export interface AutoModePolicyInput {
   operation: string;
   toolName: string;
   heads: AutoModeHeads | undefined;
+  /** Threshold set to judge with; defaults to the active model profile's. */
+  thresholds?: AutoModeThresholdSet;
 }
 
 export interface AutoModePolicyDecision {
@@ -23,12 +27,13 @@ export interface AutoModePolicyDecision {
   reason: string;
 }
 
-// ponytail: fixed uncalibrated thresholds; tune from calibration log.
-export const AUTO_MODE_POLICY_THRESHOLDS = {
-  minBenignThreat: 0.75,
-  maxInjection: 0.25,
-  maxToolTag: 0.5,
-} as const;
+// shortcut: profile defaults are still uncalibrated; scripts/calibrate.ts sets them (plan step 6).
+export const AUTO_MODE_POLICY_THRESHOLDS: AutoModeThresholds = MODEL_PROFILE.thresholds.default;
+
+/** Thresholds for one operation: its own entry, else the set's default. */
+export function thresholdsFor(operation: string, set: AutoModeThresholdSet = MODEL_PROFILE.thresholds): AutoModeThresholds {
+  return set[operation as AutoModeOperation] ?? set.default;
+}
 const RESTRICTED_TOOL_CLASSES = new Set(["secrets", "infra", "system"]);
 const EXPECTED_TOOL_ACTION: Record<string, string> = {
   read: "read",
@@ -115,10 +120,11 @@ export function decideAutoMode(input: AutoModePolicyInput): AutoModePolicyDecisi
   if (!heads || typeof heads !== "object") return prompt("model_unavailable");
   if (!isValidModelOutput(heads)) return prompt("invalid_model_output");
   if (argmax(heads.threat) !== "benign") return prompt("threat_not_benign");
-  if (!(heads.threat.benign >= AUTO_MODE_POLICY_THRESHOLDS.minBenignThreat)) return prompt("threat_benign_low_confidence");
-  if (!(heads.injection.injection < AUTO_MODE_POLICY_THRESHOLDS.maxInjection)) return prompt("injection_detected");
-  if (!(heads.tool_tags["source:sensitive"] < AUTO_MODE_POLICY_THRESHOLDS.maxToolTag)) return prompt("source_sensitive");
-  if (!(heads.tool_tags["sink:external"] < AUTO_MODE_POLICY_THRESHOLDS.maxToolTag)) return prompt("sink_external");
+  const t = thresholdsFor(input.operation, input.thresholds);
+  if (!(heads.threat.benign >= t.minBenignThreat)) return prompt("threat_benign_low_confidence");
+  if (!(heads.injection.injection < t.maxInjection)) return prompt("injection_detected");
+  if (!(heads.tool_tags["source:sensitive"] < t.maxToolTag)) return prompt("source_sensitive");
+  if (!(heads.tool_tags["sink:external"] < t.maxToolTag)) return prompt("sink_external");
   if (argmax(heads.tool_action) !== expectedAction) return prompt("tool_action_mismatch");
   const toolClass = argmax(heads.tool_class);
   if (!toolClass || RESTRICTED_TOOL_CLASSES.has(toolClass)) return prompt("tool_class_restricted");

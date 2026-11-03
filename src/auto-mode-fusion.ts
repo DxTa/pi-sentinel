@@ -4,7 +4,7 @@
  * reason (low-confidence benign) and only when no risk signal is present.
  */
 import type { NeighbourSummary } from "./auto-mode-neighbours";
-import { expectedToolAction, AUTO_MODE_POLICY_THRESHOLDS, type AutoModeHeads } from "./auto-mode-policy";
+import { expectedToolAction, thresholdsFor, type AutoModeHeads } from "./auto-mode-policy";
 import type { ScorerResult } from "./auto-mode-scorer";
 
 export const FUSION_VERSION = 2;
@@ -54,13 +54,14 @@ function argmax(probs: Record<string, number>): string {
   return best;
 }
 
-function hasRiskSignal(heads: AutoModeHeads): boolean {
+function hasRiskSignal(heads: AutoModeHeads, operation: string): boolean {
   const h = heads as Record<string, Record<string, number>>;
-  return (h.injection?.injection ?? 1) >= AUTO_MODE_POLICY_THRESHOLDS.maxInjection
+  const t = thresholdsFor(operation);
+  return (h.injection?.injection ?? 1) >= t.maxInjection
     || BLOCKING_THREATS.has(argmax(h.threat ?? {}))
     || RESTRICTED_CLASSES.has(argmax(h.tool_class ?? {}))
-    || (h.tool_tags?.["source:sensitive"] ?? 1) >= AUTO_MODE_POLICY_THRESHOLDS.maxToolTag
-    || (h.tool_tags?.["sink:external"] ?? 1) >= AUTO_MODE_POLICY_THRESHOLDS.maxToolTag;
+    || (h.tool_tags?.["source:sensitive"] ?? 1) >= t.maxToolTag
+    || (h.tool_tags?.["sink:external"] ?? 1) >= t.maxToolTag;
 }
 
 /** True when history may turn this model prompt into an allow. */
@@ -68,7 +69,7 @@ function mayConvert(model: FusionDecision, input: FusionInput): boolean {
   if (model.action !== "prompt" || model.reason !== CONVERTIBLE_REASON || input.hardRuleHit) return false;
   const h = input.heads as Record<string, Record<string, number>>;
   const expected = expectedToolAction(input.operation);
-  return !hasRiskSignal(input.heads)
+  return !hasRiskSignal(input.heads, input.operation)
     && (h.threat?.benign ?? 0) >= MIN_HISTORY_BENIGN
     && expected !== undefined
     && argmax(h.tool_action ?? {}) === expected;
