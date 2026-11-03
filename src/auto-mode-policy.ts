@@ -35,6 +35,9 @@ export function thresholdsFor(operation: string, set: AutoModeThresholdSet = MOD
   return set[operation as AutoModeOperation] ?? set.default;
 }
 const RESTRICTED_TOOL_CLASSES = new Set(["secrets", "infra", "system"]);
+/** pi names MCP tools `mcp__<server>__<tool>`. */
+export const MCP_TOOL_PREFIX = "mcp__";
+const MCP_ALLOWED_ACTIONS = new Set(["read", "list"]);
 const EXPECTED_TOOL_ACTION: Record<string, string> = {
   read: "read",
   list: "list",
@@ -113,8 +116,10 @@ export function decideAutoMode(input: AutoModePolicyInput): AutoModePolicyDecisi
   if (input.forcedPrompt) return prompt("forced_prompt");
   if (!input.workspaceLocal) return prompt("path_not_workspace_local");
   if (input.hardRuleHit) return prompt("sensitive_path");
+  const isMcpTool = input.operation === "tool";
+  if (isMcpTool && !input.toolName.startsWith(MCP_TOOL_PREFIX)) return prompt("tool_not_mcp");
   const expectedAction = EXPECTED_TOOL_ACTION[input.operation];
-  if (!expectedAction) return prompt("unsupported_operation");
+  if (!expectedAction && !isMcpTool) return prompt("unsupported_operation");
   if (expectedAction === "exec" && input.toolName !== "bash") return prompt("exec_not_bash");
   const heads = input.heads;
   if (!heads || typeof heads !== "object") return prompt("model_unavailable");
@@ -125,7 +130,9 @@ export function decideAutoMode(input: AutoModePolicyInput): AutoModePolicyDecisi
   if (!(heads.injection.injection < t.maxInjection)) return prompt("injection_detected");
   if (!(heads.tool_tags["source:sensitive"] < t.maxToolTag)) return prompt("source_sensitive");
   if (!(heads.tool_tags["sink:external"] < t.maxToolTag)) return prompt("sink_external");
-  if (argmax(heads.tool_action) !== expectedAction) return prompt("tool_action_mismatch");
+  const action = argmax(heads.tool_action);
+  // MCP tools have no code-known effect: only calls the model reads as read or list may skip the prompt.
+  if (!action || (isMcpTool ? !MCP_ALLOWED_ACTIONS.has(action) : action !== expectedAction)) return prompt("tool_action_mismatch");
   const toolClass = argmax(heads.tool_class);
   if (!toolClass || RESTRICTED_TOOL_CLASSES.has(toolClass)) return prompt("tool_class_restricted");
   return { action: "allow", reason: "model_allow" };

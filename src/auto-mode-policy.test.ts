@@ -147,3 +147,27 @@ describe("per-operation thresholds", () => {
       .toBe("threat_benign_low_confidence");
   });
 });
+
+describe("MCP tool operation", () => {
+  const mcp = (action: string, toolName = "mcp__github__get_issue") =>
+    input({ operation: "tool", toolName, heads: heads({ tool_class: oneHot(MODEL_LABELS.tool_class, "api") }, action) });
+
+  it.each(["read", "list"])("allows a benign MCP call the model reads as %s", (action) => {
+    expect(decideAutoMode(mcp(action))).toEqual({ action: "allow", reason: "model_allow" });
+  });
+
+  it.each(["write", "exec", "network", "unknown"])("prompts an MCP call the model reads as %s", (action) => {
+    expect(decideAutoMode(mcp(action))).toEqual({ action: "prompt", reason: "tool_action_mismatch" });
+  });
+
+  it("prompts the tool operation for tools not named like MCP tools", () => {
+    expect(decideAutoMode(mcp("read", "codemode"))).toEqual({ action: "prompt", reason: "tool_not_mcp" });
+  });
+
+  it("still applies injection and restricted-class checks", () => {
+    expect(decideAutoMode({ ...mcp("read"), heads: heads({ injection: { benign: 0.4, injection: 0.6 } }, "read") }).reason)
+      .toBe("injection_detected");
+    expect(decideAutoMode({ ...mcp("read"), heads: heads({ tool_class: oneHot(MODEL_LABELS.tool_class, "infra") }, "read") }).reason)
+      .toBe("tool_class_restricted");
+  });
+});

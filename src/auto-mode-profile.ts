@@ -5,7 +5,8 @@ import { AUTO_MODE_LABEL_SCHEMA, type AutoModeHeadName } from "./auto-mode-label
 export const MODEL_INPUT_FORMATS = ["kv", "json"] as const;
 export type ModelInputFormat = (typeof MODEL_INPUT_FORMATS)[number];
 
-export const AUTO_MODE_OPERATIONS = ["read", "list", "write", "edit", "exec"] as const;
+/** `tool` is an MCP tool call; code does not know its effect, so the model's tool_action decides. */
+export const AUTO_MODE_OPERATIONS = ["read", "list", "write", "edit", "exec", "tool"] as const;
 export type AutoModeOperation = (typeof AUTO_MODE_OPERATIONS)[number];
 
 export interface AutoModeThresholds {

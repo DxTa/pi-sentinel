@@ -30,3 +30,17 @@ describe("buildAutoModeText", () => {
     });
   });
 });
+
+describe("buildAutoModeText for MCP tool calls", () => {
+  const call = { toolName: "mcp__github__get_issue", operation: "tool", args: { issue_number: 12, owner: "acme" } };
+
+  it("writes the tool name and arguments in both formats", () => {
+    expect(buildAutoModeText(call, "kv")).toBe('tool=mcp__github__get_issue arguments={"issue_number":12,"owner":"acme"}');
+    expect(JSON.parse(buildAutoModeText(call, "json"))).toEqual({ arguments: call.args, tool_name: call.toolName });
+  });
+
+  it("writes missing arguments as an empty object", () => {
+    expect(buildAutoModeText({ toolName: "mcp__slack__list_channels", operation: "tool" }, "json"))
+      .toBe('{"arguments":{},"tool_name":"mcp__slack__list_channels"}');
+  });
+});

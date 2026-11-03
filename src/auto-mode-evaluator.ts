@@ -16,7 +16,7 @@ import type {
 } from "./auto-mode-client";
 
 type EvaluationFlow = "permission" | "secret_read";
-type EvaluationOperation = "read" | "list" | "write" | "edit" | "exec";
+type EvaluationOperation = "read" | "list" | "write" | "edit" | "exec" | "tool";
 type EvaluationSkipReason =
   | "not_candidate"
   | "result_scanning_disabled"

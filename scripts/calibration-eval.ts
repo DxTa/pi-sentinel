@@ -21,9 +21,8 @@ const classifier = await createClassifier(modelDir, profile);
 const workspace = mkdtempSync(join(tmpdir(), "pi-sentinel-calibration-"));
 
 function serialize(row, command = row.command) {
-  if (row.operation === "tool") return JSON.stringify({ arguments: row.args, tool_name: row.toolName });
   return buildAutoModeText({ toolName: row.toolName, operation: row.operation, command,
-    workspaceRelativePath: row.path, content: row.content }, profile.inputFormat);
+    workspaceRelativePath: row.path, content: row.content, args: row.args }, profile.inputFormat);
 }
 
 function texts(row) {

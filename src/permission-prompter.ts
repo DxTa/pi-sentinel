@@ -54,7 +54,7 @@ export interface PromptPermissionDetails {
   /** Caller-side sensitive-path result; absolute paths never cross this boundary. */
   autoModeHardRuleHit?: boolean;
   /** Classifier operation for eligible workspace files or sandboxed Bash. */
-  autoModeOperation?: "read" | "list" | "write" | "edit" | "exec";
+  autoModeOperation?: "read" | "list" | "write" | "edit" | "exec" | "tool";
   /** Prebuilt, privacy-scoped classifier input. */
   autoModeText?: string;
   /** Whether the content preview was truncated to the classifier limit. */

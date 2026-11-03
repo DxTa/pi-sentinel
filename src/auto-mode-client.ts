@@ -20,11 +20,19 @@ export interface AutoModePayload {
   workspaceRelativePath?: string;
   content?: string;
   command?: string;
+  /** Arguments of an MCP tool call (`operation: "tool"`). */
+  args?: unknown;
 }
 
 const MAX_CONTENT_CHARS = 800;
 
 export function buildAutoModeText(payload: AutoModePayload, format: ModelInputFormat = MODEL_PROFILE.inputFormat): string {
+  if (payload.operation === "tool") {
+    const args = JSON.stringify(payload.args ?? {});
+    return format === "json"
+      ? JSON.stringify({ arguments: payload.args ?? {}, tool_name: payload.toolName })
+      : "tool=" + payload.toolName + " arguments=" + args;
+  }
   const isExec = payload.operation === "exec" && payload.toolName === "bash";
   const content = payload.content?.slice(0, MAX_CONTENT_CHARS);
   if (format === "json") {

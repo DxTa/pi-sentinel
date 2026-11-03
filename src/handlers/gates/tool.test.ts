@@ -330,3 +330,32 @@ describe("describeToolGate auto Bash eligibility", () => {
     expect(descriptor.promptDetails).not.toHaveProperty("autoModeText");
   });
 });
+
+describe("describeToolGate MCP auto eligibility", () => {
+  it("sends MCP tool calls to the model as operation tool", () => {
+    const descriptor = describeToolGate(context("mcp__github__get_issue", { owner: "acme", issue_number: 12 }), check("mcp__github__get_issue"));
+    expect(descriptor.promptDetails).toMatchObject({
+      autoModeEligible: true,
+      autoModeWorkspaceLocal: true,
+      autoModeHardRuleHit: false,
+      autoModeOperation: "tool",
+    });
+    expect(descriptor.promptDetails.autoModeText).toContain("mcp__github__get_issue");
+  });
+
+  it("keeps MCP calls out of auto mode when policy does not ask", () => {
+    expect(describeToolGate(context("mcp__github__get_issue", {}), check("mcp__github__get_issue", "allow")).promptDetails)
+      .toMatchObject({ autoModeEligible: false });
+  });
+
+  it("prompts MCP calls whose arguments overflow the model window", () => {
+    const descriptor = describeToolGate(context("mcp__docs__search", { query: "x".repeat(900) }), check("mcp__docs__search"));
+    expect(descriptor.promptDetails).toMatchObject({ autoModeEligible: false, autoModeWorkspaceLocal: false });
+    expect(descriptor.promptDetails.autoModeText).toBeUndefined();
+  });
+
+  it("does not treat other extension tools as MCP", () => {
+    expect(describeToolGate(context("codemode", { code: "return 1" }), check("codemode")).promptDetails.autoModeOperation)
+      .toBeUndefined();
+  });
+});
