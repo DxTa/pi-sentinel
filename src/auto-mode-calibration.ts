@@ -12,7 +12,7 @@ import {
 } from "node:fs";
 import { join } from "node:path";
 
-import { withFileLock } from "./auto-mode-file-lock.ts";
+import { SHORT_LOCK_TIMEOUT_MS, withFileLock } from "./auto-mode-file-lock.ts";
 import type { AutoModeCalibrationRecord } from "./auto-mode-evaluator";
 
 const MAX_LOG_BYTES = 50 * 1024 * 1024;
@@ -47,5 +47,5 @@ export async function writeAutoModeCalibrationRecord(
     } finally {
       closeSync(fd);
     }
-  });
+  }, SHORT_LOCK_TIMEOUT_MS);
 }

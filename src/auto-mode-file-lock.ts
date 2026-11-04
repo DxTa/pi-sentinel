@@ -4,6 +4,8 @@ import { open } from "node:fs/promises";
 
 import { helperRuntimePath } from "./host-runtime.ts";
 
+/** For short critical sections; a waiter gives up instead of hanging behind a stuck holder. */
+export const SHORT_LOCK_TIMEOUT_MS = 2000;
 const LOCK_HOLDER_SCRIPT = 'process.stdout.write("locked\\n"); process.stdin.resume();';
 
 export function lockCommand(
@@ -21,7 +23,7 @@ export function lockCommand(
   throw new Error("Advisory file locking is unsupported on this platform.");
 }
 
-async function acquireFileLock(lockPath: string): Promise<ChildProcess> {
+async function acquireFileLock(lockPath: string, timeoutMs: number | undefined): Promise<ChildProcess> {
   const file = await open(lockPath, "a", 0o600);
   try {
     await file.chmod(0o600);
@@ -37,14 +39,20 @@ async function acquireFileLock(lockPath: string): Promise<ChildProcess> {
   }
   await new Promise<void>((resolve, reject) => {
     let acquired = false;
+    const timer = timeoutMs === undefined
+      ? undefined
+      : setTimeout(() => reject(new Error("Timed out acquiring advisory file lock.")), timeoutMs);
     lockProcess.once("error", () => {
+      clearTimeout(timer);
       if (!acquired) reject(new Error("Unable to acquire advisory file lock."));
     });
     lockProcess.once("close", () => {
+      clearTimeout(timer);
       if (!acquired) reject(new Error("Unable to acquire advisory file lock."));
     });
     lockProcess.stdout.once("data", () => {
       acquired = true;
+      clearTimeout(timer);
       resolve();
     });
   }).catch((error) => {
@@ -55,8 +63,9 @@ async function acquireFileLock(lockPath: string): Promise<ChildProcess> {
   return lockProcess;
 }
 
-export async function withFileLock<T>(lockPath: string, run: () => Promise<T>): Promise<T> {
-  const lockProcess = await acquireFileLock(lockPath);
+/** Without timeoutMs the caller waits as long as the holder runs (the model download holds its lock for minutes). */
+export async function withFileLock<T>(lockPath: string, run: () => Promise<T>, timeoutMs?: number): Promise<T> {
+  const lockProcess = await acquireFileLock(lockPath, timeoutMs);
   try {
     return await run();
   } finally {
