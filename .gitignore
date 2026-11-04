@@ -16,3 +16,6 @@ sentinel-read-*/
 sentinel-relative-*/
 sentinel-result-*/
 pi-mask-logical-home
+
+# Local scratch space (TMPDIR for tests, labs, model copies)
+tmp/
