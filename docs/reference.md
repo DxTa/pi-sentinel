@@ -54,6 +54,17 @@ pi-sentinel starts or reuses one shared, detached Node worker. It runs the Apach
 
 What the classifier sees: path/tool metadata for reads and listings, up to 800 characters of write/edit content, a redacted Bash command, or the tool name and arguments of an MCP call (calls whose arguments exceed 800 characters prompt). An MCP call is allowed only when the model reads it as a read or list and every other check passes. Read output is not sent, so prompt injection inside a file cannot be detected before reading. Sensitive paths, external targets, network operations, unsandboxed Bash, and model failures prompt. Thresholds come from the model profile, per operation, and are set with `npm run calibrate -- --profile <id> --write` (it refuses to write when the holdout split lets a should-prompt case through). Thresholds are authoritative; 5% of would-allow decisions prompt anyway for audit (20% for allows learned from history).
 
+These checks run before the model and always prompt in `auto`, whatever the model returns. They can only add prompts:
+
+- Commands that match a `yolo` hard rule or `yoloAskBashPatterns`.
+- Writes and edits to agent instruction files (`AGENTS.md`, `CLAUDE.md`, `GEMINI.md`, `.cursorrules`, `.windsurfrules`, `.clinerules`, `.github/copilot-instructions.md`, `.cursor/rules/`).
+- Write and edit content that tells an AI agent to drop its instructions or permission checks, references a secret-named variable (`$GITHUB_TOKEN`, `process.env.NPM_TOKEN`), dumps the environment, or reads a home credential folder. The whole content is checked, not only the 800 characters the model sees.
+- MCP tools whose server sets `destructiveHint`, and MCP arguments that hold a SQL write or schema change.
+
+Known gaps: these checks match keywords and phrases, so reworded text can reach the model. Logic changes, such as an edit that makes an auth check return `true`, look benign to both the checks and the model. Treat `auto` as fewer prompts for routine work, not as code review.
+
+Calibration (`scripts/calibration-baseline-fp16.txt`, 181 synthetic cases) allows no should-prompt case for the default FP16 profile. It allows 68% of safe writes, 64% of safe edits, 56% of safe Bash commands, and 46% of safe MCP calls; the rest prompt.
+
 Override the model directory or Unix socket when needed:
 
 ```sh
