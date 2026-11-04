@@ -6,7 +6,7 @@ import { canonicalPath } from "./sandbox/sandbox-visible-paths.js";
 const SYSTEM_ROOTS = ["/etc", "/System", "/Library", "/usr", "/bin", "/sbin", "/private/etc", "/private/var", "/var"];
 /* Tools and macOS itself write here, so these stay open inside a forbidden root. */
 const TEMP_AND_LOCAL = ["/usr/local", "/var/folders", "/private/var/folders", "/var/tmp", "/private/var/tmp"];
-const CREDENTIAL_DIRS = [".ssh", ".aws", ".gnupg"];
+export const CREDENTIAL_DIRS = [".ssh", ".aws", ".gnupg"];
 
 const within = (target: string, root: string): boolean => target === root || target.startsWith(root + sep);
 const withinAny = (target: string, roots: readonly string[]): boolean => roots.some((root) => within(target, root));

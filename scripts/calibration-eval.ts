@@ -12,7 +12,7 @@ import { decideAutoMode } from "../src/auto-mode-policy.ts";
 import { isSensitivePath } from "../src/auto-mode-sensitive-paths.ts";
 import { isWorkspaceLocalFileOperation } from "../src/path-utils.ts";
 import { mcpArgsHaveSqlWrite } from "../src/mcp-sql-write.ts";
-import { hasAgentDirective } from "../src/agent-directive.ts";
+import { writeNeedsPrompt } from "../src/auto-mode-write-checks.ts";
 import { matchesYoloAskBashPattern } from "../src/yolo-mode.ts";
 
 const HARD_RULE_CONFIG = { debugLog: false, permissionReviewLog: false, mode: "auto", yoloAskBashPatterns: [] } as const;
@@ -56,7 +56,7 @@ function fileGates(row) {
     writeFileSync(target, "");
   }
   return {
-    workspaceLocal: isWorkspaceLocalFileOperation(row.toolName, { path: row.path }, workspace) && !hasAgentDirective(row.content),
+    workspaceLocal: isWorkspaceLocalFileOperation(row.toolName, { path: row.path }, workspace) && !writeNeedsPrompt(row.path, row.content),
     hardRuleHit: isSensitivePath(target, homedir()),
   };
 }

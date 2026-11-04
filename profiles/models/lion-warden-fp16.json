@@ -48,9 +48,9 @@
       "maxToolTag": 0.5
     },
     "edit": {
-      "minBenignThreat": 0.75,
-      "maxInjection": 0.25,
-      "maxToolTag": 0.5
+      "minBenignThreat": 0.95,
+      "maxInjection": 0.1,
+      "maxToolTag": 0.2
     },
     "exec": {
       "minBenignThreat": 0.8,
