@@ -46,3 +46,12 @@ describe("buildAutoModeText for MCP tool calls", () => {
       .toBe('{"arguments":{},"tool_name":"mcp__slack__list_channels"}');
   });
 });
+
+describe("buildAutoModeText MCP argument order", () => {
+  it("gives the same text for the same call in any key order", () => {
+    const a = buildAutoModeText({ toolName: "mcp__lab__get_issue", operation: "tool", args: { owner: "acme", issue_number: 12, filter: { b: 1, a: [{ y: 2, x: 1 }] } } }, "json");
+    const b = buildAutoModeText({ toolName: "mcp__lab__get_issue", operation: "tool", args: { filter: { a: [{ x: 1, y: 2 }], b: 1 }, issue_number: 12, owner: "acme" } }, "json");
+    expect(a).toBe(b);
+    expect(a).toBe('{"arguments":{"filter":{"a":[{"x":1,"y":2}],"b":1},"issue_number":12,"owner":"acme"},"tool_name":"mcp__lab__get_issue"}');
+  });
+});

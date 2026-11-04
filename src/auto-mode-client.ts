@@ -26,12 +26,19 @@ export interface AutoModePayload {
 
 const MAX_CONTENT_CHARS = 800;
 
+function sortKeysDeep(value: unknown, depth = 0): unknown {
+  if (Array.isArray(value)) return depth > 16 ? value : value.map((item) => sortKeysDeep(item, depth + 1));
+  if (!value || typeof value !== "object" || depth > 16) return value;
+  return Object.fromEntries(Object.keys(value).sort().map((key) => [key, sortKeysDeep((value as Record<string, unknown>)[key], depth + 1)]));
+}
+
 export function buildAutoModeText(payload: AutoModePayload, format: ModelInputFormat = MODEL_PROFILE.inputFormat): string {
   if (payload.operation === "tool") {
-    const args = JSON.stringify(payload.args ?? {});
+    // Sorted keys: the same MCP call gets the same text, and so the same decision, whatever order the agent sent.
+    const args = sortKeysDeep(payload.args ?? {});
     return format === "json"
-      ? JSON.stringify({ arguments: payload.args ?? {}, tool_name: payload.toolName })
-      : "tool=" + payload.toolName + " arguments=" + args;
+      ? JSON.stringify({ arguments: args, tool_name: payload.toolName })
+      : "tool=" + payload.toolName + " arguments=" + JSON.stringify(args);
   }
   const isExec = payload.operation === "exec" && payload.toolName === "bash";
   const content = payload.content?.slice(0, MAX_CONTENT_CHARS);
