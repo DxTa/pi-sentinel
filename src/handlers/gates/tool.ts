@@ -121,7 +121,7 @@ export function describeToolGate(
     ? buildAutoModeText({ toolName: tcc.toolName, operation: "tool", args: tcc.input })
     : undefined;
   const autoModeWorkspaceLocal = autoModeOperation === "tool"
-    ? mcpText!.length <= MAX_MCP_TEXT_CHARS
+    ? mcpText!.length <= MAX_MCP_TEXT_CHARS && tcc.mcpDestructiveHint !== true
     : autoModeOperation === "exec"
     ? tcc.autoModeWorkspaceLocal === true
       && Boolean(autoModeCommand?.trim())

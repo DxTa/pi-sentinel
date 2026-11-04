@@ -359,3 +359,13 @@ describe("describeToolGate MCP auto eligibility", () => {
       .toBeUndefined();
   });
 });
+
+describe("describeToolGate MCP destructive hint", () => {
+  it("keeps a tool its server marks destructive out of auto mode", () => {
+    const descriptor = describeToolGate(
+      { ...context("mcp__lab__delete_note", { id: "n1" }), mcpDestructiveHint: true },
+      check("mcp__lab__delete_note"),
+    );
+    expect(descriptor.promptDetails).toMatchObject({ autoModeEligible: false, autoModeOperation: "tool" });
+  });
+});

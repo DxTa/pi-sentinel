@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 
 import { createPiMcpToolTargets } from "./mcp-targets";
 import { PermissionManager } from "./permission-manager";
+import { mcpDestructiveHint } from "./tool-registry";
 
 type Permission = Record<string, unknown>;
 const empty = () => ({});
@@ -57,5 +58,19 @@ describe("pi MCP tools use permission.mcp rules", () => {
     const pm = manager(BUNDLED, { mcp: { "other_*": "allow" } });
     expect(pm.checkPermission("mcp__mcp__status", {}).state).toBe("ask");
     expect(pm.checkPermission("mcp__github__get_issue", {}).state).toBe("ask");
+  });
+});
+
+describe("mcpDestructiveHint", () => {
+  const tools = [
+    { name: "mcp__lab__delete_note", annotations: { destructiveHint: true } },
+    { name: "mcp__lab__get_note", annotations: { readOnlyHint: true } },
+    { name: "codemode", annotations: { destructiveHint: true } },
+  ];
+  it("reads only an explicit destructiveHint on MCP tools", () => {
+    expect(mcpDestructiveHint(tools, "mcp__lab__delete_note")).toBe(true);
+    expect(mcpDestructiveHint(tools, "mcp__lab__get_note")).toBe(false);
+    expect(mcpDestructiveHint(tools, "mcp__lab__missing")).toBe(false);
+    expect(mcpDestructiveHint(tools, "codemode")).toBe(false);
   });
 });

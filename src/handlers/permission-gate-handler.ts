@@ -31,6 +31,7 @@ import type { PermissionSession } from "#src/permission-session";
 import {
   checkRequestedToolRegistration,
   getToolNameFromValue,
+  mcpDestructiveHint,
   type ToolRegistry,
 } from "#src/tool-registry";
 import { buildAutoModeBashContext } from "#src/auto-mode-bash-context";
@@ -142,6 +143,7 @@ export class PermissionGateHandler {
       cwd: ctx.cwd,
       sandboxed: sandboxedForAutoMode,
       mode: session.config.mode,
+      ...(mcpDestructiveHint(this.toolRegistry.getAll(), toolName) ? { mcpDestructiveHint: true } : {}),
     };
 
     const bashCommand = tcc.toolName === "bash"
