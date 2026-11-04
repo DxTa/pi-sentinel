@@ -2,6 +2,7 @@ import { describe, expect, it, vi } from "vitest";
 
 import { PromptWaitTracker } from "./prompt-state";
 import { PermissionPrompter } from "./permission-prompter";
+import { buildAutoModeText } from "./auto-mode-client";
 import type { AutoModeHeads } from "./auto-mode-policy";
 import { AUTO_MODE_LABEL_SCHEMA } from "./auto-mode-label-schema";
 import { workspaceScope } from "./auto-mode-decision-store";
@@ -309,7 +310,7 @@ describe("PermissionPrompter", () => {
 
     expect(result).toEqual({ approved: true, state: "approved", autoApproved: true });
     expect(startupOrder).toEqual(["startup", "evaluate"]);
-    expect(evaluate).toHaveBeenCalledWith("tool=read path=README.md");
+    expect(evaluate).toHaveBeenCalledWith(buildAutoModeText({ toolName: "read", operation: "read", workspaceRelativePath: "README.md" }));
     expect(requestPermissionDecisionFromUi).not.toHaveBeenCalled();
     expect(reviewLog.map((entry) => entry.event)).toEqual([
       "permission_request.auto_mode_approved",

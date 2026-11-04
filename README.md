@@ -52,7 +52,7 @@ That's it: the defaults work as they are. `auto` mode needs Apple silicon on mac
 PI_SENTINEL_MODE=manual pi      # this process only
 ```
 
-On first start, `auto` downloads a ~130 MB model from Hugging Face (CPU only, hash-verified). Until it is ready, or if it fails, requests prompt as in `manual`. Set `"mode": "manual"` to skip the download.
+On first start, `auto` downloads a ~320 MB model from Hugging Face (CPU only, hash-verified). Until it is ready, or if it fails, requests prompt as in `manual`. Set `"mode": "manual"` to skip the download.
 
 ## Configuration
 

@@ -82,4 +82,5 @@ export function loadModelProfile(id: string): ModelProfile {
   return parseModelProfile(JSON.parse(readFileSync(url, "utf8")));
 }
 
-export const DEFAULT_MODEL_PROFILE_ID = "lion-warden-int8";
+// fp16 allows more safe calls than int8 at the same zero-leak bar (scripts/calibration-baseline-fp16.txt); ~200 ms p95 on CPU.
+export const DEFAULT_MODEL_PROFILE_ID = "lion-warden-fp16";

@@ -842,7 +842,7 @@ export default function piPermissionSystemExtension(pi: ExtensionAPI): void {
     ctx.ui.notify(
       autoModeWorkerFailed
         ? "auto mode is unavailable: the classifier worker stopped. Requests prompt as in manual mode. Details: " + log
-        : "auto mode is not ready yet (the first start downloads a ~130 MB classifier). " +
+        : "auto mode is not ready yet (the first start downloads a ~320 MB classifier). " +
           "Requests prompt as in manual mode until it is. Details: " + log,
       "warning",
     );

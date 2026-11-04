@@ -5,6 +5,7 @@ import { join } from "node:path";
 import { describe, expect, it } from "vitest";
 
 import { describeToolGate } from "./tool";
+import { buildAutoModeText } from "../../auto-mode-client";
 import type { ToolCallContext } from "./types";
 
 function context(toolName: string, input: unknown): ToolCallContext {
@@ -250,7 +251,7 @@ describe("describeToolGate auto write/edit candidates", () => {
         autoModeWorkspaceLocal: true,
         autoModeWorkspaceRelativePath: path,
         autoModeOperation: toolName,
-        autoModeText: "tool=" + toolName + " path=" + path + " content=" + "x".repeat(800),
+        autoModeText: buildAutoModeText({ toolName, operation: toolName, workspaceRelativePath: path, content: content.slice(0, 800) }),
         autoModeTextTruncated: true,
       });
       expect(JSON.stringify(descriptor.promptDetails)).not.toContain(process.cwd());
@@ -296,7 +297,7 @@ describe("describeToolGate auto Bash eligibility", () => {
       autoModeOperation: "exec",
       autoModeSandboxed: true,
       autoModeHardRuleHit: false,
-      autoModeText: "tool=bash command=printf safe",
+      autoModeText: buildAutoModeText({ toolName: "bash", operation: "exec", command: "printf safe" }),
       autoModeTextTruncated: false,
     });
   });

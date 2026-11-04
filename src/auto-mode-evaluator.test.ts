@@ -3,6 +3,7 @@ import { createHash } from "node:crypto";
 import { describe, expect, it, vi } from "vitest";
 
 import { AutoModeEvaluator } from "./auto-mode-evaluator";
+import { buildAutoModeText } from "./auto-mode-client";
 import type { NeighbourSummary } from "./auto-mode-neighbours";
 import type { AutoModeHeads } from "./auto-mode-policy";
 import { AUTO_MODE_LABEL_SCHEMA } from "./auto-mode-label-schema";
@@ -82,7 +83,7 @@ describe("AutoModeEvaluator", () => {
       candidate: true,
       evaluationId: "opaque-eval-1",
     });
-    expect(evaluate).toHaveBeenCalledWith("tool=read path=src/index.ts");
+    expect(evaluate).toHaveBeenCalledWith(buildAutoModeText({ toolName: "read", operation: "read", workspaceRelativePath: "src/index.ts" }));
     expect(writeReviewLog).toHaveBeenCalledOnce();
     expect(writeReviewLog.mock.calls[0]?.[1]).not.toHaveProperty("patternKeyHash");
     expect(writeReviewLog).toHaveBeenCalledWith(
@@ -110,7 +111,7 @@ describe("AutoModeEvaluator", () => {
     expect(JSON.stringify(writeReviewLog.mock.calls[0])).not.toContain("git status");
     expect(randomCalls).toBe(1);
     expect(writeCalibrationLog).toHaveBeenCalledOnce();
-    const modelText = "tool=read path=src/index.ts";
+    const modelText = buildAutoModeText({ toolName: "read", operation: "read", workspaceRelativePath: "src/index.ts" });
     const record = writeCalibrationLog.mock.calls[0]?.[0];
     expect(record).toMatchObject({
       evaluationId: "opaque-eval-1",
@@ -421,7 +422,7 @@ describe("AutoModeEvaluator", () => {
       ...base,
       operation: "exec" as const,
       toolName: "bash",
-      text: "tool=bash command=cd src && echo hi",
+      text: buildAutoModeText({ toolName: "bash", operation: "exec", command: "cd src && echo hi" }),
       units: ["cd src", "rm -rf build"],
       opaque: false,
     };
@@ -436,9 +437,9 @@ describe("AutoModeEvaluator", () => {
 
       await expect(evaluator.evaluate(execRequest)).resolves.toMatchObject({ action: "prompt", reason: "threat_not_benign" });
       expect(evaluate.mock.calls.map(([text]) => text)).toEqual([
-        "tool=bash command=cd src && echo hi",
-        "tool=bash command=cd src",
-        "tool=bash command=rm -rf build",
+        buildAutoModeText({ toolName: "bash", operation: "exec", command: "cd src && echo hi" }),
+        buildAutoModeText({ toolName: "bash", operation: "exec", command: "cd src" }),
+        buildAutoModeText({ toolName: "bash", operation: "exec", command: "rm -rf build" }),
       ]);
       expect(writeReviewLog).toHaveBeenLastCalledWith("auto_mode.evaluation", expect.objectContaining({
         unitCount: 3, decidingUnit: 2, opaque: false,
@@ -447,7 +448,7 @@ describe("AutoModeEvaluator", () => {
 
     it("allows only when every unit allows, and stores the least benign unit", async () => {
       const recordEvaluation = vi.fn();
-      const evaluate = classify((text) => (text.endsWith("cd src") ? 0.95 : 0.99));
+      const evaluate = classify((text) => (text.includes('"cd src"') || text.endsWith("cd src") ? 0.95 : 0.99));
       const evaluator = new AutoModeEvaluator({ client: { evaluate }, recordEvaluation, random: () => 0.99 });
 
       await expect(evaluator.evaluate({ ...execRequest, scope: "ws:abc", patternKey: "bash:cd *|rm *" }))
@@ -460,7 +461,7 @@ describe("AutoModeEvaluator", () => {
       const evaluate = classify(() => 0.99);
       const evaluator = new AutoModeEvaluator({ client: { evaluate }, random: () => 0.99 });
 
-      await evaluator.evaluate({ ...execRequest, text: "tool=bash command=ls -la", units: ["ls -la"] });
+      await evaluator.evaluate({ ...execRequest, text: buildAutoModeText({ toolName: "bash", operation: "exec", command: "ls -la" }), units: ["ls -la"] });
       expect(evaluate).toHaveBeenCalledOnce();
     });
 
@@ -489,7 +490,7 @@ describe("AutoModeEvaluator", () => {
 
       await evaluator.evaluate(execRequest);
       await vi.waitFor(() => expect(writeCalibrationLog).toHaveBeenCalled());
-      const decidingText = "tool=bash command=rm -rf build";
+      const decidingText = buildAutoModeText({ toolName: "bash", operation: "exec", command: "rm -rf build" });
       expect(writeCalibrationLog).toHaveBeenCalledWith(expect.objectContaining({
         textLength: decidingText.length,
         textSha256: createHash("sha256").update(decidingText).digest("hex"),
@@ -502,13 +503,13 @@ describe("AutoModeEvaluator", () => {
       const request1 = { ...execRequest, scope: "ws:abc", patternKey: "bash:cd *|rm *" };
 
       const one = new AutoModeEvaluator({
-        client: { evaluate: lowIf((text) => text.endsWith("rm -rf build")) },
+        client: { evaluate: lowIf((text) => text.includes("rm -rf build")) },
         summarizeNeighbours: strongHistory, random: () => 0.99,
       });
       await expect(one.evaluate(request1)).resolves.toMatchObject({ action: "allow", reason: "neighbour_workspace_approved" });
 
       const two = new AutoModeEvaluator({
-        client: { evaluate: lowIf((text) => !text.endsWith("echo hi")) },
+        client: { evaluate: lowIf((text) => !text.includes("echo hi")) },
         summarizeNeighbours: strongHistory, random: () => 0.99,
       });
       await expect(two.evaluate(request1)).resolves.toMatchObject({ action: "prompt", reason: "threat_benign_low_confidence" });

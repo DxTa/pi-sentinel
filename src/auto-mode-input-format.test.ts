@@ -1,14 +1,16 @@
 import { describe, expect, it } from "vitest";
 
 import { buildAutoModeText } from "./auto-mode-client";
+import { MODEL_PROFILE } from "./auto-mode-build";
 
 const exec = { toolName: "bash", operation: "exec", command: "npm test" };
 const write = { toolName: "write", operation: "write", workspaceRelativePath: "src/a.ts", content: "x" };
 
 describe("buildAutoModeText", () => {
-  it("defaults to the active profile's kv format", () => {
-    expect(buildAutoModeText(exec)).toBe("tool=bash command=npm test");
-    expect(buildAutoModeText(write)).toBe("tool=write path=src/a.ts content=x");
+  it("defaults to the active profile's format", () => {
+    expect(buildAutoModeText(exec)).toBe(buildAutoModeText(exec, MODEL_PROFILE.inputFormat));
+    expect(buildAutoModeText(exec, "kv")).toBe("tool=bash command=npm test");
+    expect(buildAutoModeText(write, "kv")).toBe("tool=write path=src/a.ts content=x");
   });
 
   it("writes json tool calls with sorted keys", () => {

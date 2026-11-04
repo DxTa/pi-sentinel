@@ -5,10 +5,11 @@ import { DEFAULT_MODEL_PROFILE_ID, loadModelProfile, parseModelProfile } from ".
 const valid = () => structuredClone(loadModelProfile(DEFAULT_MODEL_PROFILE_ID)) as unknown as Record<string, unknown>;
 
 describe("model profiles", () => {
-  it("loads the default profile with the pinned revision and int8 model", () => {
+  it("loads the default profile with the pinned revision and fp16 model", () => {
     const profile = loadModelProfile(DEFAULT_MODEL_PROFILE_ID);
     expect(profile.revision).toBe("77888f617584758f904faefd6f38d4cf926f6d5d");
-    expect(profile.onnxPath).toBe("onnx/int8_int4_embeddings/model.onnx");
+    expect(profile.onnxPath).toBe("onnx/onnx_fp16/model_fp16.onnx");
+    expect(profile.inputFormat).toBe("json");
     expect(profile.maxSequenceLength).toBe(256);
     expect(profile.logitOutputs.sensitive_document).toBe("sensitive_logits");
   });

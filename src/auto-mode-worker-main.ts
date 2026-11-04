@@ -25,7 +25,7 @@ export function parseAutoModeWorkerArgs(argv: readonly string[]) {
 
 async function startWorker(argv: readonly string[]): Promise<void> {
   const { socketPath, modelDir } = parseAutoModeWorkerArgs(argv);
-  // Fail before the ~130 MB model download when the runtime cannot load here.
+  // Fail before the ~320 MB model download when the runtime cannot load here.
   await loadInferenceRuntime();
   await ensureModelAssets({ dir: modelDir });
   const classifier = await createClassifier(modelDir);
