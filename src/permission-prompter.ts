@@ -226,8 +226,15 @@ export class PermissionPrompter implements PermissionPrompterApi {
       return { approved: true, state: "approved", autoApproved: true };
     }
 
-    const autoModeDecision = await this.evaluateAutoMode(config, details, ctx.cwd);
-    if (autoModeDecision.action === "allow") {
+    // Hard rules (rm, ssh, git push, publish, cluster writes) and yoloAskBashPatterns prompt in auto mode too:
+    // auto must never be looser than yolo.
+    const forced = yoloContext.forcePromptInYolo;
+    const autoModeDecision = await this.evaluateAutoMode(
+      config,
+      forced ? { ...details, forcePromptInYolo: true } : details,
+      ctx.cwd,
+    );
+    if (autoModeDecision.action === "allow" && !forced) {
       this.writeReviewEntry("permission_request.auto_mode_approved", {
         ...details,
         autoModeReason: autoModeDecision.reason,

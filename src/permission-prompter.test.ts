@@ -935,3 +935,32 @@ it("prompts for auto requests outside the model-eligible scope", async () => {
   expect(requestPermissionDecisionFromUi).toHaveBeenCalledOnce();
   expect(evaluate).not.toHaveBeenCalled();
 });
+
+describe("auto mode keeps hard rules", () => {
+  it.each(["rm build.txt", "npm publish", "cd src && ssh host", "kubectl -n prod delete pod a"])(
+    "prompts for %s even when the model allows",
+    async (command) => {
+      const evaluate = vi.fn(async () => ({
+        action: "allow" as const, reason: "model_allow", candidate: true, attempted: true, evaluationId: "e", audit: false,
+      }));
+      const requestPermissionDecisionFromUi = vi.fn(async () => ({ approved: false, state: "denied" as const }));
+      const prompter = new PermissionPrompter({
+        promptWaitTracker: new PromptWaitTracker({ emit() {} }),
+        getConfig: () => ({ debugLog: false, permissionReviewLog: false, mode: "auto", yoloAskBashPatterns: [] }),
+        autoModeEvaluator: { evaluate },
+        writeReviewLog() {},
+        subagentSessionsDir: "/tmp/subagents",
+        forwardingDir: "/tmp/forwarding",
+        requestPermissionDecisionFromUi,
+      });
+      const result = await prompter.prompt({ hasUI: true, cwd: "/work/repo", ui: { setStatus() {} } } as never, {
+        requestId: "r", source: "tool_call", agentName: null, message: "Need permission", toolName: "bash", command,
+        autoModeEligible: true, autoModeHardRuleHit: false, autoModeWorkspaceLocal: true, autoModeOperation: "exec",
+        autoModeText: "tool=bash command=" + command,
+      });
+      expect(evaluate.mock.calls[0]![0]).toMatchObject({ forcedPrompt: true });
+      expect(requestPermissionDecisionFromUi).toHaveBeenCalledOnce();
+      expect(result.approved).toBe(false);
+    },
+  );
+});
