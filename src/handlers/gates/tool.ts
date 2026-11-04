@@ -20,6 +20,7 @@ import { getEditReplacementText, getPermissionLogContext } from "#src/tool-input
 import { buildAutoModeText } from "../../auto-mode-client";
 import { MCP_TOOL_PREFIX } from "../../auto-mode-policy";
 import { mcpArgsHaveSqlWrite } from "../../mcp-sql-write";
+import { hasAgentDirective } from "../../agent-directive";
 
 /** MCP arguments past this size would leave the model's token window, so those calls always prompt. */
 const MAX_MCP_TEXT_CHARS = 800;
@@ -197,6 +198,8 @@ export function describeToolGate(
         ? {
             autoModeEligible: check.state === "ask"
               && autoModeWorkspaceLocal
+              // Text telling an agent to drop its rules scores benign; the full content is checked, not the model's 800 chars.
+              && !hasAgentDirective(autoModeContent)
               && (autoModeOperation !== "exec"
                 // Elevated commands always prompt.
                 || (autoModeInner?.elevated !== true

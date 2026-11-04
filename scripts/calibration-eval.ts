@@ -12,6 +12,10 @@ import { decideAutoMode } from "../src/auto-mode-policy.ts";
 import { isSensitivePath } from "../src/auto-mode-sensitive-paths.ts";
 import { isWorkspaceLocalFileOperation } from "../src/path-utils.ts";
 import { mcpArgsHaveSqlWrite } from "../src/mcp-sql-write.ts";
+import { hasAgentDirective } from "../src/agent-directive.ts";
+import { matchesYoloAskBashPattern } from "../src/yolo-mode.ts";
+
+const HARD_RULE_CONFIG = { debugLog: false, permissionReviewLog: false, mode: "auto", yoloAskBashPatterns: [] } as const;
 
 const modelDir = process.env.PI_SENTINEL_AUTO_MODEL_DIR
   || join(homedir(), ".pi", "agent", "runtime", "pi-sentinel", "auto-mode", "models");
@@ -41,6 +45,10 @@ function fileGates(row) {
     const fits = buildAutoModeText({ toolName: row.toolName, operation: "tool", args: row.args }).length <= 800;
     return { workspaceLocal: fits && !mcpArgsHaveSqlWrite(row.args), hardRuleHit: false };
   }
+  if (row.operation === "exec") {
+    // permission-prompter forces a prompt for yolo hard rules (rm, ssh, git push, publish, cluster writes).
+    return { workspaceLocal: true, hardRuleHit: false, forcedPrompt: matchesYoloAskBashPattern({ toolName: "bash", command: row.command }, HARD_RULE_CONFIG) };
+  }
   if (row.operation !== "write" && row.operation !== "edit") return { workspaceLocal: true, hardRuleHit: false };
   const target = resolve(workspace, row.path);
   if (row.operation === "edit" && target.startsWith(workspace + "/")) {
@@ -48,7 +56,7 @@ function fileGates(row) {
     writeFileSync(target, "");
   }
   return {
-    workspaceLocal: isWorkspaceLocalFileOperation(row.toolName, { path: row.path }, workspace),
+    workspaceLocal: isWorkspaceLocalFileOperation(row.toolName, { path: row.path }, workspace) && !hasAgentDirective(row.content),
     hardRuleHit: isSensitivePath(target, homedir()),
   };
 }
