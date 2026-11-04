@@ -369,3 +369,12 @@ describe("describeToolGate MCP destructive hint", () => {
     expect(descriptor.promptDetails).toMatchObject({ autoModeEligible: false, autoModeOperation: "tool" });
   });
 });
+
+describe("describeToolGate MCP SQL writes", () => {
+  it("keeps MCP calls that write or change a database out of auto mode", () => {
+    expect(describeToolGate(context("mcp__postgres__query", { sql: "DROP TABLE users" }), check("mcp__postgres__query")).promptDetails)
+      .toMatchObject({ autoModeEligible: false, autoModeOperation: "tool" });
+    expect(describeToolGate(context("mcp__postgres__query", { sql: "SELECT 1" }), check("mcp__postgres__query")).promptDetails)
+      .toMatchObject({ autoModeEligible: true });
+  });
+});

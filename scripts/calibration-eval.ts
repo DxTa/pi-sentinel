@@ -11,6 +11,7 @@ import { createClassifier } from "../src/auto-mode-model.ts";
 import { decideAutoMode } from "../src/auto-mode-policy.ts";
 import { isSensitivePath } from "../src/auto-mode-sensitive-paths.ts";
 import { isWorkspaceLocalFileOperation } from "../src/path-utils.ts";
+import { mcpArgsHaveSqlWrite } from "../src/mcp-sql-write.ts";
 
 const modelDir = process.env.PI_SENTINEL_AUTO_MODEL_DIR
   || join(homedir(), ".pi", "agent", "runtime", "pi-sentinel", "auto-mode", "models");
@@ -35,6 +36,11 @@ function texts(row) {
 
 /** File checks that run before the model in production (tool.ts): workspace containment, dotenv, system roots. */
 function fileGates(row) {
+  // MCP: tool.ts keeps oversized arguments and SQL writes out of auto mode before the model.
+  if (row.operation === "tool") {
+    const fits = buildAutoModeText({ toolName: row.toolName, operation: "tool", args: row.args }).length <= 800;
+    return { workspaceLocal: fits && !mcpArgsHaveSqlWrite(row.args), hardRuleHit: false };
+  }
   if (row.operation !== "write" && row.operation !== "edit") return { workspaceLocal: true, hardRuleHit: false };
   const target = resolve(workspace, row.path);
   if (row.operation === "edit" && target.startsWith(workspace + "/")) {

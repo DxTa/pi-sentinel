@@ -19,6 +19,7 @@ import { formatAskPrompt } from "#src/permission-prompts";
 import { getEditReplacementText, getPermissionLogContext } from "#src/tool-input-preview";
 import { buildAutoModeText } from "../../auto-mode-client";
 import { MCP_TOOL_PREFIX } from "../../auto-mode-policy";
+import { mcpArgsHaveSqlWrite } from "../../mcp-sql-write";
 
 /** MCP arguments past this size would leave the model's token window, so those calls always prompt. */
 const MAX_MCP_TEXT_CHARS = 800;
@@ -121,7 +122,7 @@ export function describeToolGate(
     ? buildAutoModeText({ toolName: tcc.toolName, operation: "tool", args: tcc.input })
     : undefined;
   const autoModeWorkspaceLocal = autoModeOperation === "tool"
-    ? mcpText!.length <= MAX_MCP_TEXT_CHARS && tcc.mcpDestructiveHint !== true
+    ? mcpText!.length <= MAX_MCP_TEXT_CHARS && tcc.mcpDestructiveHint !== true && !mcpArgsHaveSqlWrite(tcc.input)
     : autoModeOperation === "exec"
     ? tcc.autoModeWorkspaceLocal === true
       && Boolean(autoModeCommand?.trim())
