@@ -6,7 +6,7 @@ import { basename, dirname, isAbsolute, relative, resolve, sep } from "node:path
 
 import { EXTENSION_ROOT } from "../extension-config.js";
 import type { ResolvedSandboxProfile, SandboxConfig } from "./types.js";
-import { isDockerCommand } from "./bypass-command.js";
+import { isDockerDaemonCommand } from "./bypass-command.js";
 import {
   assertScanWithinBudget,
   awaitWithinScanBudget,
@@ -240,7 +240,8 @@ function homeVisiblePathsForCommand(
   const pathDirs = homePathDirectories();
   const known = [...KNOWN_HOME_VISIBLE_PATHS, ...pathDirs];
   const paths = includeUvRoots ? [...known, ...UV_HOME_VISIBLE_PATHS] : known;
-  return command !== undefined && isDockerCommand(command)
+  // Piped or chained docker commands (docker ps | head) need the context directory too.
+  return command !== undefined && isDockerDaemonCommand(command)
     ? [...paths, ...DOCKER_HOME_VISIBLE_PATHS]
     : paths;
 }

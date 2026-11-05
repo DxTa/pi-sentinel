@@ -1,6 +1,7 @@
 import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
+import { randomUUID } from "node:crypto";
 
 import { afterEach, describe, expect, it, vi } from "vitest";
 
@@ -374,6 +375,62 @@ describe("yolo mode hard rules", () => {
     expect(context.ui.select.mock.calls.length).toBeGreaterThan(firstPromptCount);
     for (const [, choices] of context.ui.select.mock.calls) {
       expect(choices).toEqual(["Yes", "No", "No, provide reason"]);
+    }
+  });
+});
+
+describe("pi clipboard temp files", () => {
+  it("reads a pasted clipboard image without a prompt, even under a default ask rule", async () => {
+    const { run, context } = await setup("manual");
+    const clipboardFile = path.join(tmpdir(), `pi-clipboard-${randomUUID()}.png`);
+    await writeFile(clipboardFile, "png", "utf8");
+    try {
+      expect((await run("read", { path: clipboardFile }))?.block).toBeUndefined();
+      expect(context.ui.select).not.toHaveBeenCalled();
+    } finally {
+      await rm(clipboardFile, { force: true });
+    }
+  });
+
+  it("still prompts for other files in the temp directory", async () => {
+    const { run, context } = await setup("manual");
+    const otherFile = path.join(tmpdir(), `pi-other-${randomUUID()}.txt`);
+    await writeFile(otherFile, "text", "utf8");
+    try {
+      await run("read", { path: otherFile });
+      expect(context.ui.select).toHaveBeenCalled();
+    } finally {
+      await rm(otherFile, { force: true });
+    }
+  });
+});
+
+describe("pi clipboard files outside os.tmpdir()", () => {
+  it("reads a clipboard file whose temp root differs from the current TMPDIR without a prompt", async () => {
+    const { run, context } = await setup("manual");
+    const clipboardDir = await makeTempDir("pi-clipboard-");
+    const clipboardFile = path.join(clipboardDir, `pi-clipboard-${randomUUID()}.png`);
+    await writeFile(clipboardFile, "png", "utf8");
+    vi.stubEnv("TMPDIR", await makeTempDir("pi-other-tmp-"));
+    try {
+      expect((await run("read", { path: clipboardFile }))?.block).toBeUndefined();
+      expect(context.ui.select).not.toHaveBeenCalled();
+    } finally {
+      vi.unstubAllEnvs();
+    }
+  });
+});
+
+describe("pi clipboard files through bash", () => {
+  it("reads a clipboard file with cat without a prompt", async () => {
+    const { run, context } = await setup("manual");
+    const clipboardFile = path.join(tmpdir(), `pi-clipboard-${randomUUID()}.png`);
+    await writeFile(clipboardFile, "png", "utf8");
+    try {
+      expect((await run("bash", { command: `cat ${clipboardFile}` }))?.block).toBeUndefined();
+      expect(context.ui.select).not.toHaveBeenCalled();
+    } finally {
+      await rm(clipboardFile, { force: true });
     }
   });
 });

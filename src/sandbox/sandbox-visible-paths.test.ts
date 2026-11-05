@@ -238,3 +238,18 @@ describe("systemSymlinkNodes", () => {
     expect(systemSymlinkNodes().every((node) => node.startsWith("/"))).toBe(true);
   });
 });
+
+describe("docker context directory visibility", () => {
+  it("makes ~/.docker visible for piped docker commands", () => {
+    for (const command of ["docker ps | head -3", "docker ps && docker version"]) {
+      const isVisible = createSandboxVisibilityMatcher({
+        repoRoot: "/workspace/repo",
+        cwd: "/workspace/repo",
+        command,
+        profile: makeProfile(),
+        config: makeConfig(),
+      });
+      expect(isVisible(path.join(homedir(), ".docker", "contexts", "meta", "x", "meta.json")), command).toBe(true);
+    }
+  });
+});

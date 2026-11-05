@@ -109,14 +109,14 @@ export async function describeBashExternalDirectoryGate(
     return {
       action: "allow",
       log: {
-        event: "permission_request.protected_read_auto_allowed",
+        event: "permission_request.clipboard_auto_allowed",
         details: {
           source: "tool_call",
           toolCallId: tcc.toolCallId,
           toolName: tcc.toolName,
           agentName: tcc.agentName,
           command,
-          resolution: "protected_read_auto_allowed",
+          resolution: "clipboard_auto_allowed",
         },
       },
     };

@@ -11,13 +11,32 @@ export function extractPiClipboardPaths(text: string): string[] {
   return [...text.matchAll(PI_CLIPBOARD_PATH_PATTERN)].map(([path]) => path);
 }
 
-/** A regular (non-symlink) `pi-clipboard-<UUID>.<ext>` file inside the OS temp root. */
+/**
+ * Temp roots pi writes clipboard files to. macOS puts them in the per-user `/var/folders/<x>/<y>/T`,
+ * which differs from `os.tmpdir()` whenever `TMPDIR` is overridden.
+ */
+const PI_CLIPBOARD_TEMP_ROOTS = [
+  /^\/private\/var\/folders\/[^/]+\/[^/]+\/T\//,
+  /^\/private\/tmp\//,
+  /^\/private\/var\/tmp\//,
+];
+
+/** Canonical path lies in `os.tmpdir()` or a known pi clipboard temp root. */
+export function isInsidePiClipboardTempRoot(canonicalPath: string): boolean {
+  return isPathWithinDirectory(canonicalPath, realpathSync.native(tmpdir()))
+    || PI_CLIPBOARD_TEMP_ROOTS.some((root) => root.test(canonicalPath));
+}
+
+/**
+ * A regular `pi-clipboard-<UUID>.<ext>` file in a pi clipboard temp root. Symlinks and hard links are
+ * refused: a link to a secret elsewhere would otherwise inherit the trusted name and location.
+ */
 export function isPiClipboardTempFile(path: string): boolean {
   if (!PI_CLIPBOARD_FILENAME.test(basename(path))) return false;
   try {
     const stat = lstatSync(path);
-    if (!stat.isFile() || stat.isSymbolicLink()) return false;
-    return isPathWithinDirectory(realpathSync.native(path), realpathSync.native(tmpdir()));
+    if (!stat.isFile() || stat.isSymbolicLink() || stat.nlink !== 1) return false;
+    return isInsidePiClipboardTempRoot(realpathSync.native(path));
   } catch {
     return false;
   }

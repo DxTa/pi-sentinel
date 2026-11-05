@@ -333,6 +333,9 @@ export class PermissionGateHandler {
       }
     }
 
+    // A pasted clipboard file is trusted by the external gates; the tool-level default ask must not re-prompt for it.
+    let clipboardReadAllowed = false;
+
     // ── External-directory gate (descriptor + runner) ────────────────────────
     const infraDirs = [
       ...session.getInfrastructureDirs(),
@@ -357,6 +360,7 @@ export class PermissionGateHandler {
         if (extDirDesc.decision) {
           emitDecision(extDirDesc.decision);
         }
+        clipboardReadAllowed ||= extDirDesc.log?.event === "permission_request.clipboard_auto_allowed";
       } else {
         const extDirResult = await runGateCheck(
           extDirDesc,
@@ -390,6 +394,7 @@ export class PermissionGateHandler {
         if (bashExtDesc.log) {
           writeReviewLog(bashExtDesc.log.event, bashExtDesc.log.details);
         }
+        clipboardReadAllowed ||= bashExtDesc.log?.event === "permission_request.clipboard_auto_allowed";
       } else {
         const bashExtResult = await runGateCheck(
           bashExtDesc,
@@ -488,6 +493,9 @@ export class PermissionGateHandler {
     })
       ? { ...baseToolCheck, state: "ask" as const }
       : baseToolCheck);
+
+    // Deny rules were already applied above; only the default ask is skipped here.
+    if (clipboardReadAllowed && toolCheck.state === "ask") return {};
 
     // Let AutoMode classify workspace operations only when normal policy asks.
     // Workspace reads never need the model; writes still go through AutoMode when policy asks.
