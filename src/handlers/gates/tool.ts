@@ -5,13 +5,14 @@ import { relative, resolve } from "node:path";
 
 import {
   getPathBearingToolPath,
+  getPathPolicyCandidates,
   hasProtectedEnvSelector,
   isWorkspaceLocalFileOperation,
   normalizePathForComparison,
   PATH_BEARING_TOOLS,
   READ_ONLY_PATH_BEARING_TOOLS,
 } from "#src/path-utils";
-import { isSensitivePath } from "../../auto-mode-sensitive-paths";
+import { isProtectedWriteTarget, isSensitivePath } from "../../auto-mode-sensitive-paths";
 import { bashInnerCommands } from "#src/bash-segments";
 import { matchesGitPushCommand } from "#src/yolo-mode";
 import { suggestSessionPattern } from "#src/pattern-suggest";
@@ -122,12 +123,14 @@ export function describeToolGate(
   const mcpText = autoModeOperation === "tool"
     ? buildAutoModeText({ toolName: tcc.toolName, operation: "tool", args: tcc.input })
     : undefined;
-  const autoModeWorkspaceLocal = autoModeOperation === "tool"
+  // Oversized, destructive-hinted or SQL-writing MCP calls and commands without text always prompt.
+  const requestReadable = autoModeOperation === "tool"
     ? mcpText!.length <= MAX_MCP_TEXT_CHARS && tcc.mcpDestructiveHint !== true && !mcpArgsHaveSqlWrite(tcc.input)
+    : autoModeOperation !== "exec" || (Boolean(autoModeCommand?.trim()) && Boolean(tcc.cwd));
+  const autoModeWorkspaceLocal = autoModeOperation === "tool"
+    ? requestReadable
     : autoModeOperation === "exec"
-    ? tcc.autoModeWorkspaceLocal === true
-      && Boolean(autoModeCommand?.trim())
-      && Boolean(tcc.cwd)
+    ? tcc.autoModeWorkspaceLocal === true && requestReadable
     : autoModeOperation !== undefined
       && tcc.cwd !== undefined
       && isWorkspaceLocalFileOperation(tcc.toolName, tcc.input, tcc.cwd, {
@@ -143,7 +146,7 @@ export function describeToolGate(
   const autoModeTextTruncated = autoModeOperation === "exec"
     ? false
     : (autoModeContent?.length ?? 0) > 800;
-  const autoModeText = autoModeWorkspaceLocal && autoModeOperation !== undefined
+  const autoModeText = requestReadable && autoModeOperation !== undefined
     ? mcpText ?? (autoModeOperation === "exec" && autoModeCommand !== undefined
       ? buildAutoModeText({ toolName: tcc.toolName, operation: autoModeOperation, command: autoModeCommand! })
       : autoModeContent !== undefined
@@ -160,19 +163,26 @@ export function describeToolGate(
   const autoModeInner = autoModeOperation === "exec" ? bashInnerCommands(autoModeCommand ?? "") : null;
   const forcePromptInYolo =
     (freshApproval && tcc.mode === "auto") || hasProtectedEnvSelector(tcc.toolName, tcc.input);
-  const autoModeHardRuleTarget = autoModeWorkspaceLocal && tcc.cwd
-    ? toolPath
-      ? normalizePathForComparison(toolPath, tcc.cwd)
-      : autoModeOperation === "list"
-        ? normalizePathForComparison(tcc.cwd, tcc.cwd)
-        : ""
-    : "";
+  // A local path was already resolved canonically inside the workspace. Elsewhere check every spelling,
+  // including symlink targets, so a link cannot hide a system path.
+  const autoModeHardRuleTargets = !tcc.cwd
+    ? []
+    : toolPath
+      ? autoModeWorkspaceLocal
+        ? [normalizePathForComparison(toolPath, tcc.cwd)]
+        : getPathPolicyCandidates(toolPath, tcc.cwd)
+      : autoModeOperation === "list" ? [tcc.cwd] : [];
   const autoModeHardRuleHit = autoModeOperation === "tool"
     ? false
     : autoModeOperation === "exec"
     ? tcc.autoModeHardRuleHit ?? true
-    : !autoModeHardRuleTarget
-      || isSensitivePath(autoModeHardRuleTarget, homedir());
+    : autoModeHardRuleTargets.length === 0
+      || hasProtectedEnvSelector(tcc.toolName, tcc.input)
+      || autoModeHardRuleTargets.some((target) => isSensitivePath(target, homedir())
+        || ((autoModeOperation === "write" || autoModeOperation === "edit") && isProtectedWriteTarget(target, homedir())));
+
+  // Sensitive paths outside the workspace never reach the model; local hard-rule hits still do, then the policy prompts.
+  const sensitiveOutsideWorkspace = autoModeHardRuleHit && !autoModeWorkspaceLocal;
 
   return {
     surface: tcc.toolName,
@@ -197,7 +207,8 @@ export function describeToolGate(
       ...(autoModeOperation
         ? {
             autoModeEligible: check.state === "ask"
-              && autoModeWorkspaceLocal
+              && requestReadable
+              && !sensitiveOutsideWorkspace
               // Agent instruction files, agent directives and secret references score benign; check the full content.
               && !((autoModeOperation === "write" || autoModeOperation === "edit")
                 && writeNeedsPrompt(autoModeWorkspaceRelativePath ?? toolPath ?? undefined, autoModeContent))
@@ -219,7 +230,7 @@ export function describeToolGate(
                   ...(tcc.autoModeUnits ? { autoModeUnits: [...tcc.autoModeUnits], autoModeOpaque: tcc.autoModeOpaque === true } : {}),
                 }
               : {}),
-            ...(autoModeText !== undefined ? { autoModeText, autoModeTextTruncated } : {}),
+            ...(autoModeText !== undefined && !sensitiveOutsideWorkspace ? { autoModeText, autoModeTextTruncated } : {}),
             ...(forcePromptInYolo ? { forcePromptInYolo: true } : {}),
           }
         : {}),

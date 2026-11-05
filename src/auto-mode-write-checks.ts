@@ -12,7 +12,7 @@ const ENV_DUMP = /JSON\.stringify\(\s*process\.env\s*\)|\bdict\(\s*os\.environ\s
 // Home credential stores: the folders yolo never writes, plus cloud CLI and netrc files.
 const CREDENTIAL_STORE = new RegExp(String.raw`(?:^|[/'"\s])\.(?:${CREDENTIAL_DIRS.map((d) => d.slice(1)).join("|")})/|\.config/gcloud\b|\.netrc\b`);
 // Files coding agents read as instructions: a write there steers every later session.
-const AGENT_INSTRUCTION_FILE = /(?:^|\/)(?:AGENTS|CLAUDE|GEMINI)\.md$|(?:^|\/)\.(?:cursorrules|windsurfrules|clinerules)$|(?:^|\/)\.github\/copilot-instructions\.md$|(?:^|\/)\.cursor\/rules\//i;
+const AGENT_INSTRUCTION_FILE = /(?:^|\/)(?:AGENTS|CLAUDE|GEMINI)\.md$|(?:^|\/)\.(?:cursorrules|windsurfrules|clinerules)$|(?:^|\/)\.github\/copilot-instructions\.md$|(?:^|\/)\.cursor\/rules\/|(?:^|\/)\.pi\//i;
 
 export function hasSecretReference(text: string | undefined): boolean {
   return Boolean(text) && (SECRET_VAR.test(text!) || ENV_DUMP.test(text!) || CREDENTIAL_STORE.test(text!));

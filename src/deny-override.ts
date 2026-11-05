@@ -1,5 +1,5 @@
 import { homedir } from "node:os";
-import { isProtectedCredentialReadPath } from "./protected-read";
+import { isProtectedCredentialWritePath } from "./protected-read";
 import { isForbiddenWritePath } from "./yolo-forbidden-paths";
 
 // Tool calls whose policy deny a person overrode; the sandbox gate takes one once.
@@ -15,5 +15,5 @@ export function takeDenyOverride(toolCallId: string | undefined): boolean {
 
 /** System and credential paths keep their separate sandbox prompt even after a policy override. */
 export function canAutoGrantOverride(paths: readonly string[], cwd: string): boolean {
-  return paths.every((path) => !isForbiddenWritePath(path, homedir()) && !isProtectedCredentialReadPath(path, cwd));
+  return paths.every((path) => !isForbiddenWritePath(path, homedir()) && !isProtectedCredentialWritePath(path, cwd));
 }

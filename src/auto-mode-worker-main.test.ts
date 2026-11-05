@@ -1,8 +1,12 @@
 import { spawnSync } from "node:child_process";
-import { resolve } from "node:path";
+import { mkdtempSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
-import { describe, expect, it } from "vitest";
-import { parseAutoModeWorkerArgs } from "./auto-mode-worker-main";
+import { describe, expect, it, vi } from "vitest";
+import { AUTO_MODE_BUILD_ID } from "./auto-mode-build";
+import { AutoModeClient, createUnixSocketWorkerTransport } from "./auto-mode-client";
+import { parseAutoModeWorkerArgs, startWorker } from "./auto-mode-worker-main";
 
 describe("parseAutoModeWorkerArgs", () => {
   it("requires and resolves socket and model directory flags", () => {
@@ -41,4 +45,32 @@ describe("parseAutoModeWorkerArgs", () => {
       "extra",
     ])).toThrow();
   });
+});
+
+vi.mock("./auto-mode-model.ts", () => ({
+  loadInferenceRuntime: async () => ({}),
+  // A model download that outlasts the client's startup window.
+  ensureModelAssets: () => new Promise<void>(() => {}),
+  createClassifier: async () => {
+    throw new Error("createClassifier must not run before the download finishes");
+  },
+}));
+
+describe("startWorker", () => {
+  it("fails requests fast while the model is still downloading", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "pi-worker-main-"));
+    const socketPath = join(dir, "worker.sock");
+    const server = await startWorker(["--socket", socketPath, "--model-dir", join(dir, "models")]);
+    try {
+      const client = new AutoModeClient(createUnixSocketWorkerTransport(socketPath), {
+        expectedBuildId: AUTO_MODE_BUILD_ID,
+      });
+      const startedAt = Date.now();
+      const result = await client.evaluate("hello");
+      expect(result.status).toBe("unavailable");
+      expect(Date.now() - startedAt).toBeLessThan(5_000);
+    } finally {
+      await server.close();
+    }
+  }, 15_000);
 });

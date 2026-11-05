@@ -940,7 +940,6 @@ it("prompts for auto requests outside the model-eligible scope", async () => {
 });
 
 it.each([
-  ["not_workspace_local", { autoModeWorkspaceLocal: false }],
   ["not_eligible", { autoModeWorkspaceLocal: true }],
 ] as const)("logs a %s skip through the evaluator in auto instead of silently prompting", async (skipReason, scope) => {
   const requestPermissionDecisionFromUi = vi.fn(async () => ({
@@ -982,9 +981,9 @@ it.each([
   expect(requestPermissionDecisionFromUi).toHaveBeenCalledOnce();
 });
 
-describe("auto mode keeps hard rules", () => {
+describe("auto mode sends forced prompts to the model", () => {
   it.each(["rm build.txt", "npm publish", "cd src && ssh host", "kubectl -n prod delete pod a"])(
-    "prompts for %s even when the model allows",
+    "approves %s when the model allows",
     async (command) => {
       const evaluate = vi.fn(async () => ({
         action: "allow" as const, reason: "model_allow", candidate: true, attempted: true, evaluationId: "e", audit: false,
@@ -1005,8 +1004,111 @@ describe("auto mode keeps hard rules", () => {
         autoModeText: "tool=bash command=" + command,
       });
       expect(evaluate.mock.calls[0]![0]).toMatchObject({ forcedPrompt: true });
-      expect(requestPermissionDecisionFromUi).toHaveBeenCalledOnce();
-      expect(result.approved).toBe(false);
+      expect(requestPermissionDecisionFromUi).not.toHaveBeenCalled();
+      expect(result.approved).toBe(true);
     },
   );
+});
+
+it("sends a non-local eligible request to the model as a candidate", async () => {
+  const evaluate = vi.fn(async () => ({
+    action: "allow" as const, reason: "model_allow", candidate: true, attempted: true, evaluationId: "e", audit: false,
+  }));
+  const requestPermissionDecisionFromUi = vi.fn(async () => ({ approved: false, state: "denied" as const }));
+  const prompter = new PermissionPrompter({
+    promptWaitTracker: new PromptWaitTracker({ emit() {} }),
+    getConfig: () => ({ debugLog: false, permissionReviewLog: false, mode: "auto", yoloAskBashPatterns: [] }),
+    autoModeEvaluator: { evaluate },
+    writeReviewLog() {},
+    subagentSessionsDir: "/tmp/subagents",
+    forwardingDir: "/tmp/forwarding",
+    requestPermissionDecisionFromUi,
+  });
+  const result = await prompter.prompt({ hasUI: true, cwd: "/work/repo", ui: { setStatus() {} } } as never, {
+    requestId: "r-nonlocal", source: "tool_call", agentName: null, message: "Need permission", toolName: "write",
+    autoModeEligible: true, autoModeHardRuleHit: false, autoModeWorkspaceLocal: false, autoModeOperation: "write",
+  });
+  expect(evaluate.mock.calls[0]![0]).toMatchObject({ candidate: true, workspaceLocal: false });
+  expect(result.approved).toBe(true);
+  expect(requestPermissionDecisionFromUi).not.toHaveBeenCalled();
+});
+
+describe("yolo mode sends external writes and exec to the model", () => {
+  const modelResult = (action: "allow" | "prompt") => ({
+    action, reason: action === "allow" ? "model_allow" : "threat_not_benign", candidate: true, attempted: true, evaluationId: "e", audit: false,
+  });
+  const setup = (action: "allow" | "prompt" | undefined) => {
+    const evaluate = vi.fn(async () => modelResult(action ?? "prompt"));
+    const requestPermissionDecisionFromUi = vi.fn(async () => ({ approved: false, state: "denied" as const }));
+    const prompter = new PermissionPrompter({
+      promptWaitTracker: new PromptWaitTracker({ emit() {} }),
+      getConfig: () => ({ debugLog: false, permissionReviewLog: false, mode: "yolo", yoloAskBashPatterns: [] }),
+      ...(action ? { autoModeEvaluator: { evaluate } } : {}),
+      writeReviewLog() {},
+      subagentSessionsDir: "/tmp/subagents",
+      forwardingDir: "/tmp/forwarding",
+      requestPermissionDecisionFromUi,
+    });
+    const run = (details: Record<string, unknown>) => prompter.prompt(
+      { hasUI: true, cwd: "/work/repo", ui: { setStatus() {} } } as never,
+      { requestId: "r-yolo", source: "tool_call", agentName: null, message: "Need permission", ...details } as never,
+    );
+    return { evaluate, requestPermissionDecisionFromUi, run };
+  };
+  const externalWrite = {
+    toolName: "write", autoModeOperation: "write", autoModeEligible: true, autoModeWorkspaceLocal: false, autoModeHardRuleHit: false,
+  };
+
+  it("approves an external write the model allows", async () => {
+    const { evaluate, requestPermissionDecisionFromUi, run } = setup("allow");
+    expect((await run(externalWrite)).approved).toBe(true);
+    expect(evaluate).toHaveBeenCalledOnce();
+    expect(requestPermissionDecisionFromUi).not.toHaveBeenCalled();
+  });
+
+  it("prompts for an external write the model does not allow", async () => {
+    const { requestPermissionDecisionFromUi, run } = setup("prompt");
+    expect((await run(externalWrite)).approved).toBe(false);
+    expect(requestPermissionDecisionFromUi).toHaveBeenCalledOnce();
+  });
+
+  it("prompts for an external write when no classifier is configured", async () => {
+    const { requestPermissionDecisionFromUi, run } = setup(undefined);
+    expect((await run(externalWrite)).approved).toBe(false);
+    expect(requestPermissionDecisionFromUi).toHaveBeenCalledOnce();
+  });
+
+  it("sends external exec to the model", async () => {
+    const { evaluate, run } = setup("allow");
+    const result = await run({
+      toolName: "bash", command: "npm test", autoModeOperation: "exec", autoModeEligible: true, autoModeWorkspaceLocal: false, autoModeHardRuleHit: false,
+    });
+    expect(result.approved).toBe(true);
+    expect(evaluate).toHaveBeenCalledOnce();
+  });
+
+  it.each([
+    ["a workspace write", { ...externalWrite, autoModeWorkspaceLocal: true }],
+    ["a non-sensitive external read", { toolName: "read", autoModeOperation: "read", autoModeEligible: true, autoModeWorkspaceLocal: false, autoModeHardRuleHit: false }],
+    ["a pathless tool", { toolName: "mcp__x__y" }],
+  ])("approves %s without the model", async (_name, details) => {
+    const { evaluate, requestPermissionDecisionFromUi, run } = setup("prompt");
+    expect((await run(details)).approved).toBe(true);
+    expect(evaluate).not.toHaveBeenCalled();
+    expect(requestPermissionDecisionFromUi).not.toHaveBeenCalled();
+  });
+
+  it("prompts for a sensitive external read without the model", async () => {
+    const { evaluate, requestPermissionDecisionFromUi, run } = setup("allow");
+    await run({ toolName: "read", autoModeOperation: "read", autoModeEligible: true, autoModeWorkspaceLocal: false, autoModeHardRuleHit: true });
+    expect(evaluate).not.toHaveBeenCalled();
+    expect(requestPermissionDecisionFromUi).toHaveBeenCalledOnce();
+  });
+
+  it("keeps hard rules prompting without the model", async () => {
+    const { evaluate, requestPermissionDecisionFromUi, run } = setup("allow");
+    await run({ ...externalWrite, toolName: "bash", command: "rm -rf build", autoModeOperation: "exec" });
+    expect(evaluate).not.toHaveBeenCalled();
+    expect(requestPermissionDecisionFromUi).toHaveBeenCalledOnce();
+  });
 });

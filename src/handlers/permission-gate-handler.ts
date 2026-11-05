@@ -36,7 +36,7 @@ import {
 } from "#src/tool-registry";
 import { buildAutoModeBashContext } from "#src/auto-mode-bash-context";
 import { forbiddenWriteTarget } from "#src/yolo-forbidden-writes";
-import { matchesGitPushCommand, shouldRelaxBundledToolDenyInYolo } from "#src/yolo-mode";
+import { gateNonExplicitAllowForAuto, matchesGitPushCommand, shouldRelaxBundledToolDenyInYolo } from "#src/yolo-mode";
 import { describeBashExternalDirectoryGate } from "./gates/bash-external-directory";
 
 import { describeBashPathGate } from "./gates/bash-path";
@@ -478,7 +478,7 @@ export class PermissionGateHandler {
       tcc.agentName ?? undefined,
       toolSessionRules,
     );
-    const toolCheck = shouldRelaxBundledToolDenyInYolo({
+    const toolCheck = gateNonExplicitAllowForAuto(session.config.mode, shouldRelaxBundledToolDenyInYolo({
       config: session.config,
       toolName: tcc.toolName,
       path: toolPath,
@@ -487,7 +487,7 @@ export class PermissionGateHandler {
       hasExternalDirectoryApproval,
     })
       ? { ...baseToolCheck, state: "ask" as const }
-      : baseToolCheck;
+      : baseToolCheck);
 
     // Let AutoMode classify workspace operations only when normal policy asks.
     // Workspace reads never need the model; writes still go through AutoMode when policy asks.

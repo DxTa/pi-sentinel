@@ -34,7 +34,7 @@ grep -noE '"(for|while|until|if|then|elif|else|do|done|fi|select|case|esac|bash|
 
 ## `yolo` mode: hard rules
 
-`yolo` lets requests run without a prompt, including external directories, network `ask` verdicts, and writes outside the workspace, except these hard rules:
+`yolo` lets workspace requests, pathless tools, network `ask` verdicts, and non-sensitive external reads run without a prompt. External writes, edits, and Bash go to the [classifier](#auto-mode-classifier): a benign verdict runs them, anything else (or an unavailable classifier, such as on Intel Macs) prompts. Sensitive external reads prompt. These hard rules never reach the model:
 
 - **Denied, then asked:** `write`, `edit`, and readable Bash commands that write to a forbidden path: `/etc`, `/System`, `/Library`, `/usr` (except `/usr/local`), `/bin`, `/sbin`, `/private/etc`, `/var` (except `/var/folders` and `/var/tmp`), `~/.ssh`, `~/.aws`, and `~/.gnupg`. Symlinks into these paths count, including `link/../etc`. Bash writes are redirects (`>`, `>>`, `&>`) and the verbs `cp`, `mv`, `ln`, `install`, `rm`, `touch`, `mkdir`, `tee`, `truncate`, `chmod`, `chown`, `dd of=`, `sed -i`, `curl -o`, and `wget -O`. Reads are never denied. Because every policy deny prompts (see below), a person can still allow one of these writes once or for the session; the answer is never auto-approved.
 - **Prompt:** `rm`, `ssh`, `git push`, `npm`/`pnpm`/`yarn` `publish`, and kubectl commands that change a cluster (`apply`, `create`, `delete`, `edit`, `patch`, `replace`, `set`, `scale`, `rollout` except `status`/`history`, `drain`, `cordon`, `uncordon`, `taint`, `label`, `annotate`, `autoscale`, `run`, `expose`, `cp`). Matching uses the executable name and subcommand, so `/bin/rm`, `git -C repo push`, and `kubectl -n prod delete` count while `git log --grep push` does not. Add your own with `yoloAskBashPatterns`.
@@ -47,17 +47,17 @@ Limits:
 - A `cd` inside a subshell is tracked as if it carried over, so a later relative write in the same command can be denied by mistake.
 - `kubectl exec` is not treated as a write.
 
-`manual` and `auto` are unchanged, including forced prompts for external writes.
+`manual` is unchanged. `auto` also sends hard-rule commands to the classifier; see below.
 
 ## `auto` mode classifier
 
 pi-sentinel starts or reuses one shared, detached Node worker. It runs the Apache-2.0 Lion Warden classifier, pinned to revision `77888f617584758f904faefd6f38d4cf926f6d5d`. The model and tokenizer are not bundled; first startup downloads about 320 MB (the FP16 build; profile `lion-warden-fp16`) into `~/.pi/agent/runtime/pi-sentinel/auto-mode/models`, verifies SHA-256 hashes, and resumes interrupted downloads. The worker fails closed: unavailable or invalid model assets mean permission requests prompt. No Python is required.
 
-What the classifier sees: path/tool metadata for reads and listings, up to 800 characters of write/edit content, a redacted Bash command, or the tool name and arguments of an MCP call (calls whose arguments exceed 800 characters prompt). An MCP call is allowed only when the model reads it as a read or list and every other check passes. Read output is not sent, so prompt injection inside a file cannot be detected before reading. Sensitive paths, external targets, network operations, unsandboxed Bash, and model failures prompt. Thresholds come from the model profile, per operation, and are set with `npm run calibrate -- --profile <id> --write` (it refuses to write when the holdout split lets a should-prompt case through). Thresholds are authoritative; 5% of would-allow decisions prompt anyway for audit (20% for allows learned from history).
+What the classifier sees: path/tool metadata for reads and listings, up to 800 characters of write/edit content, a redacted Bash command, or the tool name and arguments of an MCP call (calls whose arguments exceed 800 characters prompt). An MCP call is allowed only when the model reads it as a read or list and every other check passes. Read output is not sent, so prompt injection inside a file cannot be detected before reading. Only your own `allow` rules (global, project, session) skip the model; builtin and bundled defaults go to it like an ask. Workspace reads and listings need no model. External targets, network operations, and non-workspace Bash are judged by the model and may be approved. Sensitive paths and model failures prompt: system roots, `~/Library`, credential folders (`~/.ssh`, `~/.aws`, `~/.gnupg`), shell startup files, and `.env*` selectors. Thresholds come from the model profile, per operation, and are set with `npm run calibrate -- --profile <id> --write` (it refuses to write when the holdout split lets a should-prompt case through). Thresholds are authoritative; 5% of would-allow decisions prompt anyway for audit (20% for allows learned from history).
 
-These checks run before the model and always prompt in `auto`, whatever the model returns. They can only add prompts:
+These checks run before the model and always prompt in `auto`, whatever the model returns. Commands that match a `yolo` hard rule or `yoloAskBashPatterns` (`rm`, `ssh`, `git push`, publish, cluster changes) are not in this list: in `auto` the model judges them. The checks can only add prompts:
 
-- Commands that match a `yolo` hard rule or `yoloAskBashPatterns`.
+- Writes under `.pi/` (permission and settings files), which could widen the rules.
 - Writes and edits to agent instruction files (`AGENTS.md`, `CLAUDE.md`, `GEMINI.md`, `.cursorrules`, `.windsurfrules`, `.clinerules`, `.github/copilot-instructions.md`, `.cursor/rules/`).
 - Write and edit content that tells an AI agent to drop its instructions or permission checks, references a secret-named variable (`$GITHUB_TOKEN`, `process.env.NPM_TOKEN`), dumps the environment, or reads a home credential folder. The whole content is checked, not only the 800 characters the model sees.
 - MCP tools whose server sets `destructiveHint`, and MCP arguments that hold a SQL write or schema change.

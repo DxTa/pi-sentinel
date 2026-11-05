@@ -2,7 +2,7 @@ import { isReadOnlyBashChain, isReadOnlyBashCommand } from "#src/bash-command-sa
 import { getNonEmptyString, toRecord } from "#src/common";
 import { isPathOutsideWorkingDirectory, isPathWithinDirectory, normalizePathForComparison } from "#src/path-utils";
 import { isPiClipboardTempFile } from "#src/clipboard-temp-cleanup";
-import { isProtectedCredentialReadPath, protectedBashReadPaths } from "#src/protected-read";
+import { isAgentDirPath, isProtectedCredentialReadPath, protectedBashReadPaths } from "#src/protected-read";
 import type { Rule } from "#src/rule";
 import { deriveApprovalPattern } from "#src/session-rules";
 import type { PermissionCheckResult } from "#src/types";
@@ -185,7 +185,13 @@ export async function describeBashExternalDirectoryGate(
     && uncoveredPathChecks.every(({ check }) =>
       check.state === "ask" && (check.origin === "builtin" || check.origin === "bundled"));
 
-  if (mayAutoAllowProtectedRead) {
+  const mayAutoAllowAgentRead = externalPaths.length > 0
+    && isReadOnlyBashChain(command, tcc.cwd!)
+    && externalPaths.every((path) => isAgentDirPath(path, tcc.cwd!))
+    && uncoveredPathChecks.every(({ check }) =>
+      check.state === "ask" && (check.origin === "builtin" || check.origin === "bundled"));
+
+  if (mayAutoAllowProtectedRead || mayAutoAllowAgentRead) {
     return {
       action: "allow",
       log: {

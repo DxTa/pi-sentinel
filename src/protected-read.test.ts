@@ -6,13 +6,13 @@ import { tmpdir } from "node:os";
 import { afterAll, describe, expect, it } from "vitest";
 
 import { extractTokensForPathRules } from "./handlers/gates/bash-path-extractor";
-import { isProtectedCredentialReadPath, prepareApprovedTarget, protectedBashReadPaths, protectedWriteRefusal } from "./protected-read";
+import { isAgentDirPath, isProtectedCredentialReadPath, isProtectedCredentialWritePath, prepareApprovedTarget, protectedBashReadPaths, protectedWriteRefusal } from "./protected-read";
 import { DEFAULT_MASKED_PATTERNS } from "./sandbox/masked-file-gate";
 
 // macOS tmpdir() is a symlink into /private; the code under test returns canonical paths.
 const cwd = realpathSync.native(mkdtempSync(join(tmpdir(), "pi-protected-read-workspace-")));
 const sshConfig = join(homedir(), ".ssh", "config");
-const appConfig = join(homedir(), ".config", "app", "settings.json");
+const appConfig = join(homedir(), ".config", "gcloud", "settings.json");
 const awsCredentials = join(homedir(), ".aws", "credentials");
 const certPath = join(cwd, "server.pem");
 const credentialsJson = join(cwd, "credentials.json");
@@ -81,18 +81,18 @@ describe("protectedBashReadPaths", () => {
   });
 
   it("tracks credential operands with parentheses", async () => {
-    const punctuatedPath = join(homedir(), ".config", "app", "settings(backup).json");
-    await expect(protectedBashReadPaths('cat "$HOME/.config/app/settings(backup).json"', cwd))
+    const punctuatedPath = join(homedir(), ".config", "gcloud", "settings(backup).json");
+    await expect(protectedBashReadPaths('cat "$HOME/.config/gcloud/settings(backup).json"', cwd))
       .resolves.toEqual([punctuatedPath]);
   });
 
   it("tracks credential paths embedded with shell HOME parameter expansion", async () => {
-    const command = "python3 -c \"print(open('${HOME%/}/.config/app/settings.json').read())\"";
+    const command = "python3 -c \"print(open('${HOME%/}/.config/gcloud/settings.json').read())\"";
     await expect(protectedBashReadPaths(command, cwd)).resolves.toEqual([appConfig]);
   });
 
   it("preserves complete parenthetical paths embedded in interpreter source", async () => {
-    const punctuatedPath = join(homedir(), ".config", "app", "settings(backup).json");
+    const punctuatedPath = join(homedir(), ".config", "gcloud", "settings(backup).json");
     const command = `python3 -c "print(open('${punctuatedPath}').read())"`;
     await expect(protectedBashReadPaths(command, cwd)).resolves.toEqual([punctuatedPath]);
   });
@@ -175,5 +175,46 @@ describe("prepareApprovedTarget", () => {
 
   it("reports a missing parent directory", () => {
     expect(prepareApprovedTarget(join(cwd, "nodir", "x.txt"))).toContain("could not be created");
+  });
+});
+
+describe("ordinary ~/.config files", () => {
+  const appSettings = join(homedir(), ".config", "app", "settings.json");
+
+  it("are not protected credential reads", () => {
+    expect(isProtectedCredentialReadPath(appSettings, cwd)).toBe(false);
+  });
+
+  it("are not returned for bash reads", async () => {
+    await expect(protectedBashReadPaths(`cat ${appSettings}`, cwd)).resolves.toEqual([]);
+  });
+
+  it("keep masked credential files protected", () => {
+    expect(isProtectedCredentialReadPath("~/.config/gh/hosts.yml", cwd)).toBe(true);
+  });
+});
+
+describe("isAgentDirPath", () => {
+  it.each(["~/.pi/agent/settings.json", "~/.pi/agent/extensions/x/index.ts"])("covers %s", (target) =>
+    expect(isAgentDirPath(target, cwd)).toBe(true));
+
+  it.each(["~/.pi/agentx/file", "~/.pi/sessions/s.jsonl", "~/.pi/agent/../secret.txt"])("does not cover %s", (target) =>
+    expect(isAgentDirPath(target, cwd)).toBe(false));
+});
+
+describe("credential stores outside the old masked list", () => {
+  it.each(["~/.config/github-copilot/apps.json", "~/.config/acli/global_auth_config.yaml", "~/.config/Claude/claude_desktop_config.json", "~/.pi/agent/mcp-auth.json", "~/.pi/agent/mcp.json", "~/.pi/agent/models.json"])(
+    "keeps %s masked", (target) => expect(isProtectedCredentialReadPath(target, cwd)).toBe(true));
+  it("rejects dot-dot segments in agent directory paths", () => {
+    expect(isAgentDirPath("~/.pi/agent/sub/../settings.json", cwd)).toBe(false);
+  });
+});
+
+describe("isProtectedCredentialWritePath", () => {
+  it("keeps the whole ~/.config tree protected for writes but not for reads", () => {
+    const target = join(homedir(), ".config", "fish", "config.fish");
+    expect(isProtectedCredentialWritePath(target, cwd)).toBe(true);
+    expect(isProtectedCredentialReadPath(target, cwd)).toBe(false);
+    expect(isProtectedCredentialWritePath(join(homedir(), ".ssh", "id_rsa"), cwd)).toBe(true);
   });
 });

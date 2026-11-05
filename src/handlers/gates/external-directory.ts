@@ -8,7 +8,7 @@ import {
   normalizePathForComparison,
 } from "#src/path-utils";
 import { isPiClipboardTempFile } from "#src/clipboard-temp-cleanup";
-import { isProtectedCredentialReadPath } from "#src/protected-read";
+import { isAgentDirPath, isProtectedCredentialReadPath } from "#src/protected-read";
 import { deriveApprovalPattern } from "#src/session-rules";
 import type { PermissionCheckResult } from "#src/types";
 import type { GateResult } from "./descriptor";
@@ -89,7 +89,7 @@ export function describeExternalDirectoryGate(
   }
 
   const protectedRead = tcc.toolName === "read"
-    && isProtectedCredentialReadPath(normalizedExtPath, tcc.cwd);
+    && (isProtectedCredentialReadPath(normalizedExtPath, tcc.cwd) || isAgentDirPath(normalizedExtPath, tcc.cwd));
   const explicitRestriction = protectedRead && checkExternalDirectoryPermission
     ? getProtectedReadRestriction(normalizedExtPath, checkExternalDirectoryPermission)
     : undefined;

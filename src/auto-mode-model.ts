@@ -1,6 +1,7 @@
 import { createHash } from "node:crypto";
 import { createReadStream, createWriteStream } from "node:fs";
 import { mkdir, rename, rm, stat, readFile } from "node:fs/promises";
+import { homedir } from "node:os";
 import { dirname, join } from "node:path";
 import { Readable } from "node:stream";
 import { pipeline } from "node:stream/promises";
@@ -19,6 +20,14 @@ export const modelBaseUrl = (profile: ModelProfile) =>
 export const MODEL_BASE_URL = modelBaseUrl(MODEL_PROFILE);
 /** Apache-2.0 assets only; GPL `l2/` paths are never fetched. */
 export const MODEL_ASSETS: readonly ModelAsset[] = MODEL_PROFILE.assets;
+
+/** Model directory: PI_SENTINEL_AUTO_MODEL_DIR, else <agent dir>/runtime/...; shared by the worker and install-time prefetch. */
+export function resolveModelDir(env: NodeJS.ProcessEnv = process.env, home: string = homedir()): string {
+  const override = env.PI_SENTINEL_AUTO_MODEL_DIR?.trim();
+  if (override) return override;
+  const agentDir = env.PI_CODING_AGENT_DIR || join(home, ".pi", "agent");
+  return join(agentDir, "runtime", "pi-sentinel", "auto-mode", "models");
+}
 
 export type FetchLike = (url: string, init?: RequestInit) => Promise<Response>;
 

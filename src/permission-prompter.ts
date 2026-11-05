@@ -183,22 +183,41 @@ export class PermissionPrompter implements PermissionPrompterApi {
         ),
     };
 
-    // AutoMode approves only model-eligible requests; classic YOLO keeps its broad bypass.
-    const autoModeCandidate =
-      config.mode === "auto"
-      && details.autoModeEligible === true
-      && details.autoModeWorkspaceLocal === true
-      && Boolean(details.autoModeOperation);
-    if (config.mode === "yolo"
-      && shouldAutoApprovePermissionState("ask", config, yoloContext)
-      && !autoModeCandidate) {
-      this.writeReviewEntry("permission_request.auto_approved", details);
-      this.writeDebugPrompt("permission_prompt.resolved", details, {
-        approved: true,
-        resolution: "auto_approved",
-        latencyMs: Date.now() - startedAt,
-      });
-      return { approved: true, state: "approved", autoApproved: true };
+    // Yolo approves workspace calls, pathless tools and non-sensitive external reads itself; external writes
+    // and exec go to the model, and sensitive external reads prompt. Hard rules never reach this branch.
+    if (config.mode === "yolo" && shouldAutoApprovePermissionState("ask", config, yoloContext)) {
+      const operation = details.autoModeOperation;
+      const isExternal = details.autoModeWorkspaceLocal !== true;
+      const externalMutation = isExternal && (operation === "write" || operation === "edit" || operation === "exec");
+      const sensitiveExternalRead = isExternal && (operation === "read" || operation === "list")
+        && details.autoModeHardRuleHit !== false;
+      if (!externalMutation && !sensitiveExternalRead) {
+        this.writeReviewEntry("permission_request.auto_approved", details);
+        this.writeDebugPrompt("permission_prompt.resolved", details, {
+          approved: true,
+          resolution: "auto_approved",
+          latencyMs: Date.now() - startedAt,
+        });
+        return { approved: true, state: "approved", autoApproved: true };
+      }
+      if (externalMutation) {
+        const yoloDecision = await this.evaluateAutoMode(config, details, ctx.cwd, true);
+        if (yoloDecision.action === "allow") {
+          this.writeReviewEntry("permission_request.auto_mode_approved", {
+            ...details,
+            autoModeReason: yoloDecision.reason,
+            evaluationId: yoloDecision.evaluationId,
+            autoModeAudit: yoloDecision.audit,
+          });
+          this.writeDebugPrompt("permission_prompt.resolved", details, {
+            approved: true,
+            resolution: "auto_mode_approved",
+            autoModeReason: yoloDecision.reason,
+            latencyMs: Date.now() - startedAt,
+          });
+          return { approved: true, state: "approved", autoApproved: true };
+        }
+      }
     }
 
     const explicitlyForcedPrompt =
@@ -228,15 +247,15 @@ export class PermissionPrompter implements PermissionPrompterApi {
       return { approved: true, state: "approved", autoApproved: true };
     }
 
-    // Hard rules (rm, ssh, git push, publish, cluster writes) and yoloAskBashPatterns prompt in auto mode too:
-    // auto must never be looser than yolo.
+    // Forced prompts (rm, ssh, git push, publish, cluster writes, yoloAskBashPatterns) go to the model in auto;
+    // only sensitive paths (hardRuleHit) and ineligible requests always prompt.
     const forced = yoloContext.forcePromptInYolo;
     const autoModeDecision = await this.evaluateAutoMode(
       config,
       forced ? { ...details, forcePromptInYolo: true } : details,
       ctx.cwd,
     );
-    if (autoModeDecision.action === "allow" && !forced) {
+    if (autoModeDecision.action === "allow") {
       this.writeReviewEntry("permission_request.auto_mode_approved", {
         ...details,
         autoModeReason: autoModeDecision.reason,
@@ -337,6 +356,7 @@ export class PermissionPrompter implements PermissionPrompterApi {
     config: PermissionSystemExtensionConfig,
     details: PromptPermissionDetails,
     cwd: string | undefined,
+    classifyInYolo = false,
   ): Promise<{
     action: "allow" | "prompt";
     reason: string;
@@ -344,13 +364,11 @@ export class PermissionPrompter implements PermissionPrompterApi {
     audit?: boolean;
   }> {
     const operation = details.autoModeOperation;
-    if (config.mode !== "auto" || !operation) {
+    if ((config.mode !== "auto" && !classifyInYolo) || !operation) {
       return { action: "prompt", reason: "disabled_or_ineligible" };
     }
     // Skips still reach the evaluator so each one is logged; the model is never called for them.
-    const skipReason: EvaluationSkipReason | undefined = !details.autoModeWorkspaceLocal
-      ? "not_workspace_local"
-      : !details.autoModeEligible ? "not_eligible" : undefined;
+    const skipReason: EvaluationSkipReason | undefined = details.autoModeEligible ? undefined : "not_eligible";
     if (this.deps.autoModeEvaluator) {
       return this.deps.autoModeEvaluator.evaluate({
         flow: "permission",
@@ -408,12 +426,9 @@ export class PermissionPrompter implements PermissionPrompterApi {
     }
     return {
       ...decideAutoMode({
-        enabled: config.mode === "auto",
+        enabled: config.mode === "auto" || classifyInYolo,
         permissionState: "ask",
         source: details.source,
-        eligible: details.autoModeEligible === true,
-        forcedPrompt: details.forcePromptInYolo === true,
-        workspaceLocal: details.autoModeWorkspaceLocal === true,
         hardRuleHit: details.autoModeHardRuleHit ?? true,
         sandboxed: false,
         operation,

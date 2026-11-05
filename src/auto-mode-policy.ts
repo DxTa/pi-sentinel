@@ -10,9 +10,6 @@ export interface AutoModePolicyInput {
   enabled: boolean;
   permissionState: PermissionState;
   source: string;
-  eligible: boolean;
-  forcedPrompt: boolean;
-  workspaceLocal: boolean;
   hardRuleHit: boolean;
   sandboxed: boolean;
   operation: string;
@@ -110,17 +107,13 @@ function isValidModelOutput(value: unknown): value is AutoModeHeads {
 
 export function decideAutoMode(input: AutoModePolicyInput): AutoModePolicyDecision {
   if (!input.enabled) return prompt("disabled");
-  if (input.permissionState !== "ask") return prompt("permission_state_not_ask");
+  // A non-explicit allow (builtin or bundled default) is judged like an ask; `deny` never reaches the model.
+  if (input.permissionState !== "ask" && input.permissionState !== "allow") return prompt("permission_state_not_ask");
   if (input.source !== "tool_call") return prompt("source_not_tool_call");
-  if (!input.eligible) return prompt("request_not_eligible");
-  if (input.forcedPrompt) return prompt("forced_prompt");
-  if (!input.workspaceLocal) return prompt("path_not_workspace_local");
   if (input.hardRuleHit) return prompt("sensitive_path");
   const isMcpTool = input.operation === "tool";
   if (isMcpTool && !input.toolName.startsWith(MCP_TOOL_PREFIX)) return prompt("tool_not_mcp");
   const expectedAction = EXPECTED_TOOL_ACTION[input.operation];
-  if (!expectedAction && !isMcpTool) return prompt("unsupported_operation");
-  if (expectedAction === "exec" && input.toolName !== "bash") return prompt("exec_not_bash");
   const heads = input.heads;
   if (!heads || typeof heads !== "object") return prompt("model_unavailable");
   if (!isValidModelOutput(heads)) return prompt("invalid_model_output");
@@ -132,7 +125,8 @@ export function decideAutoMode(input: AutoModePolicyInput): AutoModePolicyDecisi
   if (!(heads.tool_tags["sink:external"] < t.maxToolTag)) return prompt("sink_external");
   const action = argmax(heads.tool_action);
   // MCP tools have no code-known effect: only calls the model reads as read or list may skip the prompt.
-  if (!action || (isMcpTool ? !MCP_ALLOWED_ACTIONS.has(action) : action !== expectedAction)) return prompt("tool_action_mismatch");
+  // Operations without an expected action (network, unknown tools) are judged by the other heads only.
+  if (isMcpTool ? !action || !MCP_ALLOWED_ACTIONS.has(action) : expectedAction !== undefined && action !== expectedAction) return prompt("tool_action_mismatch");
   const toolClass = argmax(heads.tool_class);
   if (!toolClass || RESTRICTED_TOOL_CLASSES.has(toolClass)) return prompt("tool_class_restricted");
   return { action: "allow", reason: "model_allow" };

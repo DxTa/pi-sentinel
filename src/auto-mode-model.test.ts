@@ -7,7 +7,7 @@ import { pathToFileURL } from "node:url";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, expect, it } from "vitest";
-import { createClassifier, ensureModelAssets, outputLogits, type ModelAsset } from "./auto-mode-model";
+import { createClassifier, ensureModelAssets, outputLogits, resolveModelDir, type ModelAsset } from "./auto-mode-model";
 import { AUTO_MODE_LABEL_SCHEMA } from "./auto-mode-label-schema";
 
 const BODY = Buffer.from("lion-warden-weights-0123456789");
@@ -206,3 +206,20 @@ modelSmoke("classifies local input with all seven Lion Warden heads", async () =
     await classifier.close();
   }
 }, 180_000);
+
+describe("resolveModelDir", () => {
+  const home = "/home/u";
+
+  it("prefers PI_SENTINEL_AUTO_MODEL_DIR", () => {
+    expect(resolveModelDir({ PI_SENTINEL_AUTO_MODEL_DIR: " /models " }, home)).toBe("/models");
+  });
+
+  it("falls back to PI_CODING_AGENT_DIR when the override is blank", () => {
+    const env = { PI_SENTINEL_AUTO_MODEL_DIR: "  ", PI_CODING_AGENT_DIR: "/agent" };
+    expect(resolveModelDir(env, home)).toBe("/agent/runtime/pi-sentinel/auto-mode/models");
+  });
+
+  it("defaults to ~/.pi/agent", () => {
+    expect(resolveModelDir({}, home)).toBe("/home/u/.pi/agent/runtime/pi-sentinel/auto-mode/models");
+  });
+});

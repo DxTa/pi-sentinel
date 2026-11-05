@@ -218,6 +218,18 @@ export function shouldRelaxBundledToolDenyInYolo(
   return options.hasExternalDirectoryApproval === true;
 }
 
+const EXPLICIT_ALLOW_ORIGINS: readonly RuleOrigin[] = ["global", "project", "session"];
+
+/** In auto, only an allow the user wrote or approved skips the model; defaults go to the classifier like an ask. */
+export function gateNonExplicitAllowForAuto<T extends { state: PermissionState; origin: RuleOrigin }>(
+  mode: PermissionSystemExtensionConfig["mode"],
+  check: T,
+): T {
+  return mode === "auto" && check.state === "allow" && !EXPLICIT_ALLOW_ORIGINS.includes(check.origin)
+    ? { ...check, state: "ask" }
+    : check;
+}
+
 export function canResolveAskPermissionRequest(
   options: AskPermissionResolutionOptions,
 ): boolean {

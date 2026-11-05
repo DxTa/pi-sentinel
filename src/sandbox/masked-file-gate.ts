@@ -62,6 +62,13 @@ export const DEFAULT_MASKED_PATTERNS = [
   "~/.pypirc",
   "~/.netrc",
   "~/.pi/agent/auth.json",
+  "~/.pi/agent/mcp-auth.json",
+  "~/.pi/agent/mcp.json",
+  "~/.pi/agent/models.json",
+  "~/.pi/agent/search-config.json",
+  "~/.config/github-copilot/**",
+  "~/.config/acli/**",
+  "~/.config/Claude/**",
 ];
 
 /**

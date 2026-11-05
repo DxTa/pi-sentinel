@@ -3,6 +3,7 @@ import { describe, expect, it } from "vitest";
 import * as yoloModeModule from "./yolo-mode";
 import {
   canResolveAskPermissionRequest,
+  gateNonExplicitAllowForAuto,
   matchesGitPushCommand,
   matchesYoloAskBashPattern,
   shouldAutoApproveForwardedPermissionRequest,
@@ -340,5 +341,25 @@ describe("canResolveAskPermissionRequest", () => {
         command: "npm test",
       } as any),
     ).toBe(true);
+  });
+});
+
+describe("gateNonExplicitAllowForAuto", () => {
+  const check = (state: "allow" | "ask" | "deny", origin: string) => ({ state, origin }) as never as { state: "allow" | "ask" | "deny"; origin: any };
+
+  it("turns builtin, bundled and agent allows into asks in auto only", () => {
+    for (const origin of ["builtin", "bundled", "baseline", "agent", "security-profile"]) {
+      expect(gateNonExplicitAllowForAuto("auto", check("allow", origin)).state, origin).toBe("ask");
+      expect(gateNonExplicitAllowForAuto("yolo", check("allow", origin)).state, origin).toBe("allow");
+      expect(gateNonExplicitAllowForAuto("manual", check("allow", origin)).state, origin).toBe("allow");
+    }
+  });
+
+  it("keeps global, project and session allows and every ask or deny", () => {
+    for (const origin of ["global", "project", "session"]) {
+      expect(gateNonExplicitAllowForAuto("auto", check("allow", origin)).state, origin).toBe("allow");
+    }
+    expect(gateNonExplicitAllowForAuto("auto", check("ask", "builtin")).state).toBe("ask");
+    expect(gateNonExplicitAllowForAuto("auto", check("deny", "builtin")).state).toBe("deny");
   });
 });

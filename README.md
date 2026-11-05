@@ -40,8 +40,8 @@ That's it: the defaults work as they are. `auto` mode needs Apple silicon on mac
 | Mode | Behavior | Use for |
 | --- | --- | --- |
 | `manual` | Prompts for every gated request. | Unfamiliar repositories. |
-| `auto` (default) | Local classifier approves eligible workspace reads, writes, edits, and sandboxed Bash. Uncertain, external, `.env*`, and network requests still prompt. | Daily work. |
-| `yolo` | Approves everything except [hard rules](docs/reference.md#yolo-mode-hard-rules) (system paths, `rm`, `ssh`, `git push`, cluster changes). | Throwaway environments only. |
+| `auto` (default) | Your own `allow` rules and workspace reads need no model. The local classifier judges everything else: workspace and external writes, edits, Bash, MCP, and forced prompts such as `rm` or `git push`. Sensitive paths (system roots, credential folders, shell startup files, `.pi/` config) and `.env*` selectors always prompt, as do model doubt, unavailability, and errors. | Daily work. |
+| `yolo` | Approves workspace calls, pathless tools, and non-sensitive external reads. The classifier judges external writes and Bash; if it is unavailable they prompt. [Hard rules](docs/reference.md#yolo-mode-hard-rules) (system paths, `rm`, `ssh`, `git push`, cluster changes) always prompt and never reach the model. | Throwaway environments only. |
 
 ```text
 /sentinel mode manual           # save where the mode is currently set
@@ -52,7 +52,7 @@ That's it: the defaults work as they are. `auto` mode needs Apple silicon on mac
 PI_SENTINEL_MODE=manual pi      # this process only
 ```
 
-On first start, `auto` downloads a ~320 MB model from Hugging Face (CPU only, hash-verified). Until it is ready, or if it fails, requests prompt as in `manual`. Set `"mode": "manual"` to skip the download.
+An npm install runs a best-effort model prefetch (`postinstall`; `pi install git:...` skips lifecycle scripts, so there the first `auto` or `yolo` start downloads it in the background): it downloads the ~320 MB model from Hugging Face (CPU only, hash-verified) and never fails the install. If it was skipped or failed, the first `auto` start downloads it. Until the model is ready, requests prompt as in `manual`. Set `PI_SENTINEL_SKIP_MODEL_DOWNLOAD=1` to skip the install-time download, or `"mode": "manual"` to skip the model entirely.
 
 ## Configuration
 

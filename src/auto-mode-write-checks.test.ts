@@ -51,3 +51,9 @@ describe("writeNeedsPrompt on the calibration set", () => {
     expect(rows.filter((r) => ids.includes(r.id) && !writeNeedsPrompt(r.path, r.content)).map((r) => r.id)).toEqual([]);
   });
 });
+
+describe("agent configuration writes", () => {
+  it.each([".pi/permissions.json", "/work/repo/.pi/settings.json", "/Users/a/.pi/agent/permissions.json"])(
+    "always prompts for %s", (path) => expect(writeNeedsPrompt(path, "{}")).toBe(true));
+  it("does not flag other files", () => expect(writeNeedsPrompt("src/pi.json", "{}")).toBe(false));
+});

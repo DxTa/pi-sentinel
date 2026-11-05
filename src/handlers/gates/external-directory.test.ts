@@ -140,12 +140,12 @@ describe("describeExternalDirectoryGate protected credential reads", () => {
     ).toMatchObject({ action: "allow" });
   });
 
-  it.skipIf(!existsSync(path.join(homedir(), ".config"))).each(["ask", "deny"] as const)(
+  it.skipIf(!existsSync(path.join(homedir(), ".ssh"))).each(["ask", "deny"] as const)(
     "honors a canonical-target %s through a workspace symlink",
     (state) => {
       const workspace = mkdtempSync(path.join(tmpdir(), "pi-external-credential-alias-"));
       const alias = path.join(workspace, "config-link");
-      const target = path.join(homedir(), ".config");
+      const target = path.join(homedir(), ".ssh");
       symlinkSync(target, alias, "dir");
       const canonicalTarget = realpathSync.native(target);
       const checkedPaths: string[] = [];
@@ -254,5 +254,25 @@ describe("describeExternalDirectoryGate clipboard temp files", () => {
     } finally {
       rmSync(lookalike, { force: true });
     }
+  });
+});
+
+describe("describeExternalDirectoryGate agent directory reads", () => {
+  it("auto-allows read of a file under the agent directory", () => {
+    expect(
+      describeExternalDirectoryGate(
+        { toolName: "read", agentName: null, input: { path: "~/.pi/agent/settings.json" }, toolCallId: "call-agent", cwd },
+        [],
+      ),
+    ).toMatchObject({ action: "allow" });
+  });
+
+  it("still prompts for write under the agent directory", () => {
+    expect(
+      describeExternalDirectoryGate(
+        { toolName: "write", agentName: null, input: { path: "~/.pi/agent/settings.json" }, toolCallId: "call-agent-w", cwd },
+        [],
+      ),
+    ).not.toMatchObject({ action: "allow" });
   });
 });

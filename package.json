@@ -22,6 +22,7 @@
     "LICENSE",
     "SECURITY.md",
     "bin/patch-sandbox-runtime.mjs",
+    "bin/prefetch-model.mjs",
     "patches"
   ],
   "keywords": [
@@ -83,7 +84,7 @@
     "check": "tsc --noEmit",
     "test": "vitest run",
     "test:watch": "vitest",
-    "postinstall": "node bin/patch-sandbox-runtime.mjs",
+    "postinstall": "node bin/patch-sandbox-runtime.mjs && node --experimental-strip-types bin/prefetch-model.mjs",
     "calibrate": "vite-node scripts/calibrate.ts --"
   }
 }

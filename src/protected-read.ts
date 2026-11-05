@@ -26,7 +26,12 @@ function resolveProtectedReadPath(pathValue: string, cwd: string): string | null
 
 /** Credential directories whose reads are allowed but always fully redacted. */
 function protectedCredentialDirs(canonicalHome: string): string[] {
-  return [join(canonicalHome, ".ssh"), join(canonicalHome, ".config")];
+  return [join(canonicalHome, ".ssh")];
+}
+
+function lexicalPath(pathValue: string, cwd: string): string {
+  const home = homedir();
+  return resolve(cwd, pathValue.replace(/\$\{HOME\}|\$HOME/g, home).replace(/^~(?=\/|$)/, home));
 }
 
 export function isProtectedCredentialReadPath(pathValue: string, cwd: string): boolean {
@@ -52,8 +57,22 @@ export function isProtectedCredentialReadPath(pathValue: string, cwd: string): b
   if (!withinCredentialScope) return false;
 
   const dirs = protectedCredentialDirs(canonicalHome);
+  // The lexical spelling also counts: a symlinked file (dotfiles) resolves outside the `~/...` pattern.
   return dirs.some((dir) => isPathWithinDirectory(canonicalPath, dir))
-    || isPathMasked(canonicalPath, DEFAULT_MASKED_PATTERNS);
+    || isPathMasked(canonicalPath, DEFAULT_MASKED_PATTERNS)
+    || isPathMasked(lexicalPath(pathValue, cwd), DEFAULT_MASKED_PATTERNS);
+}
+
+/** Writes keep the whole home config tree protected, while reads of ordinary files there are allowed. */
+export function isProtectedCredentialWritePath(pathValue: string, cwd: string): boolean {
+  if (isProtectedCredentialReadPath(pathValue, cwd)) return true;
+  const canonicalPath = resolveProtectedReadPath(pathValue, cwd);
+  if (!canonicalPath) return false;
+  try {
+    return isPathWithinDirectory(canonicalPath, join(realpathSync.native(homedir()), ".config"));
+  } catch {
+    return false;
+  }
 }
 
 /** A target is masked when it matches a pattern or is the root of a masked directory (`dir/**`). */
@@ -134,7 +153,7 @@ export async function protectedBashReadPaths(command: string, cwd: string): Prom
   const tokens = await extractTokensForPathRules(command);
   const embeddedMaskedPaths = detectMaskedFileAccess(
     command,
-    { maskedPaths: [...DEFAULT_MASKED_PATTERNS, "~/.config/**"] },
+    { maskedPaths: DEFAULT_MASKED_PATTERNS },
     cwd,
     { includeMissing: true },
   );
@@ -158,4 +177,14 @@ export async function protectedBashReadPaths(command: string, cwd: string): Prom
     }
   }
   return [...paths];
+}
+
+/** Reads under the agent config directory are allowed in every mode; masked secret files there stay protected. */
+export function isAgentDirPath(pathValue: string, cwd: string): boolean {
+  // A lexical `..` after a symlink steps out of the link's target, so reject it outright.
+  if (pathValue.split(/[\\/]/).includes("..")) return false;
+  const canonicalPath = resolveProtectedReadPath(pathValue, cwd);
+  const rawAgentDir = join(homedir(), ["", "pi"].join("."), "agent");
+  const agentDirs = [rawAgentDir, resolveProtectedReadPath(rawAgentDir, cwd)];
+  return canonicalPath !== null && agentDirs.some((dir) => dir !== null && isPathWithinDirectory(canonicalPath, dir));
 }

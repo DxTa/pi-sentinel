@@ -52,6 +52,7 @@ import {
 import { isUnixSocketActive, spawnDetachedAutoModeWorker, waitForWorkerStartup } from "./auto-mode-startup";
 import { nodeRuntimePath } from "./host-runtime";
 import { AUTO_MODE_BUILD_ID } from "./auto-mode-build";
+import { resolveModelDir } from "./auto-mode-model";
 import { PromptWaitTracker } from "./prompt-state";
 import { getHardBlockedBashMutationPaths } from "./handlers/gates/bash-external-directory.js";
 import { extractAllWriteTargetsFromBashCommand, extractExternalPathsFromBashCommand, extractExternalWritePathsFromBashCommand } from "./handlers/gates/bash-path-extractor.js";
@@ -118,7 +119,7 @@ import {
   readDotenvSourceWithinLimit,
 } from "./env-mask";
 import { canAutoGrantOverride, takeDenyOverride } from "./deny-override";
-import { isProtectedCredentialReadPath, prepareApprovedTarget, protectedBashReadPaths, protectedWriteRefusal } from "./protected-read";
+import { isProtectedCredentialReadPath, isProtectedCredentialWritePath, prepareApprovedTarget, protectedBashReadPaths, protectedWriteRefusal } from "./protected-read";
 
 import { defaultSrtHelperPath, defaultSrtStatus } from "./sandbox/srt-status.js";
 import { diagnoseLinuxSandbox } from "./sandbox/linux-sandbox-doctor.js";
@@ -214,8 +215,7 @@ async function startAutoModeWorker(
     return { startupSignal: Promise.resolve() };
   }
   const workerPath = join(EXTENSION_ROOT, "src", "auto-mode-worker-main.ts");
-  const modelDir = process.env.PI_SENTINEL_AUTO_MODEL_DIR?.trim()
-    || join(agentDir, "runtime", "pi-sentinel", "auto-mode", "models");
+  const modelDir = resolveModelDir();
   const args = [
     "--experimental-strip-types",
     workerPath,
@@ -817,7 +817,9 @@ export default function piPermissionSystemExtension(pi: ExtensionAPI): void {
 
   refreshExtensionConfig(runtime);
   let autoModeWorker: AutoModeWorkerHandle | undefined;
-  let autoModeWorkerStart: Promise<AutoModeWorkerHandle> | undefined = runtime.config.mode === "auto"
+  // Yolo uses the classifier for external writes and exec, so it starts the worker like auto does.
+  const usesClassifier = (): boolean => runtime.config.mode === "auto" || runtime.config.mode === "yolo";
+  let autoModeWorkerStart: Promise<AutoModeWorkerHandle> | undefined = usesClassifier()
     ? startAutoModeWorker(
       autoModeSocketPath,
       runtime.agentDir,
@@ -885,7 +887,7 @@ export default function piPermissionSystemExtension(pi: ExtensionAPI): void {
   };
   let autoModeReadiness: Promise<void> | undefined;
   const ensureAutoModeWorkerReady = async (): Promise<void> => {
-    if (runtime.config.mode !== "auto") return;
+    if (!usesClassifier()) return;
     if (autoModeReadiness) return autoModeReadiness;
 
     const readiness = (async () => {
@@ -1915,7 +1917,7 @@ export default function piPermissionSystemExtension(pi: ExtensionAPI): void {
           const maskedPatterns = [...DEFAULT_MASKED_PATTERNS, ...(activeProfile.maskedPaths ?? [])];
           const protectedWriteTargets: string[] = [];
           for (const target of (await extractExternalWritePathsFromBashCommand(command, ctx.cwd)).map((path) => canonicalPath(path))) {
-            if (!isProtectedCredentialReadPath(target, ctx.cwd)) continue;
+            if (!isProtectedCredentialWritePath(target, ctx.cwd)) continue;
             const refusal = protectedWriteRefusal(target, maskedPatterns);
             if (refusal) return { block: true, reason: `Sandbox: protected write target ${target} ${refusal}; command blocked.` };
             protectedWriteTargets.push(target);
@@ -1941,7 +1943,7 @@ export default function piPermissionSystemExtension(pi: ExtensionAPI): void {
             {
               mode: "rw" as const,
               protectedWrite: false,
-              paths: externalWritePaths.filter((entry) => !isProtectedCredentialReadPath(entry.path, ctx.cwd)),
+              paths: externalWritePaths.filter((entry) => !isProtectedCredentialWritePath(entry.path, ctx.cwd)),
             },
             {
               mode: "rw" as const,

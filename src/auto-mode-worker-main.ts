@@ -1,7 +1,7 @@
 import { parseArgs } from "node:util";
 import { resolve } from "node:path";
 import { fileURLToPath } from "node:url";
-import { ensureModelAssets, createClassifier, loadInferenceRuntime } from "./auto-mode-model.ts";
+import { ensureModelAssets, createClassifier, loadInferenceRuntime, type AutoModeClassifier } from "./auto-mode-model.ts";
 import { AUTO_MODE_BUILD_ID } from "./auto-mode-build.ts";
 import { AutoModeWorkerServer } from "./auto-mode-worker.ts";
 
@@ -23,19 +23,30 @@ export function parseAutoModeWorkerArgs(argv: readonly string[]) {
   };
 }
 
-async function startWorker(argv: readonly string[]): Promise<void> {
+export async function startWorker(argv: readonly string[]): Promise<AutoModeWorkerServer> {
   const { socketPath, modelDir } = parseAutoModeWorkerArgs(argv);
   // Fail before the ~320 MB model download when the runtime cannot load here.
   await loadInferenceRuntime();
-  await ensureModelAssets({ dir: modelDir });
-  const classifier = await createClassifier(modelDir);
+  // The socket answers during the download; requests fail fast (prompt) until the model is ready.
+  let classifier: AutoModeClassifier | undefined;
+  const modelReady = ensureModelAssets({ dir: modelDir }).then(async () => {
+    classifier = await createClassifier(modelDir);
+  });
+  // A failed download ends the worker, so the next session starts a fresh one and retries.
+  modelReady.catch((error: unknown) => {
+    console.error(error);
+    process.exit(1);
+  });
   const server = new AutoModeWorkerServer({
     socketPath,
     buildId: AUTO_MODE_BUILD_ID,
     provider: {
       ready: async () => {},
-      classify: (text) => classifier.classify(text),
-      close: () => classifier.close(),
+      classify: (text) => {
+        if (!classifier) throw new Error("model_loading");
+        return classifier.classify(text);
+      },
+      close: () => classifier?.close(),
     },
   });
   try {
@@ -44,6 +55,7 @@ async function startWorker(argv: readonly string[]): Promise<void> {
     await server.close();
     throw error;
   }
+  return server;
 }
 
 const scriptPath = process.argv[1];

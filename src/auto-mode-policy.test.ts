@@ -30,9 +30,6 @@ function input(overrides: Partial<AutoModePolicyInput> = {}): AutoModePolicyInpu
     enabled: true,
     permissionState: "ask",
     source: "tool_call",
-    eligible: true,
-    forcedPrompt: false,
-    workspaceLocal: true,
     hardRuleHit: false,
     sandboxed: false,
     operation: "read",
@@ -61,11 +58,7 @@ describe("decideAutoMode", () => {
     ["disabled", { enabled: false }],
     ["permission_state_not_ask", { permissionState: "deny" }],
     ["source_not_tool_call", { source: "bash" }],
-    ["request_not_eligible", { eligible: false }],
-    ["forced_prompt", { forcedPrompt: true }],
-    ["path_not_workspace_local", { workspaceLocal: false }],
     ["sensitive_path", { hardRuleHit: true }],
-    ["unsupported_operation", { operation: "network" }],
     ["model_unavailable", { heads: undefined }],
     ["threat_not_benign", { heads: heads({ threat: oneHot(MODEL_LABELS.threat, "secrets_access") }) }],
     ["threat_benign_low_confidence", { heads: heads({ threat: distribution(MODEL_LABELS.threat, { benign: 0.7, secrets_access: 0.3 }) }) }],
@@ -100,13 +93,13 @@ describe("decideAutoMode", () => {
     expect(decideAutoMode(input({ operation: "exec", toolName: "bash", sandboxed: false })).reason).not.toBe("not_sandboxed");
   });
 
-  it("prompts when exec is not from Bash", () => {
-    expect(decideAutoMode(input({
-      operation: "exec",
-      toolName: "shell",
-      sandboxed: true,
-      heads: heads({}, "exec"),
-    }))).toEqual({ action: "prompt", reason: "exec_not_bash" });
+  it("lets the model judge exec from any tool and operations without an expected action", () => {
+    expect(decideAutoMode(input({ operation: "exec", toolName: "shell", heads: heads({}, "exec") })).action).toBe("allow");
+    expect(decideAutoMode(input({ operation: "network", toolName: "fetch" })).action).toBe("allow");
+  });
+
+  it("judges a non-explicit allow state like ask", () => {
+    expect(decideAutoMode(input({ permissionState: "allow" })).action).toBe("allow");
   });
 
   it.each([

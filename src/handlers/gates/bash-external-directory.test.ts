@@ -69,7 +69,7 @@ describe("describeBashExternalDirectoryGate", () => {
   });
 
   it("honors exact denies for parenthetical paths embedded in interpreter source", async () => {
-    const credentialPath = path.join(homedir(), ".config", "app", "settings(backup).json");
+    const credentialPath = path.join(homedir(), ".config", "gcloud", "settings(backup).json");
     const command = `python3 -c "print(open('${credentialPath}').read())"`;
     const checkedPaths: string[] = [];
     const result = await describeBashExternalDirectoryGate(
@@ -335,5 +335,26 @@ describe("describeBashExternalDirectoryGate clipboard temp files", () => {
     } finally {
       rmSync(clipboardPath, { force: true });
     }
+  });
+});
+
+describe("describeBashExternalDirectoryGate agent directory reads", () => {
+  const context = (command: string) => ({
+    toolName: "bash",
+    agentName: null,
+    input: { command },
+    toolCallId: "call-agent",
+    cwd,
+    sandboxed: true,
+  });
+
+  it.each(["cat ~/.pi/agent/settings.json", "cat ~/.pi/agent/settings.json | head -5"])("auto-allows %s", async (command) => {
+    const result = await describeBashExternalDirectoryGate(context(command), () => makeCheckResult(), () => []);
+    expect(result).toMatchObject({ action: "allow" });
+  });
+
+  it.each(["echo x > ~/.pi/agent/settings.json", "cp /etc/hosts ~/.pi/agent/settings.json"])("does not auto-allow %s", async (command) => {
+    const result = await describeBashExternalDirectoryGate(context(command), () => makeCheckResult(), () => []);
+    expect(result).not.toMatchObject({ action: "allow" });
   });
 });

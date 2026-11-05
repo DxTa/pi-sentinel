@@ -8,7 +8,7 @@ vi.mock("./sandbox/sandbox-visible-paths.js", async (importOriginal) => {
     canonicalPath: (path: string) => canonicalOverrides.get(path) ?? actual.canonicalPath(path),
   };
 });
-import { isSensitivePath } from "./auto-mode-sensitive-paths.js";
+import { isProtectedWriteTarget, isSensitivePath } from "./auto-mode-sensitive-paths.js";
 import { canonicalPath } from "./sandbox/sandbox-visible-paths.js";
 
 const HOME = "/Users/alice";
@@ -67,4 +67,11 @@ describe("isSensitivePath", () => {
   it("resolves traversal before matching", () => {
     expect(isSensitivePath("/Users/alice/dev/../../../etc/passwd", HOME)).toBe(true);
   });
+});
+
+describe("isProtectedWriteTarget", () => {
+  it.each(["/Users/alice/.ssh/authorized_keys", "/Users/alice/.aws/credentials", "/Users/alice/.zshrc", "/Users/alice/.bashrc", "/Users/alice/.zprofile", "/etc/hosts"])(
+    "protects %s", (path) => expect(isProtectedWriteTarget(path, HOME)).toBe(true));
+  it.each(["/Users/alice/Documents/a.txt", "/Users/alice/dev/app/.zshrc", "/Users/alice/dev/x.ts"])(
+    "leaves %s writable", (path) => expect(isProtectedWriteTarget(path, HOME)).toBe(false));
 });
