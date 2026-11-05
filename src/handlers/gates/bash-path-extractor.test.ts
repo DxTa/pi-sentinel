@@ -4,9 +4,11 @@ import { tmpdir } from "node:os";
 import { afterEach, describe, expect, it } from "vitest";
 
 import {
+  extractAllWriteTargetsFromBashCommand,
   extractExternalPathsFromBashCommand,
   extractExternalWritePathsFromBashCommand,
   extractTokensForPathRules,
+  UnverifiableBashCommandError,
 } from "./bash-path-extractor";
 
 const FALLBACK_ENV = "PI_PERMISSION_SYSTEM_DISABLE_TREE_SITTER";
@@ -100,5 +102,29 @@ describe("external Bash write path extraction", () => {
     await expect(
       extractExternalWritePathsFromBashCommand("echo value > " + output, path.join(tmpdir(), "project")),
     ).resolves.toEqual([]);
+  });
+});
+
+describe("extractAllWriteTargetsFromBashCommand", () => {
+  const cwd = path.join(tmpdir(), "project");
+
+  it("returns redirect, copy, move, tee, touch, link, and dd write targets", async () => {
+    const targets = await extractAllWriteTargetsFromBashCommand(
+      "cat secret > a.txt; cp secret b.txt; mv secret c.txt; cat secret | tee d.txt; touch e.txt; ln -s secret f.txt; dd if=secret of=g.txt",
+      cwd,
+    );
+
+    expect(targets.map((target) => path.basename(target))).toEqual(expect.arrayContaining([
+      "a.txt", "b.txt", "c.txt", "d.txt", "e.txt", "f.txt", "g.txt",
+    ]));
+  });
+
+  it("returns no targets for read-only commands", async () => {
+    await expect(extractAllWriteTargetsFromBashCommand("cat secret 2>&1 | grep token", cwd)).resolves.toEqual([]);
+  });
+
+  it("rejects commands it cannot parse so credential reads fail closed", async () => {
+    await expect(extractAllWriteTargetsFromBashCommand('cat secret "unterminated', cwd))
+      .rejects.toBeInstanceOf(UnverifiableBashCommandError);
   });
 });

@@ -54,7 +54,7 @@ import { nodeRuntimePath } from "./host-runtime";
 import { AUTO_MODE_BUILD_ID } from "./auto-mode-build";
 import { PromptWaitTracker } from "./prompt-state";
 import { getHardBlockedBashMutationPaths } from "./handlers/gates/bash-external-directory.js";
-import { extractExternalPathsFromBashCommand, extractExternalWritePathsFromBashCommand } from "./handlers/gates/bash-path-extractor.js";
+import { extractAllWriteTargetsFromBashCommand, extractExternalPathsFromBashCommand, extractExternalWritePathsFromBashCommand } from "./handlers/gates/bash-path-extractor.js";
 import { canonicalPath } from "./sandbox/sandbox-visible-paths.js";
 import { isReadOnlyBashChain, isReadOnlyBashDiagnostic } from "./bash-command-safety";
 import {
@@ -690,6 +690,21 @@ async function resolveBashSandboxAccess(
   const sandboxed = config.enabled
     && config.backend === "srt"
     && (forceSrt || !bypassed);
+
+  // Redaction hides stdout only; a file written from a credential read would escape it.
+  const credentialReads = protectedReadPaths.filter((path) => isProtectedCredentialReadPath(path, cwd));
+  if (
+    credentialReads.length > 0
+    && (await extractAllWriteTargetsFromBashCommand(command, cwd)).some((path) => path !== "/dev/null")
+  ) {
+    return {
+      protectedReadPaths,
+      sandboxed,
+      forceSrt,
+      dockerRequiresSrt,
+      blockReason: "Sandbox: command reads a protected credential and writes files; command blocked.",
+    };
+  }
 
   if (dockerRequiresSrt && hasDockerEndpointOverride(command)) {
     return {

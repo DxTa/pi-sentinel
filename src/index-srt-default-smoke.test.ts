@@ -676,6 +676,86 @@ describe("piPermissionSystemExtension SRT default smoke", () => {
   );
 
   it.each(["manual", "yolo", "auto"] as const)(
+    "blocks a protected credential read that also writes a file in %s mode",
+    async (mode) => {
+      const agentDir = await makeTempDir("pi-permission-agent-");
+      const projectDir = await makeTempDir("pi-permission-project-");
+      process.env.PI_CODING_AGENT_DIR = agentDir;
+      await writeExtensionConfig(agentDir, {
+        mode,
+        permission: { bash: { "*": "allow" } },
+        sandbox: {
+          enabled: true,
+          backend: "srt",
+          defaultProfile: "offline-dev",
+          profiles: { "offline-dev": { network: false, env: { allow: [], deny: [] }, maskedPaths: [] } },
+        },
+      });
+
+      const pi = createFakePi();
+      piPermissionSystemExtension(pi as never);
+      const context = createContext(projectDir);
+      const authPath = path.join(homedir(), ".pi", "agent", "auth.json");
+      const copyEvent = {
+        toolName: "bash",
+        toolCallId: "t-protected-copy",
+        input: { command: `cat ${authPath} > ${path.join(projectDir, "copy.txt")}` },
+      };
+
+      expect(await pi.handlers.get("tool_call")?.(copyEvent, context as never)).toMatchObject({
+        block: true,
+        reason: expect.stringContaining("writes files"),
+      });
+      expect(await pi.handlers.get("tool_call")?.(
+        { toolName: "bash", toolCallId: "t-protected-plain", input: { command: `cat ${authPath}` } },
+        context as never,
+      )).toBeUndefined();
+      expect(await pi.handlers.get("tool_call")?.(
+        { toolName: "bash", toolCallId: "t-protected-devnull", input: { command: `cat ${authPath} > /dev/null` } },
+        context as never,
+      )).toBeUndefined();
+    },
+  );
+
+  it.each(["manual", "yolo", "auto"] as const)(
+    "blocks credential reads that copy, tee, dd, or cannot be parsed in %s mode",
+    async (mode) => {
+      const agentDir = await makeTempDir("pi-permission-agent-");
+      const projectDir = await makeTempDir("pi-permission-project-");
+      process.env.PI_CODING_AGENT_DIR = agentDir;
+      await writeExtensionConfig(agentDir, {
+        mode,
+        permission: { bash: { "*": "allow" } },
+        sandbox: {
+          enabled: true,
+          backend: "srt",
+          defaultProfile: "offline-dev",
+          profiles: { "offline-dev": { network: false, env: { allow: [], deny: [] }, maskedPaths: [] } },
+        },
+      });
+
+      const pi = createFakePi();
+      piPermissionSystemExtension(pi as never);
+      const context = createContext(projectDir);
+      const authPath = path.join(homedir(), ".pi", "agent", "auth.json");
+      const copyPath = path.join(projectDir, "copy.txt");
+      const commands = [
+        `cp ${authPath} ${copyPath}`,
+        `cat ${authPath} | tee ${copyPath}`,
+        `dd if=${authPath} of=${copyPath}`,
+        `cat ${authPath} "unterminated`,
+      ];
+
+      for (const command of commands) {
+        expect(await pi.handlers.get("tool_call")?.(
+          { toolName: "bash", toolCallId: "t-protected-write-" + command.length, input: { command } },
+          context as never,
+        ), command).toMatchObject({ block: true });
+      }
+    },
+  );
+
+  it.each(["manual", "yolo", "auto"] as const)(
     "blocks protected credential reads outside SRT in %s mode",
     async (mode) => {
       const agentDir = await makeTempDir("pi-permission-agent-");

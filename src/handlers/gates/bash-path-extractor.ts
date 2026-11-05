@@ -476,6 +476,34 @@ function collectWriteRedirectTokens(node: TSNode, tokens: string[]): void {
   }
 }
 
+const WRITE_COMMAND_NAMES = new Set(["cp", "mv", "install", "ln", "touch", "tee", "dd"]);
+
+/** Operands of write commands. Every operand counts, copy sources included, so the check fails closed. */
+function collectWriteCommandTokens(node: TSNode, tokens: string[]): void {
+  if (SKIP_SUBTREE_TYPES.has(node.type)) return;
+
+  if (node.type === "command") {
+    const name = extractCommandName(node);
+    if (name !== undefined && WRITE_COMMAND_NAMES.has(name)) {
+      for (let index = 0; index < node.childCount; index += 1) {
+        const child = node.child(index);
+        if (!child || child.type === "command_name" || child.type === "file_redirect") continue;
+        const text = resolveNodeText(child);
+        if (name === "dd") {
+          if (text.startsWith("of=")) tokens.push(text.slice("of=".length));
+        } else if (!text.startsWith("-")) {
+          tokens.push(text);
+        }
+      }
+    }
+  }
+
+  for (let index = 0; index < node.childCount; index += 1) {
+    const child = node.child(index);
+    if (child) collectWriteCommandTokens(child, tokens);
+  }
+}
+
 const SHELL_CONTROL_OPERATORS = new Set([";", "&&", "||", "|", "(", ")"]);
 const SHELL_REDIRECT_OPERATOR_PATTERN = /^(?:\d+)?(?:>>?|<<?|<>?)$/;
 const SHELL_ASSIGNMENT_PATTERN = /^[A-Za-z_][A-Za-z0-9_]*=.*/;
@@ -1080,32 +1108,63 @@ export async function extractTokensForPathRules(
 
 
 /** Extract literal external file targets from parsed output redirections only. */
-export async function extractExternalWritePathsFromBashCommand(
-  command: string,
-  cwd: string,
-): Promise<string[]> {
-  if (shouldForceTokenizerFallback()) return [];
+export async function extractExternalWritePathsFromBashCommand(command: string, cwd: string): Promise<string[]> {
+  const tokens = await parseWriteTokens(command);
+  if (!tokens) return [];
+  return normalizeWriteTokens(tokens.redirects, cwd, (candidate) => isPathOutsideWorkingDirectory(candidate, cwd));
+}
+
+export class UnverifiableBashCommandError extends Error {
+  constructor() {
+    super("Unable to verify Bash write targets.");
+  }
+}
+
+/** Every write target, inside or outside cwd. Throws when the command cannot be parsed, so callers fail closed. */
+export async function extractAllWriteTargetsFromBashCommand(command: string, cwd: string): Promise<string[]> {
+  const tokens = await parseWriteTokens(command);
+  if (!tokens) throw new UnverifiableBashCommandError();
+  const paths = new Set<string>();
+  for (const token of [...tokens.redirects, ...tokens.commands]) {
+    // A bare digit is a descriptor duplicate (`2>&1`), not a file. Relative names count: the check covers in-project writes.
+    if (!token || /^\d+$/.test(token)) continue;
+    paths.add(normalizePathForComparison(token, cwd));
+  }
+  return [...paths];
+}
+
+type WriteTokens = { redirects: string[]; commands: string[] };
+
+/** Null when the command cannot be parsed; each caller decides whether that fails open or closed. */
+async function parseWriteTokens(command: string): Promise<WriteTokens | null> {
+  if (shouldForceTokenizerFallback()) return null;
 
   let tree: ReturnType<TSParser["parse"]> | null = null;
   try {
     const parser = await getParser();
     tree = parser.parse(command);
-    if (!tree || tree.rootNode.hasError !== false) return [];
+    if (!tree || tree.rootNode.hasError !== false) return null;
 
-    const tokens: string[] = [];
-    collectWriteRedirectTokens(tree.rootNode, tokens);
-    const paths = new Set<string>();
-    for (const token of tokens) {
-      const candidate = classifyTokenAsPathCandidate(token);
-      if (!candidate || !isPathOutsideWorkingDirectory(candidate, cwd)) continue;
-      const normalized = normalizePathForComparison(candidate, cwd);
-      if (normalized) paths.add(normalized);
-    }
-    return [...paths];
+    const redirects: string[] = [];
+    collectWriteRedirectTokens(tree.rootNode, redirects);
+    const commands: string[] = [];
+    collectWriteCommandTokens(tree.rootNode, commands);
+    return { redirects, commands };
   } catch (error) {
     if (error instanceof UnsupportedWriteRedirectError) throw error;
-    return [];
+    return null;
   } finally {
     tree?.delete();
   }
+}
+
+function normalizeWriteTokens(tokens: string[], cwd: string, keep: (candidate: string) => boolean): string[] {
+  const paths = new Set<string>();
+  for (const token of tokens) {
+    const candidate = classifyTokenAsPathCandidate(token);
+    if (!candidate || !keep(candidate)) continue;
+    const normalized = normalizePathForComparison(candidate, cwd);
+    if (normalized) paths.add(normalized);
+  }
+  return [...paths];
 }
