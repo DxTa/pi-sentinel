@@ -218,3 +218,11 @@ describe("isProtectedCredentialWritePath", () => {
     expect(isProtectedCredentialWritePath(join(homedir(), ".ssh", "id_rsa"), cwd)).toBe(true);
   });
 });
+
+describe("docker config directory", () => {
+  it("keeps credentials masked but lets context metadata through", () => {
+    expect(isProtectedCredentialReadPath("~/.docker/config.json", cwd)).toBe(true);
+    expect(isProtectedCredentialReadPath("~/.docker/contexts/tls/ctx/key.pem", cwd)).toBe(true);
+    expect(isProtectedCredentialReadPath("~/.docker/contexts/meta/abc/meta.json", cwd)).toBe(false);
+  });
+});

@@ -44,7 +44,9 @@ export const DEFAULT_MASKED_PATTERNS = [
   "~/.aws/**",
   "~/.gnupg/**",
   "~/.kube/**",
-  "~/.docker/**",
+  // Context metadata (~/.docker/contexts/meta) only names endpoints; the CLI cannot start without it.
+  "~/.docker/config.json",
+  "~/.docker/contexts/tls/**",
   "~/.git-credentials",
   "~/.config/git/credentials",
   "~/.config/gh/hosts.yml",
