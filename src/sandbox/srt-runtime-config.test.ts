@@ -102,7 +102,7 @@ describe("buildSrtRuntimeConfig", () => {
     ).toThrowError("SRT helper path does not yet support env deny pattern parity.");
   });
 
-  it("restricts macOS Docker Unix-socket access to the validated socket", () => {
+  it("allows all Unix sockets on macOS and passes the validated Docker socket", () => {
     vi.spyOn(process, "platform", "get").mockReturnValue("darwin");
     vi.spyOn(dockerSocket, "resolveDockerSocketPaths").mockReturnValue(["/var/run/docker.sock"]);
 
@@ -110,7 +110,7 @@ describe("buildSrtRuntimeConfig", () => {
 
     expect(config.dockerHost).toBe("unix:///var/run/docker.sock");
     expect(config.filesystem.allowRead).toContain("/var/run/docker.sock");
-    expect(config.network?.allowAllUnixSockets).toBeUndefined();
+    expect(config.network?.allowAllUnixSockets).toBe(true);
     expect(config.network?.allowUnixSockets).toEqual(["/var/run/docker.sock"]);
   });
 
@@ -137,11 +137,12 @@ describe("buildSrtRuntimeConfig", () => {
     expect(buildSrtRuntimeConfig(makeSpec()).network).not.toHaveProperty("allowAllUnixSockets");
   });
 
-  it("fails closed when Docker socket resolution returns no socket", () => {
+  it("runs the command without a socket grant when no socket exists", () => {
     vi.spyOn(dockerSocket, "resolveDockerSocketPaths").mockReturnValue([]);
 
-    expect(() =>
-      buildSrtRuntimeConfig(makeSpec({ command: "docker info", allowDocker: true })),
-    ).toThrowError("Docker socket unavailable; command blocked.");
+    const config = buildSrtRuntimeConfig(makeSpec({ command: "docker info", allowDocker: true }));
+
+    expect(config.dockerHost).toBeUndefined();
+    expect(config.network).not.toHaveProperty("allowUnixSockets");
   });
 });

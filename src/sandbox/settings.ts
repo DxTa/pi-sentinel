@@ -182,23 +182,6 @@ export function normalizeEnvPolicy(raw: unknown): SandboxEnvPolicy {
  * Sensitive bind targets — paths that must NEVER be bind-mounted.
  * Uses allowlist model: only explicitly permitted paths are allowed.
  */
-function protectedSocketRoots(): string[] {
-  const home = resolve(homedir());
-  return [
-    "/run",
-    "/var/run",
-    join(home, ".docker"),
-    join(home, ".local/share/containers/podman/machine"),
-  ].map((value) => {
-    const resolved = resolve(value);
-    try {
-      return realpathSync.native(resolved);
-    } catch {
-      return resolved;
-    }
-  });
-}
-
 function sensitiveBindTargets(): string[] {
   const home = resolve(homedir());
   const targets: string[] = [];
@@ -239,14 +222,11 @@ export function validateSandboxGrantPath(candidate: string): void {
 }
 
 function validateSpecialBindTarget(resolved: string): void {
-  if (protectedSocketRoots().some((root) => resolved === root || resolved.startsWith(`${root}/`))) {
-    throw new Error(`Refusing protected socket location: ${resolved}`);
-  }
-
+  // Unix sockets are allowed. The JS realpath is used because the native one fails on sockets (EOPNOTSUPP on macOS).
   if (existsSync(resolved)) {
-    const canonical = realpathSync.native(resolved);
+    const canonical = realpathSync(resolved);
     const stat = lstatSync(canonical);
-    if (stat.isSocket() || stat.isFIFO() || stat.isBlockDevice() || stat.isCharacterDevice()) {
+    if (stat.isFIFO() || stat.isBlockDevice() || stat.isCharacterDevice()) {
       throw new Error(`Refusing special sandbox bind path: ${canonical}`);
     }
   }

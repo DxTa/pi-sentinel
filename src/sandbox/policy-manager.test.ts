@@ -47,7 +47,7 @@ describe("SandboxPolicyManager grants", () => {
     }
   });
 
-  it("rejects Unix socket path grants", async () => {
+  it("allows Unix socket path grants", async () => {
     const root = await mkdtemp(join(tmpdir(), "pi-policy-socket-"));
     tempPaths.push(root);
     const socketPath = join(root, "docker.sock");
@@ -59,7 +59,7 @@ describe("SandboxPolicyManager grants", () => {
       });
       const manager = makeManager();
       try {
-        expect(() => manager.grantPath(socketPath, "ro")).toThrow(/special|socket/i);
+        expect(() => manager.grantPath(socketPath, "ro")).not.toThrow();
       } finally {
         manager.destroy();
       }

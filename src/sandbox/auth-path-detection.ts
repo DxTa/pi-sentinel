@@ -19,6 +19,8 @@ export interface AuthSensitiveAccessInfo {
   candidatePaths: string[];
   needsSocketFallback: boolean;
   authCommands: string[];
+  /** Read-only access to the candidate paths needs no prompt (the CLI cannot work without them). */
+  autoApprove?: boolean;
 }
 
 const SSH_PRIVATE_KEY_NAMES = [
@@ -131,7 +133,23 @@ function detectDockerAuth(command: string): AuthAccessEvidence | null {
   if (!isDockerDaemonCommand(command)) return null;
   const configPath = resolve(homedir(), ".docker/config.json");
   return existsSync(configPath)
-    ? { kind: "docker-auth", candidatePaths: [configPath], needsSocketFallback: false }
+    ? { kind: "docker-auth", candidatePaths: [configPath], needsSocketFallback: false, autoApprove: true }
+    : null;
+}
+
+function detectKubeAuth(command: string): AuthAccessEvidence | null {
+  if (!/^(?:kubectl|helm|argo|k9s|kustomize|stern|kubectx|kubens|flux)\b/.test(command.trim())) return null;
+  const candidatePaths = existingPaths([resolve(homedir(), ".kube", "config")]);
+  return candidatePaths.length > 0
+    ? { kind: "kube-auth", candidatePaths, needsSocketFallback: false, autoApprove: true }
+    : null;
+}
+
+function detectGhAuth(command: string): AuthAccessEvidence | null {
+  if (!/^gh\b/.test(command.trim())) return null;
+  const candidatePaths = existingPaths([resolve(homedir(), ".config", "gh", "hosts.yml")]);
+  return candidatePaths.length > 0
+    ? { kind: "generic-secret", candidatePaths, needsSocketFallback: false, autoApprove: true }
     : null;
 }
 
@@ -161,6 +179,8 @@ function detectAuthEvidence(command: string, repoRoot: string | null, opaque: bo
     detectDockerAuth(command),
     detectGpgAuth(command, repoRoot, opaque),
     detectAwsAuth(command, opaque),
+    detectKubeAuth(command),
+    detectGhAuth(command),
   ].filter((evidence): evidence is AuthAccessEvidence => evidence !== null);
 }
 
@@ -178,10 +198,12 @@ function mergeAuthEvidence(
       authCommands: [...detected.authCommands, authCommand],
     };
   }
+  const { autoApprove: _previous, ...rest } = detected;
   return {
-    ...detected,
+    ...rest,
     candidatePaths: dedupe([...detected.candidatePaths, ...next.candidatePaths]),
     needsSocketFallback: detected.needsSocketFallback || next.needsSocketFallback,
+    ...(detected.autoApprove === true && next.autoApprove === true ? { autoApprove: true } : {}),
     authCommands: detected.authCommands.includes(authCommand)
       ? detected.authCommands
       : [...detected.authCommands, authCommand],

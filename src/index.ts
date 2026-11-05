@@ -362,12 +362,10 @@ function normalizeGrantPath(rawPath: string, cwd: string): string {
   const suffix: string[] = [];
   while (true) {
     try {
-      const stats = lstatSync(candidate);
-      if (stats.isSocket()) throw new Error("Sandbox grants cannot target Unix sockets.");
-      const canonical = realpathSync.native(candidate);
+      lstatSync(candidate);
+      const canonical = realpathSync(candidate);
       return suffix.length === 0 ? canonical : resolve(canonical, ...suffix.reverse());
     } catch (error) {
-      if (error instanceof Error && /Unix sockets/.test(error.message)) throw error;
       const parent = dirname(candidate);
       if (parent === candidate) throw new Error(`Sandbox grant path does not exist: ${rawPath}`);
       suffix.push(candidate.slice(parent.length + 1));
@@ -597,9 +595,10 @@ async function resolveMaskedAuthAccess(
   const kinds = new Set<MaskedAuthKind>(kindByPath.values());
   if (kinds.size === 0) kinds.add(authDecision.kind);
   const approved = approvedMaskedPathsForKinds(repoRoot, kinds, legacyActiveGrantPaths);
-  if (implicitAuth?.kind === "docker-auth") {
-    for (const [path, kind] of kindByPath) {
-      if (kind === "docker-auth") approved.add(path);
+  if (implicitAuth?.autoApprove === true) {
+    for (const candidate of implicitAuth.candidatePaths) {
+      const pinned = pinPath(candidate);
+      if (pinned) approved.add(pinned);
     }
   }
   for (const path of autoApproved.all) approved.add(path);
@@ -728,7 +727,8 @@ async function resolveBashSandboxAccess(
           : "Sandbox: protected-resource access requires SRT; command blocked.",
       };
     }
-    if (implicitAuth && !isReadOnlyBashDiagnostic(command) && !(await implicitAuthIsGitPushOnly(command, repoRoot))) {
+    // Auto-approved config access (kube, gh, docker) runs on the host when SRT is unavailable.
+    if (implicitAuth && implicitAuth.autoApprove !== true && !isReadOnlyBashDiagnostic(command) && !(await implicitAuthIsGitPushOnly(command, repoRoot))) {
       return {
         protectedReadPaths,
         sandboxed,

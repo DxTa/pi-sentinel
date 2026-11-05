@@ -26,18 +26,15 @@ function dedupe(values: string[]): string[] {
 
 export function buildSrtRuntimeConfig(spec: SrtCommandSpec): SrtRuntimeConfig {
   const dockerRequested = spec.allowDocker && isDockerDaemonCommand(spec.command);
+  // A missing socket is not a block: the command runs and the CLI reports the connection error itself. The mode policy already gated it.
   const dockerSocketPaths = dockerRequested ? resolveDockerSocketPaths() : [];
-  if (dockerRequested && dockerSocketPaths.length === 0) {
-    throw new Error("Docker socket unavailable; command blocked.");
-  }
 
   if (spec.envDenyPatterns.length > 0) {
     throw new Error("SRT helper path does not yet support env deny pattern parity.");
   }
 
-  // Linux SRT cannot scope Unix-socket access by path; Docker needs the broad allowance there.
-  const allowAllUnixSockets = process.platform === "linux"
-    || (!dockerRequested && process.platform === "darwin");
+  // Unix sockets (docker, ssh-agent, gpg-agent, databases) are reachable from every sandboxed command.
+  const allowAllUnixSockets = process.platform === "linux" || process.platform === "darwin";
 
   const approvedRead = dedupe(spec.unmaskedPaths.map((entry) => entry.path));
   const approvedWrite = dedupe(spec.unmaskedPaths.filter((entry) => entry.writable).map((entry) => entry.path));

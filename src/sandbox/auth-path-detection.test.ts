@@ -119,6 +119,7 @@ describe("detectImplicitAuthAccess", () => {
       candidatePaths: [configPath],
       needsSocketFallback: false,
       authCommands: ["docker version"],
+      autoApprove: true,
     });
   });
 
@@ -128,5 +129,61 @@ describe("detectImplicitAuthAccess", () => {
     vi.stubEnv("HOME", home);
 
     await expect(detectImplicitAuthAccess("docker version && cat README.md", null)).resolves.toBeNull();
+  });
+
+  it.each(["kubectl get pods", "helm list", "argo list", "k9s", "kubectl config current-context"])(
+    "detects the kube config as auto-approved implicit auth for %s", async (command) => {
+      const home = await mkdtemp(join(tmpdir(), "pi-synthetic-kube-home-"));
+      temporaryPaths.push(home);
+      const configPath = resolve(home, ".kube/config");
+      await mkdir(join(home, ".kube"), { recursive: true });
+      await writeFile(configPath, "{}\n");
+      vi.stubEnv("HOME", home);
+
+      await expect(detectImplicitAuthAccess(command, null)).resolves.toEqual({
+        kind: "kube-auth",
+        candidatePaths: [configPath],
+        needsSocketFallback: false,
+        authCommands: [command],
+        autoApprove: true,
+      });
+    });
+
+  it("detects the gh hosts file as auto-approved implicit auth", async () => {
+    const home = await mkdtemp(join(tmpdir(), "pi-synthetic-gh-home-"));
+    temporaryPaths.push(home);
+    const hostsPath = resolve(home, ".config/gh/hosts.yml");
+    await mkdir(join(home, ".config/gh"), { recursive: true });
+    await writeFile(hostsPath, "github.com:\n");
+    vi.stubEnv("HOME", home);
+
+    await expect(detectImplicitAuthAccess("gh pr list", null)).resolves.toEqual({
+      kind: "generic-secret",
+      candidatePaths: [hostsPath],
+      needsSocketFallback: false,
+      authCommands: ["gh pr list"],
+      autoApprove: true,
+    });
+  });
+
+  it("does not infer kube or gh auth without their config files", async () => {
+    const home = await mkdtemp(join(tmpdir(), "pi-synthetic-empty-home-"));
+    temporaryPaths.push(home);
+    vi.stubEnv("HOME", home);
+
+    await expect(detectImplicitAuthAccess("kubectl get pods && gh pr list", null)).resolves.toBeNull();
+  });
+
+  it("does not auto-approve when a command also needs another credential", async () => {
+    const home = await mkdtemp(join(tmpdir(), "pi-synthetic-mixed-home-"));
+    temporaryPaths.push(home);
+    await mkdir(join(home, ".kube"), { recursive: true });
+    await writeFile(resolve(home, ".kube/config"), "{}\n");
+    await mkdir(join(home, ".aws"), { recursive: true });
+    await writeFile(resolve(home, ".aws/credentials"), "x\n");
+    vi.stubEnv("HOME", home);
+
+    const result = await detectImplicitAuthAccess("kubectl get pods && aws sts get-caller-identity", null);
+    expect(result?.autoApprove).not.toBe(true);
   });
 });

@@ -84,8 +84,8 @@ describe("detectExternalPaths", () => {
     )).rejects.toThrow(/broad|sensitive/i);
   });
 
-  it("rejects directories containing privileged socket locations", async () => {
-    expect(() => validateSandboxGrantPath("/run")).toThrow(/socket|protected/i);
+  it("allows granting socket locations", async () => {
+    expect(() => validateSandboxGrantPath("/run")).not.toThrow();
   });
 
   it("does not re-prompt for an explicitly unmasked path", async () => {
@@ -112,7 +112,7 @@ describe("detectExternalPaths", () => {
     )).resolves.toEqual([]);
   });
 
-  it("rejects Unix sockets instead of offering generic path approval", async () => {
+  it("offers path approval for Unix sockets like any other path", async () => {
     const workspace = await mkdtemp(path.join(tmpdir(), "pi-external-workspace-"));
     const outside = await mkdtemp(path.join(homedir(), ".pi-external-socket-"));
     tempPaths.push(workspace, outside);
@@ -138,7 +138,7 @@ describe("detectExternalPaths", () => {
         },
         undefined,
         () => workspace,
-      )).rejects.toThrow(/special|socket/i);
+      )).resolves.toBeDefined();
     } finally {
       await new Promise<void>((resolveClose) => server.close(() => resolveClose()));
     }

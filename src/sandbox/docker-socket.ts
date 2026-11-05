@@ -7,6 +7,8 @@ const DOCKER_SOCKET_CANDIDATES = [
   "/run/docker.sock",
   join(homedir(), ".docker/run/docker.sock"),
   join(homedir(), ".orbstack/run/docker.sock"),
+  join(homedir(), ".rd/docker.sock"),
+  join(homedir(), ".colima/default/docker.sock"),
 ];
 
 function parseUnixDockerHost(value: string | undefined): string | undefined {
@@ -29,6 +31,8 @@ function isKnownDockerSocketPath(value: string): boolean {
     "/run",
     join(home, ".docker/run"),
     join(home, ".orbstack/run"),
+    join(home, ".rd"),
+    join(home, ".colima/default"),
   ].some((prefix) => socketPath === prefix + "/docker.sock");
 }
 
@@ -41,7 +45,7 @@ export function resolveDockerSocketPaths(
   for (const candidate of candidates) {
     if (!isKnownDockerSocketPath(candidate)) continue;
     try {
-      const canonical = realpathSync.native(candidate);
+      const canonical = realpathSync(candidate);
       if (!statSync(canonical).isSocket()) continue;
       paths.add(canonical);
       paths.add(resolve(candidate));

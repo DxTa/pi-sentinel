@@ -1284,7 +1284,7 @@ describe("piPermissionSystemExtension SRT default smoke", () => {
           expect(event.input.command).not.toBe(command);
           const runtimeConfig = extractHelperInput(event.input.command).runtimeConfig;
           expect(runtimeConfig.dockerHost).toBe(`unix://${socketPath}`);
-          expect(runtimeConfig.network?.allowAllUnixSockets).toBe(process.platform === "linux" ? true : undefined);
+          expect(runtimeConfig.network?.allowAllUnixSockets).toBe(true);
           expect(runtimeConfig.network?.allowUnixSockets).toEqual([socketPath]);
         } else {
           const result = await pi.handlers.get("user_bash")?.({ command, cwd: projectDir }, context as never);
@@ -2313,7 +2313,7 @@ describe("piPermissionSystemExtension SRT default smoke", () => {
 
     const dockerSockets = resolveDockerSocketPaths();
     if (dockerSockets.length === 0) {
-      expect(result).toMatchObject({ block: true, reason: "Docker socket unavailable; command blocked." });
+      expect(result).toBeUndefined();
       return;
     }
 
@@ -3216,7 +3216,7 @@ describe("piPermissionSystemExtension SRT default smoke", () => {
     });
   });
 
-  it("reports protected socket refusal for invalid external paths", async () => {
+  it("does not refuse a command that names a socket directory", async () => {
     const agentDir = await makeTempDir("pi-permission-agent-");
     const projectDir = await makeTempDir("pi-permission-project-");
     process.env.PI_CODING_AGENT_DIR = agentDir;
@@ -3247,10 +3247,7 @@ describe("piPermissionSystemExtension SRT default smoke", () => {
       createContext(projectDir, { hasUI: true, choices: ["Allow once"] }) as never,
     );
 
-    expect(result).toMatchObject({
-      block: true,
-      reason: expect.stringContaining("protected socket location"),
-    });
+    expect(result).not.toMatchObject({ block: true, reason: expect.stringContaining("socket") });
   });
 
   it.skipIf(!canSimulateReadOnlyDirectory)("blocks user bash when persistent sandbox approval cannot be saved", async () => {
