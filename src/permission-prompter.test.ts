@@ -2,6 +2,7 @@ import { describe, expect, it, vi } from "vitest";
 
 import { PromptWaitTracker } from "./prompt-state";
 import { PermissionPrompter } from "./permission-prompter";
+import { buildAutoModeText } from "./auto-mode-client";
 import type { AutoModeHeads } from "./auto-mode-policy";
 import { AUTO_MODE_LABEL_SCHEMA } from "./auto-mode-label-schema";
 import { workspaceScope } from "./auto-mode-decision-store";
@@ -309,7 +310,7 @@ describe("PermissionPrompter", () => {
 
     expect(result).toEqual({ approved: true, state: "approved", autoApproved: true });
     expect(startupOrder).toEqual(["startup", "evaluate"]);
-    expect(evaluate).toHaveBeenCalledWith("tool=read path=README.md");
+    expect(evaluate).toHaveBeenCalledWith(buildAutoModeText({ toolName: "read", operation: "read", workspaceRelativePath: "README.md" }));
     expect(requestPermissionDecisionFromUi).not.toHaveBeenCalled();
     expect(reviewLog.map((entry) => entry.event)).toEqual([
       "permission_request.auto_mode_approved",
@@ -934,4 +935,33 @@ it("prompts for auto requests outside the model-eligible scope", async () => {
 
   expect(requestPermissionDecisionFromUi).toHaveBeenCalledOnce();
   expect(evaluate).not.toHaveBeenCalled();
+});
+
+describe("auto mode keeps hard rules", () => {
+  it.each(["rm build.txt", "npm publish", "cd src && ssh host", "kubectl -n prod delete pod a"])(
+    "prompts for %s even when the model allows",
+    async (command) => {
+      const evaluate = vi.fn(async () => ({
+        action: "allow" as const, reason: "model_allow", candidate: true, attempted: true, evaluationId: "e", audit: false,
+      }));
+      const requestPermissionDecisionFromUi = vi.fn(async () => ({ approved: false, state: "denied" as const }));
+      const prompter = new PermissionPrompter({
+        promptWaitTracker: new PromptWaitTracker({ emit() {} }),
+        getConfig: () => ({ debugLog: false, permissionReviewLog: false, mode: "auto", yoloAskBashPatterns: [] }),
+        autoModeEvaluator: { evaluate },
+        writeReviewLog() {},
+        subagentSessionsDir: "/tmp/subagents",
+        forwardingDir: "/tmp/forwarding",
+        requestPermissionDecisionFromUi,
+      });
+      const result = await prompter.prompt({ hasUI: true, cwd: "/work/repo", ui: { setStatus() {} } } as never, {
+        requestId: "r", source: "tool_call", agentName: null, message: "Need permission", toolName: "bash", command,
+        autoModeEligible: true, autoModeHardRuleHit: false, autoModeWorkspaceLocal: true, autoModeOperation: "exec",
+        autoModeText: "tool=bash command=" + command,
+      });
+      expect(evaluate.mock.calls[0]![0]).toMatchObject({ forcedPrompt: true });
+      expect(requestPermissionDecisionFromUi).toHaveBeenCalledOnce();
+      expect(result.approved).toBe(false);
+    },
+  );
 });

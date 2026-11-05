@@ -7,7 +7,7 @@ import { pathToFileURL } from "node:url";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, expect, it } from "vitest";
-import { createClassifier, ensureModelAssets, type ModelAsset } from "./auto-mode-model";
+import { createClassifier, ensureModelAssets, outputLogits, type ModelAsset } from "./auto-mode-model";
 import { AUTO_MODE_LABEL_SCHEMA } from "./auto-mode-label-schema";
 
 const BODY = Buffer.from("lion-warden-weights-0123456789");
@@ -29,6 +29,32 @@ function fakeFetch(body: Buffer = BODY) {
 }
 
 const tempDir = () => mkdtempSync(join(tmpdir(), "yolo-model-"));
+
+describe("outputLogits", () => {
+  const tensor = (type: string, data: ArrayLike<number>) => ({ threat_logits: { type, data } }) as never;
+
+  it("returns float32 logits unchanged", () => {
+    expect(Array.from(outputLogits(tensor("float32", new Float32Array([1, 2])), "threat_logits", 2))).toEqual([1, 2]);
+  });
+
+  it("widens float16 logits to float32", () => {
+    const logits = outputLogits(tensor("float16", new Float16Array([0.5, -1.25])), "threat_logits", 2);
+    expect(logits).toBeInstanceOf(Float32Array);
+    expect(Array.from(logits)).toEqual([0.5, -1.25]);
+  });
+
+  it("decodes float16 logits given as raw Uint16 bits", () => {
+    // 0x3800 = 0.5, 0xbd00 = -1.25, 0x0001 = smallest subnormal
+    const logits = outputLogits(tensor("float16", new Uint16Array([0x3800, 0xbd00, 0x0001])), "threat_logits", 3);
+    expect(Array.from(logits)).toEqual([0.5, -1.25, 2 ** -24]);
+  });
+
+  it("rejects other dtypes and wrong sizes", () => {
+    expect(() => outputLogits(tensor("int32", new Int32Array([1, 2])), "threat_logits", 2)).toThrow("Invalid model output");
+    expect(() => outputLogits(tensor("float32", new Float32Array([1])), "threat_logits", 2)).toThrow("Invalid model output");
+    expect(() => outputLogits({} as never, "threat_logits", 2)).toThrow("Invalid model output");
+  });
+});
 
 describe("createClassifier label schema", () => {
   it.each<[string, number]>([["injection", 1], ["tool_class", 13]])(

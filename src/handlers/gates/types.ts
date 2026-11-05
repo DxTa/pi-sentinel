@@ -20,4 +20,6 @@ export interface ToolCallContext {
   autoModeUnits?: readonly string[];
   /** Inner Bash commands cannot all be read statically. */
   autoModeOpaque?: boolean;
+  /** Server-declared MCP hint; untrusted, so it can only make auto mode stricter. */
+  mcpDestructiveHint?: boolean;
 }

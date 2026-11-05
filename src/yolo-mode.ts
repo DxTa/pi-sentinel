@@ -78,9 +78,13 @@ function isNonPlainGitPush(words: readonly string[]): boolean {
   return gitAt !== -1 && isGitPushWords(words.slice(gitAt)) && !isPlainGitPushWords(words);
 }
 
+const PACKAGE_PUBLISHERS = new Set(["npm", "pnpm", "yarn"]);
+
 function isBuiltInAskCommand(words: string[]): boolean {
   const name = words[0]?.slice(words[0].lastIndexOf("/") + 1);
   if (name === "rm" || name === "ssh") return true;
+  // shortcut: any `publish` word counts, so `npm run publish` also prompts; parse npm flags if that gets noisy.
+  if (name && PACKAGE_PUBLISHERS.has(name) && words.includes("publish")) return true;
   if (isNonPlainGitPush(words)) return true;
   return name === "kubectl" && isKubectlWrite(words);
 }

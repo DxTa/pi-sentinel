@@ -18,6 +18,12 @@ import { suggestSessionPattern } from "#src/pattern-suggest";
 import { formatAskPrompt } from "#src/permission-prompts";
 import { getEditReplacementText, getPermissionLogContext } from "#src/tool-input-preview";
 import { buildAutoModeText } from "../../auto-mode-client";
+import { MCP_TOOL_PREFIX } from "../../auto-mode-policy";
+import { mcpArgsHaveSqlWrite } from "../../mcp-sql-write";
+import { writeNeedsPrompt } from "../../auto-mode-write-checks";
+
+/** MCP arguments past this size would leave the model's token window, so those calls always prompt. */
+const MAX_MCP_TEXT_CHARS = 800;
 import type { PermissionCheckResult } from "#src/types";
 import type { GateDescriptor } from "./descriptor";
 import { deriveDecisionValue } from "./helpers";
@@ -109,8 +115,16 @@ export function describeToolGate(
         ? "list"
         : tcc.toolName === "write" || tcc.toolName === "edit"
           ? tcc.toolName
-          : tcc.toolName === "bash" ? "exec" : undefined;
-  const autoModeWorkspaceLocal = autoModeOperation === "exec"
+          : tcc.toolName === "bash"
+            ? "exec"
+            : tcc.toolName.startsWith(MCP_TOOL_PREFIX) ? "tool" : undefined;
+  // MCP calls touch no workspace path; the model and the policy judge them.
+  const mcpText = autoModeOperation === "tool"
+    ? buildAutoModeText({ toolName: tcc.toolName, operation: "tool", args: tcc.input })
+    : undefined;
+  const autoModeWorkspaceLocal = autoModeOperation === "tool"
+    ? mcpText!.length <= MAX_MCP_TEXT_CHARS && tcc.mcpDestructiveHint !== true && !mcpArgsHaveSqlWrite(tcc.input)
+    : autoModeOperation === "exec"
     ? tcc.autoModeWorkspaceLocal === true
       && Boolean(autoModeCommand?.trim())
       && Boolean(tcc.cwd)
@@ -130,7 +144,7 @@ export function describeToolGate(
     ? false
     : (autoModeContent?.length ?? 0) > 800;
   const autoModeText = autoModeWorkspaceLocal && autoModeOperation !== undefined
-    ? autoModeOperation === "exec" && autoModeCommand !== undefined
+    ? mcpText ?? (autoModeOperation === "exec" && autoModeCommand !== undefined
       ? buildAutoModeText({ toolName: tcc.toolName, operation: autoModeOperation, command: autoModeCommand! })
       : autoModeContent !== undefined
         ? buildAutoModeText({
@@ -141,7 +155,7 @@ export function describeToolGate(
               : {}),
             content: autoModeContent,
           })
-        : undefined
+        : undefined)
     : undefined;
   const autoModeInner = autoModeOperation === "exec" ? bashInnerCommands(autoModeCommand ?? "") : null;
   const forcePromptInYolo =
@@ -153,7 +167,9 @@ export function describeToolGate(
         ? normalizePathForComparison(tcc.cwd, tcc.cwd)
         : ""
     : "";
-  const autoModeHardRuleHit = autoModeOperation === "exec"
+  const autoModeHardRuleHit = autoModeOperation === "tool"
+    ? false
+    : autoModeOperation === "exec"
     ? tcc.autoModeHardRuleHit ?? true
     : !autoModeHardRuleTarget
       || isSensitivePath(autoModeHardRuleTarget, homedir());
@@ -182,6 +198,9 @@ export function describeToolGate(
         ? {
             autoModeEligible: check.state === "ask"
               && autoModeWorkspaceLocal
+              // Agent instruction files, agent directives and secret references score benign; check the full content.
+              && !((autoModeOperation === "write" || autoModeOperation === "edit")
+                && writeNeedsPrompt(autoModeWorkspaceRelativePath ?? toolPath ?? undefined, autoModeContent))
               && (autoModeOperation !== "exec"
                 // Elevated commands always prompt.
                 || (autoModeInner?.elevated !== true

@@ -76,6 +76,13 @@ function addToolNameVariants(
   }
 }
 
+/** True when the registered tool declares `annotations.destructiveHint: true` (pi reports MCP server hints there). */
+export function mcpDestructiveHint(tools: readonly unknown[], toolName: string): boolean {
+  if (!toolName.startsWith("mcp__")) return false;
+  const tool = tools.find((value) => getToolNameFromValue(value) === toolName);
+  return toRecord(toRecord(tool).annotations).destructiveHint === true;
+}
+
 export function getToolNameFromValue(value: unknown): string | null {
   const direct = getNonEmptyString(value);
   if (direct) {

@@ -122,3 +122,52 @@ describe("decideAutoMode", () => {
     expect(decideAutoMode(input({ heads: heads({}, "exec") })).reason).toBe("tool_action_mismatch");
   });
 });
+
+describe("per-operation thresholds", () => {
+  const strict = { minBenignThreat: 0.99, maxInjection: 0.25, maxToolTag: 0.5 };
+  const loose = { minBenignThreat: 0.5, maxInjection: 0.25, maxToolTag: 0.5 };
+  const benign90 = (action: string) => heads({ threat: distribution(MODEL_LABELS.threat, { benign: 0.9, tool_abuse: 0.1 }) }, action);
+
+  it("uses the operation's own set before the default", () => {
+    const thresholds = { default: loose, exec: strict };
+    expect(decideAutoMode(input({ operation: "write", toolName: "write", heads: benign90("write"), thresholds })).action).toBe("allow");
+    expect(decideAutoMode(input({ operation: "exec", toolName: "bash", heads: benign90("exec"), thresholds }))).toEqual({
+      action: "prompt",
+      reason: "threat_benign_low_confidence",
+    });
+  });
+
+  it("falls back to the default set for operations without an entry", () => {
+    expect(decideAutoMode(input({ heads: benign90("read"), thresholds: { default: strict } })).reason).toBe("threat_benign_low_confidence");
+  });
+
+  it("keeps today's values as the profile default", () => {
+    expect(decideAutoMode(input({ heads: benign90("read") })).action).toBe("allow");
+    expect(decideAutoMode(input({ heads: heads({ threat: distribution(MODEL_LABELS.threat, { benign: 0.7, tool_abuse: 0.3 }) }) })).reason)
+      .toBe("threat_benign_low_confidence");
+  });
+});
+
+describe("MCP tool operation", () => {
+  const mcp = (action: string, toolName = "mcp__github__get_issue") =>
+    input({ operation: "tool", toolName, heads: heads({ tool_class: oneHot(MODEL_LABELS.tool_class, "api") }, action) });
+
+  it.each(["read", "list"])("allows a benign MCP call the model reads as %s", (action) => {
+    expect(decideAutoMode(mcp(action))).toEqual({ action: "allow", reason: "model_allow" });
+  });
+
+  it.each(["write", "exec", "network", "unknown"])("prompts an MCP call the model reads as %s", (action) => {
+    expect(decideAutoMode(mcp(action))).toEqual({ action: "prompt", reason: "tool_action_mismatch" });
+  });
+
+  it("prompts the tool operation for tools not named like MCP tools", () => {
+    expect(decideAutoMode(mcp("read", "codemode"))).toEqual({ action: "prompt", reason: "tool_not_mcp" });
+  });
+
+  it("still applies injection and restricted-class checks", () => {
+    expect(decideAutoMode({ ...mcp("read"), heads: heads({ injection: { benign: 0.4, injection: 0.6 } }, "read") }).reason)
+      .toBe("injection_detected");
+    expect(decideAutoMode({ ...mcp("read"), heads: heads({ tool_class: oneHot(MODEL_LABELS.tool_class, "infra") }, "read") }).reason)
+      .toBe("tool_class_restricted");
+  });
+});

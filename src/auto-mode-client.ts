@@ -2,7 +2,9 @@ import { randomUUID } from "node:crypto";
 import { once } from "node:events";
 import * as net from "node:net";
 
+import { MODEL_PROFILE } from "./auto-mode-build.ts";
 import type { AutoModeHeads } from "./auto-mode-policy.ts";
+import type { ModelInputFormat } from "./auto-mode-profile.ts";
 
 export const AUTO_MODE_PROTOCOL_VERSION = 2;
 export const WORKER_HANDSHAKE_TIMEOUT_MS = 250;
@@ -18,15 +20,38 @@ export interface AutoModePayload {
   workspaceRelativePath?: string;
   content?: string;
   command?: string;
+  /** Arguments of an MCP tool call (`operation: "tool"`). */
+  args?: unknown;
 }
 
-export function buildAutoModeText(payload: AutoModePayload): string {
-  if (payload.operation === "exec" && payload.toolName === "bash") {
-    return "tool=bash command=" + (payload.command ?? "");
+const MAX_CONTENT_CHARS = 800;
+
+function sortKeysDeep(value: unknown, depth = 0): unknown {
+  if (Array.isArray(value)) return depth > 16 ? value : value.map((item) => sortKeysDeep(item, depth + 1));
+  if (!value || typeof value !== "object" || depth > 16) return value;
+  return Object.fromEntries(Object.keys(value).sort().map((key) => [key, sortKeysDeep((value as Record<string, unknown>)[key], depth + 1)]));
+}
+
+export function buildAutoModeText(payload: AutoModePayload, format: ModelInputFormat = MODEL_PROFILE.inputFormat): string {
+  if (payload.operation === "tool") {
+    // Sorted keys: the same MCP call gets the same text, and so the same decision, whatever order the agent sent.
+    const args = sortKeysDeep(payload.args ?? {});
+    return format === "json"
+      ? JSON.stringify({ arguments: args, tool_name: payload.toolName })
+      : "tool=" + payload.toolName + " arguments=" + JSON.stringify(args);
   }
+  const isExec = payload.operation === "exec" && payload.toolName === "bash";
+  const content = payload.content?.slice(0, MAX_CONTENT_CHARS);
+  if (format === "json") {
+    // Keys in sorted order so equal calls give equal text.
+    const args = isExec
+      ? { command: payload.command ?? "" }
+      : { ...(content === undefined ? {} : { content }), ...(payload.workspaceRelativePath ? { path: payload.workspaceRelativePath } : {}) };
+    return JSON.stringify({ arguments: args, tool_name: payload.toolName });
+  }
+  if (isExec) return "tool=bash command=" + (payload.command ?? "");
   const path = payload.workspaceRelativePath ? " path=" + payload.workspaceRelativePath : "";
-  const content = payload.content === undefined ? "" : " content=" + payload.content.slice(0, 800);
-  return "tool=" + payload.toolName + path + content;
+  return "tool=" + payload.toolName + path + (content === undefined ? "" : " content=" + content);
 }
 
 export interface AutoModeWorkerRequest {

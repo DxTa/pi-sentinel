@@ -1,6 +1,7 @@
 import { bashInnerCommands, splitBashSegments } from "./bash-segments";
 import { isPermissionState } from "./common";
 import { normalizeInput } from "./input-normalizer";
+import { createPiMcpToolTargets } from "./mcp-targets";
 import { normalizeFlatConfig } from "./normalize";
 import { mergeFlatPermissions } from "./permission-merge";
 import {
@@ -227,7 +228,31 @@ export class PermissionManager {
     }
 
     // Tool-name surfaces (read, write, etc. and extension tools).
-    return evaluate(normalizedToolName, "*", composedRules).action;
+    return this.checkPiMcpTool(normalizedToolName, composedRules)?.state
+      ?? evaluate(normalizedToolName, "*", composedRules).action;
+  }
+
+  /**
+   * pi MCP tools (`mcp__<server>__<tool>`) use `permission.mcp` rules unless a rule names the tool itself.
+   * Returns null when neither applies, so the generic tool path keeps today's default.
+   */
+  private checkPiMcpTool(toolName: string, rules: Ruleset): PermissionCheckResult | null {
+    const targets = createPiMcpToolTargets(toolName);
+    if (!targets) return null;
+    const direct = evaluate(toolName, "*", rules);
+    if (direct.layer === "config" || direct.layer === "session") return null;
+    const { rule, value } = evaluateFirst("mcp", targets, rules);
+    // Only user rules count: bundled `mcp` defaults would override a stricter universal fallback,
+    // and baseline targets (mcp_status, ...) are proxy metadata calls, not server tools.
+    if ((rule.layer !== "config" && rule.layer !== "session") || rule.origin === "bundled") return null;
+    return {
+      toolName,
+      state: rule.action,
+      matchedPattern: rule.layer === "config" || rule.layer === "session" ? rule.pattern : undefined,
+      source: "mcp",
+      origin: rule.origin,
+      target: value,
+    };
   }
 
   checkPermission(
@@ -244,6 +269,9 @@ export class PermissionManager {
     const fullRules: Ruleset = sessionRules?.length
       ? [...composedRules, ...sessionRules]
       : composedRules;
+
+    const piMcp = this.checkPiMcpTool(normalizedToolName, fullRules);
+    if (piMcp) return piMcp;
 
     const { surface, values, resultExtras } = normalizeInput(
       normalizedToolName,

@@ -65,7 +65,7 @@ describe("detectExternalPaths", () => {
   });
 
   it("rejects broad system roots instead of offering generic path approval", async () => {
-    const workspace = await mkdtemp(path.join("/tmp", "pi-external-workspace-"));
+    const workspace = await mkdtemp(path.join(tmpdir(), "pi-external-workspace-"));
     tempPaths.push(workspace);
 
     await expect(detectExternalPaths(
@@ -89,8 +89,8 @@ describe("detectExternalPaths", () => {
   });
 
   it("does not re-prompt for an explicitly unmasked path", async () => {
-    const workspace = await mkdtemp(path.join("/tmp", "pi-external-workspace-"));
-    const outside = await mkdtemp(path.join("/tmp", "pi-external-outside-"));
+    const workspace = await mkdtemp(path.join(tmpdir(), "pi-external-workspace-"));
+    const outside = await mkdtemp(path.join(tmpdir(), "pi-external-outside-"));
     tempPaths.push(workspace, outside);
     const approvedPath = path.join(outside, ".env");
     await writeFile(approvedPath, "test", "utf8");
@@ -113,7 +113,7 @@ describe("detectExternalPaths", () => {
   });
 
   it("rejects Unix sockets instead of offering generic path approval", async () => {
-    const workspace = await mkdtemp(path.join("/tmp", "pi-external-workspace-"));
+    const workspace = await mkdtemp(path.join(tmpdir(), "pi-external-workspace-"));
     const outside = await mkdtemp(path.join(homedir(), ".pi-external-socket-"));
     tempPaths.push(workspace, outside);
     const socketPath = path.join(outside, "docker.sock");

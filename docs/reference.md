@@ -37,7 +37,7 @@ grep -noE '"(for|while|until|if|then|elif|else|do|done|fi|select|case|esac|bash|
 `yolo` lets requests run without a prompt, including external directories, network `ask` verdicts, and writes outside the workspace, except these hard rules:
 
 - **Denied, no prompt:** `write`, `edit`, and readable Bash commands that write to a forbidden path: `/etc`, `/System`, `/Library`, `/usr` (except `/usr/local`), `/bin`, `/sbin`, `/private/etc`, `/var` (except `/var/folders` and `/var/tmp`), `~/.ssh`, `~/.aws`, and `~/.gnupg`. Symlinks into these paths count, including `link/../etc`. Bash writes are redirects (`>`, `>>`, `&>`) and the verbs `cp`, `mv`, `ln`, `install`, `rm`, `touch`, `mkdir`, `tee`, `truncate`, `chmod`, `chown`, `dd of=`, `sed -i`, `curl -o`, and `wget -O`. Reads are never denied.
-- **Prompt:** `rm`, `ssh`, `git push`, and kubectl commands that change a cluster (`apply`, `create`, `delete`, `edit`, `patch`, `replace`, `set`, `scale`, `rollout` except `status`/`history`, `drain`, `cordon`, `uncordon`, `taint`, `label`, `annotate`, `autoscale`, `run`, `expose`, `cp`). Matching uses the executable name and subcommand, so `/bin/rm`, `git -C repo push`, and `kubectl -n prod delete` count while `git log --grep push` does not. Add your own with `yoloAskBashPatterns`.
+- **Prompt:** `rm`, `ssh`, `git push`, `npm`/`pnpm`/`yarn` `publish`, and kubectl commands that change a cluster (`apply`, `create`, `delete`, `edit`, `patch`, `replace`, `set`, `scale`, `rollout` except `status`/`history`, `drain`, `cordon`, `uncordon`, `taint`, `label`, `annotate`, `autoscale`, `run`, `expose`, `cp`). Matching uses the executable name and subcommand, so `/bin/rm`, `git -C repo push`, and `kubectl -n prod delete` count while `git log --grep push` does not. Add your own with `yoloAskBashPatterns`.
 - **Still protected:** explicit `deny` rules in your config, explicit denied network domains, and `.env*` protection. SRT sandbox grant prompts are unchanged.
 
 Limits:
@@ -50,9 +50,20 @@ Limits:
 
 ## `auto` mode classifier
 
-pi-sentinel starts or reuses one shared, detached Node worker. It runs the Apache-2.0 Lion Warden classifier, pinned to revision `77888f617584758f904faefd6f38d4cf926f6d5d`. The model and tokenizer are not bundled; first startup downloads about 130 MB into `~/.pi/agent/runtime/pi-sentinel/auto-mode/models`, verifies SHA-256 hashes, and resumes interrupted downloads. The worker fails closed: unavailable or invalid model assets mean permission requests prompt. No Python is required.
+pi-sentinel starts or reuses one shared, detached Node worker. It runs the Apache-2.0 Lion Warden classifier, pinned to revision `77888f617584758f904faefd6f38d4cf926f6d5d`. The model and tokenizer are not bundled; first startup downloads about 320 MB (the FP16 build; profile `lion-warden-fp16`) into `~/.pi/agent/runtime/pi-sentinel/auto-mode/models`, verifies SHA-256 hashes, and resumes interrupted downloads. The worker fails closed: unavailable or invalid model assets mean permission requests prompt. No Python is required.
 
-What the classifier sees: path/tool metadata for reads and listings, up to 800 characters of write/edit content, or a redacted Bash command. Read output is not sent, so prompt injection inside a file cannot be detected before reading. Sensitive paths, external targets, network operations, unsandboxed Bash, and model failures prompt. Fixed thresholds are authoritative; 5% of would-allow decisions prompt anyway for audit (20% for allows learned from history).
+What the classifier sees: path/tool metadata for reads and listings, up to 800 characters of write/edit content, a redacted Bash command, or the tool name and arguments of an MCP call (calls whose arguments exceed 800 characters prompt). An MCP call is allowed only when the model reads it as a read or list and every other check passes. Read output is not sent, so prompt injection inside a file cannot be detected before reading. Sensitive paths, external targets, network operations, unsandboxed Bash, and model failures prompt. Thresholds come from the model profile, per operation, and are set with `npm run calibrate -- --profile <id> --write` (it refuses to write when the holdout split lets a should-prompt case through). Thresholds are authoritative; 5% of would-allow decisions prompt anyway for audit (20% for allows learned from history).
+
+These checks run before the model and always prompt in `auto`, whatever the model returns. They can only add prompts:
+
+- Commands that match a `yolo` hard rule or `yoloAskBashPatterns`.
+- Writes and edits to agent instruction files (`AGENTS.md`, `CLAUDE.md`, `GEMINI.md`, `.cursorrules`, `.windsurfrules`, `.clinerules`, `.github/copilot-instructions.md`, `.cursor/rules/`).
+- Write and edit content that tells an AI agent to drop its instructions or permission checks, references a secret-named variable (`$GITHUB_TOKEN`, `process.env.NPM_TOKEN`), dumps the environment, or reads a home credential folder. The whole content is checked, not only the 800 characters the model sees.
+- MCP tools whose server sets `destructiveHint`, and MCP arguments that hold a SQL write or schema change.
+
+Known gaps: these checks match keywords and phrases, so reworded text can reach the model. Logic changes, such as an edit that makes an auth check return `true`, look benign to both the checks and the model. Treat `auto` as fewer prompts for routine work, not as code review.
+
+Calibration (`scripts/calibration-baseline-fp16.txt`, 181 synthetic cases) allows no should-prompt case for the default FP16 profile. It allows 68% of safe writes, 64% of safe edits, 56% of safe Bash commands, and 46% of safe MCP calls; the rest prompt.
 
 Override the model directory or Unix socket when needed:
 
@@ -84,6 +95,8 @@ Bundled defaults live in [`config.json`](../config.json); the full schema is [`s
 3. trusted project `<project>/.pi/permissions.json`;
 4. per-agent configuration (agent frontmatter);
 5. security profile overlay.
+
+MCP tools named `mcp__<server>__<tool>` match `permission.mcp` patterns as `server_tool`, `server:tool`, then `server`, so `"mcp": { "github_*": "allow", "github_delete_*": "deny" }` covers the `github` server. A rule on the full tool name (`"mcp__github__get_issue": "deny"`) wins. Bundled `mcp` defaults do not apply to these tools; unmatched calls use the universal `"*"` rule.
 
 Runtime settings (mode, logs, network, sandbox) merge from layers 1–3. Permission rules also merge from agent frontmatter and the active security-profile overlay; those layers do not override runtime settings.
 

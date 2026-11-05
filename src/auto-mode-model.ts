@@ -7,27 +7,18 @@ import { pipeline } from "node:stream/promises";
 import type { ReadableStream as WebReadableStream } from "node:stream/web";
 import type { InferenceSession, Tensor } from "onnxruntime-node";
 import type { AutoModeHeads } from "./auto-mode-policy";
-import { parseAutoModeLabelSchema, AUTO_MODE_LABEL_SCHEMA } from "./auto-mode-label-schema.ts";
+import { parseAutoModeLabelSchema } from "./auto-mode-label-schema.ts";
 import { withFileLock } from "./auto-mode-file-lock.ts";
-import { MODEL_REVISION } from "./auto-mode-build.ts";
+import { MODEL_PROFILE } from "./auto-mode-build.ts";
+import type { ModelAsset, ModelProfile } from "./auto-mode-profile.ts";
 export { MODEL_REVISION } from "./auto-mode-build.ts";
+export type { ModelAsset } from "./auto-mode-profile.ts";
 
-export const MODEL_BASE_URL =
-  `https://huggingface.co/patronus-studio/lion-warden-ai-security-classifier/resolve/${MODEL_REVISION}`;
-
-export interface ModelAsset {
-  path: string;
-  size: number;
-  sha256: string;
-}
-
+export const modelBaseUrl = (profile: ModelProfile) =>
+  `https://huggingface.co/${profile.repo}/resolve/${profile.revision}`;
+export const MODEL_BASE_URL = modelBaseUrl(MODEL_PROFILE);
 /** Apache-2.0 assets only; GPL `l2/` paths are never fetched. */
-export const MODEL_ASSETS: readonly ModelAsset[] = [
-  { path: "config.json", size: 3_961, sha256: "1a0d7d997fa51a46177cfe5e8d6652a77f68c0939be92715477bdafb81dbd920" },
-  { path: "tokenizer_config.json", size: 574, sha256: "14b147f2a4f939d9b12ab36e9633917040dd948fa78ce283b03402e4cf2c9cba" },
-  { path: "tokenizer.json", size: 34_363_188, sha256: "609d8f4c067cd3950f88594c5a802616cea245823836ef5848ee4fc40aab5b6f" },
-  { path: "onnx/int8_int4_embeddings/model.onnx", size: 96_191_142, sha256: "f94571f4ad719105814583cd4fb7fef5e8127da857bb76ac84d538a337214d44" },
-];
+export const MODEL_ASSETS: readonly ModelAsset[] = MODEL_PROFILE.assets;
 
 export type FetchLike = (url: string, init?: RequestInit) => Promise<Response>;
 
@@ -95,19 +86,6 @@ export async function ensureModelAssets(options: EnsureModelAssetsOptions): Prom
 }
 
 
-const MAX_SEQUENCE_LENGTH = 256;
-type ModelHead = keyof typeof AUTO_MODE_LABEL_SCHEMA;
-
-const LOGIT_OUTPUTS: Record<ModelHead, string> = {
-  injection: "injection_logits",
-  threat: "threat_logits",
-  tool_class: "tool_class_logits",
-  tool_action: "tool_action_logits",
-  tool_tags: "tool_tags_logits",
-  sensitive_document: "sensitive_logits",
-  routing: "routing_logits",
-};
-
 export interface AutoModeClassifier {
   classify(text: string): Promise<AutoModeHeads>;
   close(): Promise<void>;
@@ -130,12 +108,26 @@ function probabilities(logits: Float32Array, labels: readonly string[], multiLab
   return Object.fromEntries(labels.map((label, i) => [label, scores[i]! / total]));
 }
 
-function outputLogits(outputs: InferenceSession.ReturnType, name: string, size: number): Float32Array {
+function halfToFloat(bits: number): number {
+  const exponent = (bits >> 10) & 0x1f;
+  const fraction = bits & 0x3ff;
+  const sign = bits & 0x8000 ? -1 : 1;
+  if (exponent === 0) return sign * 2 ** -14 * (fraction / 1024);
+  if (exponent === 0x1f) return fraction ? Number.NaN : sign * Infinity;
+  return sign * 2 ** (exponent - 15) * (1 + fraction / 1024);
+}
+
+/** Logits as float32; FP16 exports return float16 tensors. */
+export function outputLogits(outputs: InferenceSession.ReturnType, name: string, size: number): Float32Array {
   const output = outputs[name] as Tensor | undefined;
-  if (!output || output.type !== "float32" || !(output.data instanceof Float32Array) || output.data.length !== size) {
+  // onnxruntime-node returns float16 data as Float16Array (Node >= 24) or raw Uint16 bits.
+  const data = output?.type === "float16"
+    ? Float32Array.from(output.data as ArrayLike<number>, output.data instanceof Uint16Array ? halfToFloat : Number)
+    : output?.type === "float32" ? output.data : undefined;
+  if (!(data instanceof Float32Array) || data.length !== size) {
     throw new Error(`Invalid model output: ${name}`);
   }
-  return output.data;
+  return data;
 }
 
 /**
@@ -165,7 +157,8 @@ export async function loadInferenceRuntime(): Promise<{
 }
 
 /** Load verified local model assets and return a CPU classifier. */
-export async function createClassifier(modelDir: string): Promise<AutoModeClassifier> {
+export async function createClassifier(modelDir: string, profile: ModelProfile = MODEL_PROFILE): Promise<AutoModeClassifier> {
+  const LOGIT_OUTPUTS = profile.logitOutputs;
   const [{ transformers: { AutoTokenizer, env }, ort }, configText] = await Promise.all([
     loadInferenceRuntime(),
     readFile(join(modelDir, "config.json"), "utf8"),
@@ -175,7 +168,7 @@ export async function createClassifier(modelDir: string): Promise<AutoModeClassi
   env.allowRemoteModels = false;
   const tokenizer = await AutoTokenizer.from_pretrained(modelDir, { local_files_only: true });
   const session = await ort.InferenceSession.create(
-    join(modelDir, "onnx/int8_int4_embeddings/model.onnx"),
+    join(modelDir, profile.onnxPath),
     { executionProviders: ["cpu"] },
   );
   const requiredOutputs = Object.values(LOGIT_OUTPUTS);
@@ -191,7 +184,7 @@ export async function createClassifier(modelDir: string): Promise<AutoModeClassi
       if (closed) throw new Error("Classifier is closed.");
       const encoded = tokenizer(text, {
         truncation: true,
-        max_length: MAX_SEQUENCE_LENGTH,
+        max_length: profile.maxSequenceLength,
         return_tensor: false,
       });
       const inputIds = BigInt64Array.from(encoded.input_ids, BigInt);

@@ -1,4 +1,5 @@
 import { chmodSync, existsSync, mkdtempSync, readFileSync, statSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
 import { join } from "node:path";
 
 import { describe, expect, it } from "vitest";
@@ -7,7 +8,7 @@ import { createPermissionSystemLogger } from "./logging";
 import { redactSecrets } from "./secret-redaction";
 
 function loggerFixture(debugLog: boolean) {
-  const dir = mkdtempSync(join("/tmp", "pi-sentinel-logging-"));
+  const dir = mkdtempSync(join(tmpdir(), "pi-sentinel-logging-"));
   const debugLogPath = join(dir, "debug.jsonl");
   const reviewLogPath = join(dir, "review.jsonl");
   const config = {

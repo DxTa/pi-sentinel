@@ -95,6 +95,11 @@ describe("matchesYoloAskBashPattern", () => {
     "GIT_SSH_COMMAND=x git push origin main",
     "/usr/bin/ssh host",
     "rm\t./notes.txt",
+    "npm publish",
+    "npm --registry https://registry.example.com publish --access public",
+    "pnpm publish",
+    "yarn npm publish",
+    "cd pkg && npm publish",
   ])("requires prompt for %s in YOLO mode", (command: string) => {
     const context = { toolName: "bash", command };
 
@@ -148,6 +153,10 @@ describe("matchesYoloAskBashPattern", () => {
     "kubectl rollout status deploy/a",
     "kubectl rollout history deploy/a",
     "git log --grep push",
+    "npm test",
+    "npm run build",
+    "npm view lodash version",
+    "yarn install",
   ])("lets %s through in YOLO mode", (command: string) => {
     const context = { toolName: "bash", command };
 

@@ -4,7 +4,7 @@ import type { NeighbourQuery, NeighbourSummary } from "./auto-mode-neighbours";
 import type { ScorerResult } from "./auto-mode-scorer";
 import { createHash, randomUUID } from "node:crypto";
 
-import { decideAutoMode, AUTO_MODE_POLICY_THRESHOLDS } from "./auto-mode-policy";
+import { decideAutoMode, thresholdsFor } from "./auto-mode-policy";
 import type { AutoModeHeads } from "./auto-mode-policy";
 import { MODEL_REVISION } from "./auto-mode-build";
 import type { PermissionState } from "./types";
@@ -16,7 +16,7 @@ import type {
 } from "./auto-mode-client";
 
 type EvaluationFlow = "permission" | "secret_read";
-type EvaluationOperation = "read" | "list" | "write" | "edit" | "exec";
+type EvaluationOperation = "read" | "list" | "write" | "edit" | "exec" | "tool";
 type EvaluationSkipReason =
   | "not_candidate"
   | "result_scanning_disabled"
@@ -444,7 +444,7 @@ export class AutoModeEvaluator {
       candidate: request.candidate,
       eligible: request.eligible,
       disposition: details.disposition,
-      policyThresholds: AUTO_MODE_POLICY_THRESHOLDS,
+      policyThresholds: thresholdsFor(request.operation),
       toolName: request.toolName,
       operation: request.operation,
       pathPresent: Boolean(request.workspaceRelativePath),

@@ -3,7 +3,7 @@ import { dirname } from "node:path";
 import * as net from "node:net";
 
 import { WORKER_HANDSHAKE_TIMEOUT_MS, WORKER_IDLE_EVICTION_MS } from "./auto-mode-client.ts";
-import { withFileLock } from "./auto-mode-file-lock.ts";
+import { SHORT_LOCK_TIMEOUT_MS, withFileLock } from "./auto-mode-file-lock.ts";
 import type { AutoModeHeads } from "./auto-mode-policy";
 
 const AUTO_MODE_PROTOCOL_VERSION = 2;
@@ -137,7 +137,7 @@ export class AutoModeWorkerServer {
       this.ownsSocket = true;
       await chmod(this.options.socketPath, 0o600);
       this.idleTimer = setInterval(() => this.evictIfIdle(), 1000);
-    });
+    }, SHORT_LOCK_TIMEOUT_MS);
   }
 
   close(): Promise<void> {
@@ -165,7 +165,7 @@ export class AutoModeWorkerServer {
           await closeListener();
           await rm(this.options.socketPath, { force: true });
           this.ownsSocket = false;
-        });
+        }, SHORT_LOCK_TIMEOUT_MS);
       } else {
         await closeListener();
       }

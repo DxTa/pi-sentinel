@@ -10,6 +10,8 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import piPermissionSystemExtension from "./index.ts";
 import { resolveDockerSocketPaths } from "./sandbox/docker-socket.js";
 import { AUTO_MODE_BUILD_ID } from "./auto-mode-build";
+/** Tool name from model input text in either profile format (`tool=x ...` or JSON `tool_name`). */
+const toolOf = (text: string): string => (text.startsWith("{") ? JSON.parse(text).tool_name : text.slice(5).split(" ", 1)[0]);
 import { AUTO_MODE_LABEL_SCHEMA } from "./auto-mode-label-schema";
 import type { AutoModeHeads } from "./auto-mode-policy";
 import { AutoModeWorkerServer } from "./auto-mode-worker";
@@ -1597,11 +1599,12 @@ describe("piPermissionSystemExtension SRT default smoke", () => {
         ready: async () => undefined,
         classify: async (text) => {
           classificationTexts.push(text);
-          const action = text.startsWith("tool=bash ")
+          const tool = toolOf(text);
+          const action = tool === "bash"
             ? "exec"
-            : text.startsWith("tool=write ") || text.startsWith("tool=edit ")
+            : tool === "write" || tool === "edit"
               ? "write"
-              : text.startsWith("tool=ls ")
+              : tool === "ls"
                 ? "list"
                 : "read";
           return safeAutoModeHeads(action);
@@ -1624,9 +1627,7 @@ describe("piPermissionSystemExtension SRT default smoke", () => {
         { toolName: "bash", input: { command: "printf 'safe'" } },
       ];
       for (const event of events) await toolCall(event, context as never);
-      expect(classificationTexts.map((text) => text.split(" ", 1)[0])).toEqual([
-        "tool=write", "tool=edit",
-      ]);
+      expect(classificationTexts.map(toolOf)).toEqual(["write", "edit"]);
     } finally {
       random.mockRestore();
       await pi.handlers.get("session_shutdown")?.(undefined, context as never);

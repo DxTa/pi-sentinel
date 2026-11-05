@@ -83,6 +83,7 @@
     "check": "tsc --noEmit",
     "test": "vitest run",
     "test:watch": "vitest",
-    "postinstall": "node bin/patch-sandbox-runtime.mjs"
+    "postinstall": "node bin/patch-sandbox-runtime.mjs",
+    "calibrate": "vite-node scripts/calibrate.ts --"
   }
 }

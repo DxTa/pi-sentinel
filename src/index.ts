@@ -50,6 +50,7 @@ import {
   AutoModeClient,
 } from "./auto-mode-client";
 import { isUnixSocketActive, spawnDetachedAutoModeWorker, waitForWorkerStartup } from "./auto-mode-startup";
+import { nodeRuntimePath } from "./host-runtime";
 import { AUTO_MODE_BUILD_ID } from "./auto-mode-build";
 import { PromptWaitTracker } from "./prompt-state";
 import { getHardBlockedBashMutationPaths } from "./handlers/gates/bash-external-directory.js";
@@ -223,7 +224,7 @@ async function startAutoModeWorker(
     modelDir,
   ];
   try {
-    const worker = await spawnDetachedAutoModeWorker(agentDir, process.execPath, args);
+    const worker = await spawnDetachedAutoModeWorker(agentDir, nodeRuntimePath(), args);
     const startupSignal = worker.startupSignal.catch((error: unknown) => {
       writeDebugLog("auto_mode.worker_unavailable", { reason: "spawn_error" });
       throw error;
@@ -841,7 +842,7 @@ export default function piPermissionSystemExtension(pi: ExtensionAPI): void {
     ctx.ui.notify(
       autoModeWorkerFailed
         ? "auto mode is unavailable: the classifier worker stopped. Requests prompt as in manual mode. Details: " + log
-        : "auto mode is not ready yet (the first start downloads a ~130 MB classifier). " +
+        : "auto mode is not ready yet (the first start downloads a ~320 MB classifier). " +
           "Requests prompt as in manual mode until it is. Details: " + log,
       "warning",
     );
