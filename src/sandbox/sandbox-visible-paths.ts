@@ -2,7 +2,7 @@ import { createRequire } from "node:module";
 import { homedir, tmpdir } from "node:os";
 import { lstatSync, realpathSync, statSync } from "node:fs";
 import { realpath } from "node:fs/promises";
-import { basename, dirname, isAbsolute, resolve, sep } from "node:path";
+import { basename, dirname, isAbsolute, relative, resolve, sep } from "node:path";
 
 import { EXTENSION_ROOT } from "../extension-config.js";
 import type { ResolvedSandboxProfile, SandboxConfig } from "./types.js";
@@ -141,6 +141,29 @@ export function expandHomePath(value: string): string {
 
 function pathMatchesPrefix(absPath: string, prefix: string): boolean {
   return absPath === prefix || absPath.startsWith(prefix + sep);
+}
+
+/**
+ * Symlink nodes under $HOME on a logical path. macOS checks these nodes too, so allowing only the canonical target is not enough.
+ * macOS only: Linux SRT binds each allowRead entry whole, so a link node would expose its target's siblings.
+ * shortcut: home-only, so system aliases such as /var stay out of allowRead; upgrade if non-home symlinked paths need reads.
+ */
+export function homeSymlinkNodes(logicalPath: string): string[] {
+  if (process.platform !== "darwin") return [];
+  const home = homedir();
+  const absPath = resolve(logicalPath);
+  if (absPath === home || !pathMatchesPrefix(absPath, home)) return [];
+  const nodes: string[] = [];
+  let current = home;
+  for (const part of relative(home, absPath).split(sep)) {
+    current = resolve(current, part);
+    try {
+      if (lstatSync(current).isSymbolicLink()) nodes.push(current);
+    } catch {
+      break;
+    }
+  }
+  return nodes;
 }
 
 function isSafeHomePath(home: string, relativePath: string, candidate: string): boolean {

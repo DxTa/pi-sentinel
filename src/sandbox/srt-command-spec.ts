@@ -9,6 +9,7 @@ import {
   buildSandboxVisiblePathsWithinScanBudget,
   canonicalPath,
   canonicalPathWithinScanBudget,
+  homeSymlinkNodes,
   uvHomeRoots,
 } from "./sandbox-visible-paths.js";
 import {
@@ -108,6 +109,16 @@ async function filterMaskedShimPlanWithinScanBudget(
   return { maskedFilePaths, maskedDenyPaths, shimCommands };
 }
 
+/** Adds home symlink nodes of logical allowed paths; masked scans keep the pre-link roots. */
+function withHomeSymlinkNodes(
+  readPaths: string[],
+  input: SrtCommandSpecInput,
+  resolvedBinds: string[],
+): string[] {
+  const logicalPaths = [...resolvedBinds, ...(input.unmaskedPaths ?? []).map((entry) => entry.path)];
+  return [...new Set([...readPaths, ...logicalPaths.flatMap(homeSymlinkNodes)])];
+}
+
 export function buildSrtCommandSpec(input: SrtCommandSpecInput): SrtCommandSpec {
   const cwd = canonicalPath(input.cwd);
   const repoRoot = canonicalPath(input.repoRoot);
@@ -128,7 +139,7 @@ export function buildSrtCommandSpec(input: SrtCommandSpecInput): SrtCommandSpec 
     config: input.sandboxConfig,
     resolvedBinds,
   });
-  const runtimeReadAllowPaths = buildSandboxRuntimeReadAllowPaths({
+  const readAllowPaths = buildSandboxRuntimeReadAllowPaths({
     repoRoot,
     cwd,
     command: input.command,
@@ -136,6 +147,7 @@ export function buildSrtCommandSpec(input: SrtCommandSpecInput): SrtCommandSpec 
     config: input.sandboxConfig,
     resolvedBinds,
   });
+  const runtimeReadAllowPaths = withHomeSymlinkNodes(readAllowPaths, input, resolvedBinds);
 
   const unmaskedPaths = (input.unmaskedPaths ?? []).map((entry) => ({
     ...entry,
@@ -144,7 +156,7 @@ export function buildSrtCommandSpec(input: SrtCommandSpecInput): SrtCommandSpec 
   const maskedShimPlan = filterMaskedShimPlan(
     buildMaskedCommandShimPlan(input.command, input.profile, cwd, {
       scanRoots: filterMaskedScanRoots(
-        runtimeReadAllowPaths,
+        readAllowPaths,
         input.sandboxConfig.infrastructureReadPaths ?? [],
       ),
     }),
@@ -213,7 +225,7 @@ export async function buildSrtCommandSpecAsync(
     deadline,
     maxScanDurationMs,
   );
-  const runtimeReadAllowPaths = visibleReadPaths;
+  const runtimeReadAllowPaths = withHomeSymlinkNodes(visibleReadPaths, input, resolvedBinds);
   const unmaskedPaths = await Promise.all((input.unmaskedPaths ?? []).map(async (entry) => ({
     ...entry,
     path: await canonicalPathWithinScanBudget(entry.path, deadline, maxScanDurationMs),
@@ -225,7 +237,7 @@ export async function buildSrtCommandSpecAsync(
   );
   const maskedShimPlan = await filterMaskedShimPlanWithinScanBudget(
     await buildMaskedCommandShimPlanAsync(input.command, input.profile, cwd, {
-      scanRoots: filterMaskedScanRoots(runtimeReadAllowPaths, infrastructureRoots),
+      scanRoots: filterMaskedScanRoots(visibleReadPaths, infrastructureRoots),
       deadline,
       maxScanDurationMs,
     }),

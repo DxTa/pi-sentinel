@@ -232,6 +232,69 @@ describe("buildSrtCommandSpec", () => {
     }
   });
 
+  it.runIf(process.platform === "darwin")("keeps home symlink nodes readable for infrastructure paths behind them", async () => {
+    const repoRoot = await makeTempDir("pi-srt-spec-symlink-node-repo-");
+    const realRoot = await makeTempDir("pi-srt-spec-symlink-node-real-");
+    const linkRoot = path.join(process.env.HOME!, ".pi-symlink-node");
+    await symlink(realRoot, linkRoot);
+
+    const input = {
+      command: "echo ok",
+      cwd: repoRoot,
+      repoRoot,
+      sandboxConfig: makeConfig({ infrastructureReadPaths: [path.join(linkRoot, "agent")] }),
+      profile: makeProfile(),
+    };
+    const specs = [buildSrtCommandSpec(input), await buildSrtCommandSpecAsync(input)];
+
+    for (const spec of specs) {
+      expect(spec.runtimeReadAllowPaths).toContain(linkRoot);
+      expect(spec.runtimeReadAllowPaths).not.toContain(canonicalPath(process.env.HOME!));
+    }
+  });
+
+  it.runIf(process.platform === "darwin")("keeps home symlink nodes readable for granted paths behind them", async () => {
+    const repoRoot = await makeTempDir("pi-srt-spec-symlink-grant-repo-");
+    const realRoot = await makeTempDir("pi-srt-spec-symlink-grant-real-");
+    const linkRoot = path.join(process.env.HOME!, ".pi-symlink-grant");
+    await symlink(realRoot, linkRoot);
+
+    const input = {
+      command: "echo ok",
+      cwd: repoRoot,
+      repoRoot,
+      sandboxConfig: makeConfig(),
+      profile: makeProfile(),
+      unmaskedPaths: [{ path: path.join(linkRoot, "notes"), writable: false }],
+    };
+    const specs = [buildSrtCommandSpec(input), await buildSrtCommandSpecAsync(input)];
+
+    for (const spec of specs) {
+      expect(spec.runtimeReadAllowPaths).toContain(linkRoot);
+    }
+  });
+
+  it.runIf(process.platform !== "darwin")("adds no home symlink nodes off macOS, so Linux binds stay on the granted target", async () => {
+    const repoRoot = await makeTempDir("pi-srt-spec-symlink-linux-repo-");
+    const realRoot = await makeTempDir("pi-srt-spec-symlink-linux-real-");
+    const linkRoot = path.join(process.env.HOME!, ".pi-symlink-linux");
+    await symlink(realRoot, linkRoot);
+
+    const input = {
+      command: "echo ok",
+      cwd: repoRoot,
+      repoRoot,
+      sandboxConfig: makeConfig(),
+      profile: makeProfile(),
+      unmaskedPaths: [{ path: path.join(linkRoot, "notes"), writable: false }],
+    };
+    const specs = [buildSrtCommandSpec(input), await buildSrtCommandSpecAsync(input)];
+
+    for (const spec of specs) {
+      expect(spec.runtimeReadAllowPaths).not.toContain(linkRoot);
+    }
+  });
+
   it("allows standard home configuration reads without allowing writes", async () => {
     const repoRoot = await makeTempDir("pi-srt-spec-home-visibility-");
     const configRoot = path.join(process.env.HOME!, ".config");
