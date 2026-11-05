@@ -10,6 +10,7 @@ import {
   canonicalPath,
   canonicalPathWithinScanBudget,
   homeSymlinkNodes,
+  systemSymlinkNodes,
   uvHomeRoots,
 } from "./sandbox-visible-paths.js";
 import {
@@ -69,8 +70,11 @@ export function buildSrtExecShimPlan(
 function filterMaskedScanRoots(scanRoots: string[], infrastructureRoots: string[]): string[] {
   const roots = infrastructureRoots.map(canonicalPath);
   const uvRoots = uvHomeRoots();
+  // Tool directories on $PATH hold binaries, can be huge (SDKs), and need no masked-file scan.
+  const toolDirs = (process.env.PATH ?? "").split(":").filter((entry) => entry.startsWith("/")).map(canonicalPath);
   return scanRoots.filter((scanRoot) =>
     !uvRoots.some((uvRoot) => scanRoot === uvRoot || scanRoot.startsWith(`${uvRoot}/`))
+    && !toolDirs.some((toolDir) => scanRoot === toolDir || scanRoot.startsWith(`${toolDir}/`))
     && !roots.some((root) =>
       scanRoot === root ||
       scanRoot.startsWith(`${root}/`) ||
@@ -116,7 +120,7 @@ function withHomeSymlinkNodes(
   resolvedBinds: string[],
 ): string[] {
   const logicalPaths = [...resolvedBinds, ...(input.unmaskedPaths ?? []).map((entry) => entry.path)];
-  return [...new Set([...readPaths, ...logicalPaths.flatMap(homeSymlinkNodes)])];
+  return [...new Set([...readPaths, ...logicalPaths.flatMap(homeSymlinkNodes), ...systemSymlinkNodes()])];
 }
 
 export function buildSrtCommandSpec(input: SrtCommandSpecInput): SrtCommandSpec {

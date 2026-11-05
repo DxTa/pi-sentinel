@@ -171,6 +171,27 @@ export function homeSymlinkNodes(logicalPath: string): string[] {
   return nodes;
 }
 
+/**
+ * Symlinks on the way to the system read allow-list (`/etc` -> `/private/etc` on macOS). The sandbox must
+ * resolve the link itself before it can read the target; the node grants no access to the target's contents.
+ */
+export function systemSymlinkNodes(): string[] {
+  if (process.platform !== "darwin") return [];
+  const nodes = new Set<string>();
+  for (const prefix of KNOWN_SYSTEM_PREFIXES) {
+    let current = "/";
+    for (const part of prefix.split("/").filter(Boolean)) {
+      current = resolve(current, part);
+      try {
+        if (lstatSync(current).isSymbolicLink()) nodes.add(current);
+      } catch {
+        break;
+      }
+    }
+  }
+  return [...nodes];
+}
+
 function isSafeHomePath(home: string, relativePath: string, candidate: string): boolean {
   if (candidate === home || !pathMatchesPrefix(candidate, home)) return false;
   try {
@@ -194,6 +215,19 @@ function canonicalHomeFile(home: string, relativePath: string): string | null {
   return isSafeHomePath(home, relativePath, candidate) ? candidate : null;
 }
 
+/** Credential and agent folders stay hidden even when `$PATH` points into them. */
+const HOME_PATH_EXCLUDED_ROOTS = [".ssh", ".aws", ".gnupg", ".kube", ".pi"];
+
+/** `$PATH` entries inside the home directory, relative to it. The unsafe-path filter still applies to each. */
+function homePathDirectories(): string[] {
+  const home = homedir();
+  return (process.env.PATH ?? "").split(":")
+    .filter((entry) => isAbsolute(entry))
+    .map((entry) => relative(home, entry))
+    .filter((rel) => rel !== "" && !rel.startsWith("..") && !isAbsolute(rel))
+    .filter((rel) => !HOME_PATH_EXCLUDED_ROOTS.includes(rel.split(sep)[0]!));
+}
+
 function homeVisiblePathsForCommand(
   command: string | undefined,
   commandUsesUv: boolean | undefined,
@@ -202,9 +236,10 @@ function homeVisiblePathsForCommand(
     command === undefined ||
     (!/\\\r?\n/.test(command) && DIRECT_UV_COMMAND_PATTERN.test(command))
   );
-  const paths = includeUvRoots
-    ? [...KNOWN_HOME_VISIBLE_PATHS, ...UV_HOME_VISIBLE_PATHS]
-    : KNOWN_HOME_VISIBLE_PATHS;
+  // Tools installed under the home directory (Rancher Desktop, Homebrew-less setups) must be runnable.
+  const pathDirs = homePathDirectories();
+  const known = [...KNOWN_HOME_VISIBLE_PATHS, ...pathDirs];
+  const paths = includeUvRoots ? [...known, ...UV_HOME_VISIBLE_PATHS] : known;
   return command !== undefined && isDockerCommand(command)
     ? [...paths, ...DOCKER_HOME_VISIBLE_PATHS]
     : paths;

@@ -2,7 +2,7 @@ import { mkdtemp, mkdir, rm, writeFile } from "node:fs/promises";
 import { tmpdir, homedir } from "node:os";
 import path from "node:path";
 
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 
 import { EXTENSION_ROOT } from "../extension-config.js";
 import { detectExternalPaths } from "./external-path-gate.js";
@@ -10,6 +10,7 @@ import {
   createSandboxVisibilityMatcher,
   expandHomePath,
   getSandboxTempPaths,
+  systemSymlinkNodes,
 } from "./sandbox-visible-paths.js";
 import type { ResolvedSandboxProfile, SandboxConfig } from "./types.js";
 
@@ -22,6 +23,7 @@ async function makeTempDir(prefix: string): Promise<string> {
 }
 
 afterEach(async () => {
+  vi.unstubAllEnvs();
   await Promise.all(tempPaths.splice(0).map((dir) => rm(dir, { recursive: true, force: true })));
 });
 
@@ -118,6 +120,21 @@ describe("createSandboxVisibilityMatcher", () => {
     expect(isVisible(path.join(homedir(), ".bun/bin/bun"))).toBe(true);
   });
 
+  it("makes PATH directories under the home directory visible, except credential folders", () => {
+    const toolBin = path.join(homedir(), ".sentinel-test-tools", "bin");
+    vi.stubEnv("PATH", [toolBin, path.join(homedir(), ".ssh"), "/usr/bin"].join(":"));
+    const isVisible = createSandboxVisibilityMatcher({
+      repoRoot: "/workspace/repo",
+      cwd: "/workspace/repo",
+      profile: makeProfile(),
+      config: makeConfig(),
+    });
+
+    expect(isVisible(path.join(toolBin, "mytool"))).toBe(true);
+    expect(isVisible(path.join(homedir(), ".ssh", "id_rsa"))).toBe(false);
+    expect(isVisible(path.join(homedir(), ".sentinel-other", "bin", "x"))).toBe(false);
+  });
+
   it("treats configured infrastructure paths as visible", () => {
     const infrastructureRoot = path.join(homedir(), ".pi", "agent");
     const isVisible = createSandboxVisibilityMatcher({
@@ -209,5 +226,15 @@ describe("detectExternalPaths", () => {
 
     expect(externals).toHaveLength(1);
     expect(externals[0]?.path).toBe(path.resolve(externalFile));
+  });
+});
+
+describe("systemSymlinkNodes", () => {
+  it.skipIf(process.platform !== "darwin")("includes the /etc symlink so system files under it stay readable", () => {
+    expect(systemSymlinkNodes()).toContain("/etc");
+  });
+
+  it("returns only absolute paths", () => {
+    expect(systemSymlinkNodes().every((node) => node.startsWith("/"))).toBe(true);
   });
 });

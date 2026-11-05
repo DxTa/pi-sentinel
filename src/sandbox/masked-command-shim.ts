@@ -264,12 +264,20 @@ function runFindSync(
   maxScanDurationMs: number,
 ): string[] {
   assertScanWithinBudget(scanDeadline, maxScanDurationMs, root);
-  const output = execFileSync(FIND_BINARY, buildFindArgs(root, getFindNamePatterns(profile, root), maxDepth, getPrunePaths(profile, root)), {
-    encoding: "buffer",
-    maxBuffer: MAX_FIND_OUTPUT_BYTES,
-    stdio: ["ignore", "pipe", "ignore"],
-    timeout: Math.max(1, scanDeadline - Date.now()),
-  });
+  let output: Buffer;
+  try {
+    output = execFileSync(FIND_BINARY, buildFindArgs(root, getFindNamePatterns(profile, root), maxDepth, getPrunePaths(profile, root)), {
+      encoding: "buffer",
+      maxBuffer: MAX_FIND_OUTPUT_BYTES,
+      stdio: ["ignore", "pipe", "pipe"],
+      timeout: Math.max(1, scanDeadline - Date.now()),
+    });
+  } catch (error) {
+    // Like the async scan: unreadable directories (exit 1, only "Permission denied" lines) do not fail the scan.
+    const failure = error as { status?: number; killed?: boolean; signal?: unknown; stdout?: Buffer; stderr?: Buffer };
+    if (!isPermissionDeniedOnly({ code: failure.status, killed: failure.killed, signal: failure.signal }, failure.stderr ?? "")) throw error;
+    output = failure.stdout ?? Buffer.alloc(0);
+  }
   assertScanWithinBudget(scanDeadline, maxScanDurationMs, root);
   return parseFindOutput(output, root, profile, maxEntries, maxDepth, scanDeadline, maxScanDurationMs);
 }
