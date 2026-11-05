@@ -376,7 +376,7 @@ describe("piPermissionSystemExtension SRT default smoke", () => {
     expect(next.event.input.command).toBe(fixture.command);
   });
 
-  it("preserves explicit push denies before offering host execution", async () => {
+  it("asks before an explicit push deny and offers no host execution", async () => {
     const fixture = await setupPushFallback();
     const ctx = createContext(fixture.projectDir, { hasUI: true, choices: ["Yes"] });
     const first = await fixture.run(ctx);
@@ -386,7 +386,8 @@ describe("piPermissionSystemExtension SRT default smoke", () => {
     ctx.ui.select.mockClear();
     const denied = await fixture.run(ctx);
     expect(denied.result).toMatchObject({ block: true });
-    expect(ctx.ui.select).not.toHaveBeenCalled();
+    expect(ctx.ui.select).toHaveBeenCalledOnce();
+    expect(ctx.ui.select.mock.calls[0]?.[0]).toContain("BLOCKED BY POLICY");
   });
 
   it.each(["ordinary network failure", "untracked proxy output", "successful proxy output"])(
@@ -1969,7 +1970,7 @@ describe("piPermissionSystemExtension SRT default smoke", () => {
   it.each([
     ["Docker equals-form option", (envPath: string) => `docker run --env-file=.env.local alpine:latest`],
     ["interpreter literal", (_envPath: string) => `python3 -c "open('.env.local').read()"`],
-  ])("preserves explicit path denies for %s", async (caseName, makeCommand) => {
+  ])("asks before an explicit path deny for %s and blocks on refusal", async (caseName, makeCommand) => {
     const agentDir = await makeTempDir("pi-permission-agent-");
     const projectDir = await makeTempDir("pi-permission-project-");
     const envPath = path.join(projectDir, ".env.local");
@@ -1998,14 +1999,14 @@ describe("piPermissionSystemExtension SRT default smoke", () => {
 
     const pi = createFakePi();
     piPermissionSystemExtension(pi as never);
-    const context = createContext(projectDir, { hasUI: true, choices: ["Yes"] });
+    const context = createContext(projectDir, { hasUI: true, choices: ["No"] });
     const result = await pi.handlers.get("tool_call")?.({
       toolName: "bash",
       toolCallId: `t-explicit-path-deny-${String(caseName).replaceAll(" ", "-")}`,
       input: { command: makeCommand(envPath) },
     }, context as never);
     expect(result).toMatchObject({ block: true });
-    expect(context.ui.select).not.toHaveBeenCalled();
+    expect(context.ui.select).toHaveBeenCalledOnce();
   });
 
   it("prompts on explicit path asks before auto-granting a dotenv read", async () => {

@@ -1631,26 +1631,6 @@ export default function piPermissionSystemExtension(pi: ExtensionAPI): void {
       return { block: true, reason: "Permission config unavailable; command blocked." };
     }
 
-    const bashCommandForDenyCheck = e.toolName === "bash"
-      ? (e.input as { command?: unknown })?.command
-      : undefined;
-    if (
-      typeof bashCommandForDenyCheck === "string"
-      && matchesGitPushCommand(bashCommandForDenyCheck)
-    ) {
-      session.activate(ctx);
-      const agentName = session.resolveAgentName(ctx);
-      const pushCheck = session.checkPermission(
-        "bash",
-        e.input ?? {},
-        agentName ?? undefined,
-        session.getSessionRuleset(),
-      );
-      if (pushCheck.state === "deny") {
-        return { block: true, reason: "Git push is denied by policy." };
-      }
-    }
-
     // 1. Network domain gate (our addition — runs before upstream gates)
     let networkResult: Awaited<ReturnType<typeof handleNetworkToolCall>>;
     try {

@@ -113,6 +113,16 @@ export async function runGateCheck(
 
   // 3. Apply the deny/ask/allow gate
   const canConfirm = deps.canConfirm(descriptor.promptDetails);
+  // A policy deny becomes a one-time or session-only grant request when a person can answer.
+  const denyOverride = check.state === "deny" && canConfirm;
+  const gateState = denyOverride ? "ask" : check.state;
+  if (denyOverride) {
+    deps.writeReviewLog("permission_request.deny_override_prompted", {
+      ...descriptor.logContext,
+      agentName,
+      matchedPattern: check.matchedPattern ?? null,
+    });
+  }
 
   // Resolve the first pattern for applyPermissionGate's sessionApproval param
   const singleSessionApproval = descriptor.sessionApproval
@@ -139,13 +149,21 @@ export async function runGateCheck(
 
   let autoApproved = false;
   const gateResult = await applyPermissionGate({
-    state: check.state,
+    state: gateState,
     canConfirm,
     sessionApproval: singleSessionApproval,
     promptForApproval: async () => {
       const decision = await deps.promptPermission({
         requestId: toolCallId,
         ...descriptor.promptDetails,
+        ...(denyOverride
+          ? {
+              forcePromptInYolo: true,
+              allowPersist: false,
+              autoModeEligible: false,
+              message: `BLOCKED BY POLICY${check.matchedPattern ? ` (${check.matchedPattern})` : ""}. Allow once or for this session?\n${descriptor.promptDetails.message}`,
+            }
+          : {}),
       });
       autoApproved = decision.autoApproved === true;
       return decision;
@@ -163,7 +181,7 @@ export async function runGateCheck(
 
   // 5. Emit decision event
   const resolution = deriveResolution(
-    check.state,
+    gateState,
     gateResult.action,
     approvalKind,
     canConfirm,

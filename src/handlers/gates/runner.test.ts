@@ -192,4 +192,61 @@ describe("runGateCheck", () => {
       "git push *",
     );
   });
+
+  describe("policy deny", () => {
+    const denyCheck = { toolName: "bash", state: "deny" as const, source: "bash" as const, origin: "config" as const };
+    const descriptor = {
+      surface: "bash",
+      input: { command: "cat /etc/hosts" },
+      denialContext: { kind: "tool" as const, check: denyCheck, input: { command: "cat /etc/hosts" } },
+      sessionApproval: { surface: "bash", pattern: "cat /etc/hosts*" },
+      promptDetails: { source: "tool_call" as const, agentName: null, message: "Run cat", toolName: "bash" },
+      logContext: { source: "tool_call", toolName: "bash" },
+      decision: { surface: "bash", value: "cat /etc/hosts" },
+      preCheck: denyCheck,
+    };
+    const makeDeps = (decision: unknown, canConfirm = true) => ({
+      checkPermission: vi.fn(),
+      getSessionRuleset: () => [],
+      approveSessionRule: vi.fn(),
+      persistPermissionRule: vi.fn(),
+      writeReviewLog: vi.fn(),
+      emitDecision: vi.fn(),
+      canConfirm: () => canConfirm,
+      promptPermission: vi.fn(async () => decision),
+    });
+
+    it("prompts once-or-session only, never auto-approved", async () => {
+      const deps = makeDeps({ approved: true, state: "approved" });
+      const result = await runGateCheck(descriptor as never, null, "t1", deps as never);
+      expect(result).toEqual({ action: "allow" });
+      expect(deps.promptPermission).toHaveBeenCalledWith(
+        expect.objectContaining({ forcePromptInYolo: true, allowPersist: false }),
+      );
+      expect(deps.approveSessionRule).not.toHaveBeenCalled();
+      expect(deps.emitDecision).toHaveBeenCalledWith(
+        expect.objectContaining({ result: "allow", resolution: "user_approved" }),
+      );
+    });
+
+    it("records a session rule when the user grants for the session", async () => {
+      const deps = makeDeps({ approved: true, state: "approved_for_session" });
+      await runGateCheck(descriptor as never, null, "t2", deps as never);
+      expect(deps.approveSessionRule).toHaveBeenCalledWith("bash", "cat /etc/hosts*");
+      expect(deps.persistPermissionRule).not.toHaveBeenCalled();
+    });
+
+    it("blocks when the user refuses", async () => {
+      const deps = makeDeps({ approved: false, state: "denied" });
+      const result = await runGateCheck(descriptor as never, null, "t3", deps as never);
+      expect(result.action).toBe("block");
+    });
+
+    it("still blocks without UI", async () => {
+      const deps = makeDeps({ approved: true, state: "approved" }, false);
+      const result = await runGateCheck(descriptor as never, null, "t4", deps as never);
+      expect(result.action).toBe("block");
+      expect(deps.promptPermission).not.toHaveBeenCalled();
+    });
+  });
 });

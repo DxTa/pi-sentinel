@@ -47,6 +47,8 @@ export interface PromptPermissionDetails {
   sessionLabel?: string;
   /** Disable all remembered approval choices for one-time prompts. */
   allowSession?: boolean;
+  /** False offers once or this-session grants only (no workspace/global). Used when a policy deny is overridden by the user. */
+  allowPersist?: boolean;
   /** Set only after normal deterministic tool gates pass. */
   autoModeEligible?: boolean;
   /** Whether eligible request path is workspace-local. */
@@ -266,7 +268,9 @@ export class PermissionPrompter implements PermissionPrompterApi {
           ? { allowSession: false, allowWorkspace: false, allowGlobal: false }
           : {
               ...(details.sessionLabel ? { sessionLabel: details.sessionLabel } : {}),
-              allowWorkspace: Boolean(ctx.cwd),
+              ...(details.allowPersist === false
+                ? { allowWorkspace: false, allowGlobal: false }
+                : { allowWorkspace: Boolean(ctx.cwd) }),
             },
         {
           toolName: details.toolName,

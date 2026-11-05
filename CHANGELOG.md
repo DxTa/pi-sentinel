@@ -15,6 +15,7 @@ Standalone Git distribution prepared for `DxTa/pi-sentinel`.
 - Linux sandbox no longer needs a system `ripgrep`: the binary ships through `@vscode/ripgrep` (npm platform packages, no install-time download) and is passed to SRT as `ripgrep.command`. `rg` on `PATH` remains the fallback. `/sandbox-status` checks the binary SRT will actually use.
 - `/sandbox-status` on Linux runs a short bubblewrap test and prints the fix: the install command for missing packages (apt, dnf, pacman, zypper), or a bwrap-only AppArmor profile when Ubuntu 24.04+'s user-namespace restriction blocks it. Commands blocked for missing dependencies point to `/sandbox-status`.
 
+- Policy denies now prompt instead of blocking: config `deny` rules, yolo forbidden-write paths, `.env*` protection, and push denies show "BLOCKED BY POLICY" and offer allow once or for this session (no workspace/global grant). Yolo and `auto` never auto-approve these prompts; no UI keeps the block. Denied network domains and sandbox auth-exception denies still block.
 - Preserved permission, network, sandbox, masked-path, grant, service, and backend behavior.
 - Removed content-based credential scanning and approval; configured SRT masks and permission/path rules remain.
 - Resolved bundled bubblewrap runner relative to installed package root.

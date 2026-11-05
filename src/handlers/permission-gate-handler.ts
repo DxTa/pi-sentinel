@@ -229,16 +229,40 @@ export class PermissionGateHandler {
         agentName: tcc.agentName,
         path: forbiddenWrite,
       });
-      emitDecision({
-        surface: tcc.toolName,
-        value: forbiddenWrite,
-        result: "deny",
-        resolution: "policy_deny",
-        origin: null,
-        agentName: tcc.agentName ?? null,
-        matchedPattern: null,
-      });
-      return { block: true, reason: `yolo mode never writes to ${forbiddenWrite} (system or credential path).` };
+      const forbiddenWriteResult = await runGateCheck(
+        {
+          surface: tcc.toolName,
+          input: tcc.input,
+          denialContext: {
+            kind: "path",
+            toolName: tcc.toolName,
+            pathValue: forbiddenWrite,
+            agentName: tcc.agentName ?? undefined,
+          },
+          promptDetails: {
+            source: "tool_call",
+            agentName: tcc.agentName,
+            message: `yolo mode never writes to ${forbiddenWrite} (system or credential path).`,
+            toolCallId: tcc.toolCallId,
+            toolName: tcc.toolName,
+            path: forbiddenWrite,
+          },
+          logContext: {
+            source: "tool_call",
+            toolCallId: tcc.toolCallId,
+            toolName: tcc.toolName,
+            path: forbiddenWrite,
+          },
+          decision: { surface: tcc.toolName, value: forbiddenWrite },
+          preResolved: { state: "deny" },
+        },
+        tcc.agentName,
+        tcc.toolCallId,
+        runnerDeps,
+      );
+      if (forbiddenWriteResult.action === "block") {
+        return { block: true, reason: `yolo mode never writes to ${forbiddenWrite} (system or credential path).` };
+      }
     }
 
     // ── Trusted Pi dirs: reads + single-script runs, in every mode ──────────

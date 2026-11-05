@@ -126,13 +126,26 @@ describe("yolo mode hard rules", () => {
     ["edit", { path: "/usr/bin/yolo-test", oldText: "a", newText: "b" }],
     ["bash", { command: "echo x > /etc/yolo-test" }],
     ["bash", { command: "for f in a; do cp $f /usr/bin/yolo-test; done" }],
-  ])("denies %s into a forbidden path without asking", async (toolName, input) => {
+  ])("asks before writing %s into a forbidden path and blocks on refusal", async (toolName, input) => {
     const { run, context } = await setup("yolo");
+    context.ui.select.mockImplementation(async () => "No");
     const result = await run(toolName, input);
 
     expect(result).toMatchObject({ block: true });
     expect(result?.reason).toContain("yolo");
-    expect(context.ui.select).not.toHaveBeenCalled();
+    expect(context.ui.select).toHaveBeenCalledOnce();
+    const [title, choices] = context.ui.select.mock.calls[0] as unknown as [string, string[]];
+    expect(title).toContain("BLOCKED BY POLICY");
+    expect(choices).toEqual(["Yes", "Yes, for this session", "No", "No, provide reason"]);
+  });
+
+  it("allows a forbidden write once when the user approves, and asks again next time", async () => {
+    const { run, context } = await setup("yolo");
+    const input = { path: "/etc/yolo-test", content: "x" };
+
+    expect((await run("write", input))?.block).toBeUndefined();
+    expect((await run("write", input))?.block).toBeUndefined();
+    expect(context.ui.select).toHaveBeenCalledTimes(2);
   });
 
   it("does not apply the forbidden-path deny in manual mode", async () => {
@@ -273,13 +286,14 @@ describe("yolo mode hard rules", () => {
     expect(await run("bash", { command: template.replace("@REMOTE@", SSH_REMOTE) })).toMatchObject({ block: true });
   });
 
-  it("auto-approves network asks and still denies forbidden writes before any network prompt", async () => {
+  it("auto-approves network asks and still asks before forbidden writes, never auto-approving them", async () => {
     const { run, context } = await setup("yolo", { enabled: true, unknownDomains: "ask", allowedDomains: [], deniedDomains: ["blocked.test"] });
+    context.ui.select.mockImplementation(async () => "No");
 
     expect((await run("bash", { command: "curl https://example.test" }))?.block).toBeUndefined();
     expect(await run("bash", { command: "curl -o /etc/yolo-test https://example.test" })).toMatchObject({ block: true });
     expect(await run("bash", { command: "curl https://blocked.test" })).toMatchObject({ block: true });
-    expect(context.ui.select).not.toHaveBeenCalled();
+    expect(context.ui.select).toHaveBeenCalledOnce();
   });
 
   it.each(["manual", "auto"])("keeps prompting for a write outside the workspace in %s mode", async (mode) => {
@@ -304,16 +318,17 @@ describe("yolo mode hard rules", () => {
     expect(context.ui.select).toHaveBeenCalledOnce();
   });
 
-  it("blocks an explicitly denied Git push without a dialog", async () => {
+  it("asks before an explicitly denied Git push and blocks on refusal", async () => {
     const { run, context } = await setup(
       "manual",
       { enabled: true, unknownDomains: "ask", allowedDomains: [], deniedDomains: [] },
       { "*": "ask", bash: { "git *": "deny" } },
     );
+    context.ui.select.mockImplementation(async () => "No");
 
     await expect(run("bash", { command: "git push https://example.com/repo.git main" }))
       .resolves.toMatchObject({ block: true });
-    expect(context.ui.select).not.toHaveBeenCalled();
+    expect(context.ui.select).toHaveBeenCalledOnce();
   });
 
   it("uses one-time approval for Git pushes through earlier Bash gates", async () => {
