@@ -2898,6 +2898,50 @@ describe("piPermissionSystemExtension SRT default smoke", () => {
     expect(await readFile(path.join(agentDir, "permissions.json"), "utf8")).not.toContain(outputFile);
   });
 
+  it("grants one-shot write access after a policy deny override without a second dialog", async () => {
+    const agentDir = await makeTempDir("pi-permission-agent-");
+    const projectDir = await makeTempDir("pi-permission-project-");
+    const outsideDir = await mkdtemp(path.join(homedir(), ".pi-permission-outside-write-"));
+    tempPaths.push(outsideDir);
+    const inputFile = path.join(outsideDir, "input.txt");
+    const outputFile = path.join(outsideDir, "output.txt");
+    await writeFile(inputFile, "source", "utf8");
+    await writeFile(outputFile, "before", "utf8");
+    process.env.PI_CODING_AGENT_DIR = agentDir;
+    await writeExtensionConfig(agentDir, {
+      permission: {
+        "*": "allow",
+        bash: { "*": "allow", "cat *": "deny" },
+        external_directory: { "*": "allow" },
+      },
+      sandbox: {
+        enabled: true,
+        backend: "srt",
+        defaultProfile: "offline-dev",
+        profiles: {
+          "offline-dev": {
+            network: false,
+            env: { allow: [], deny: [] },
+            maskedPaths: [],
+          },
+        },
+      },
+    });
+
+    const pi = createFakePi();
+    piPermissionSystemExtension(pi as never);
+    const context = createContext(projectDir, { hasUI: true, choices: ["Yes"] });
+    const event = { toolName: "bash", toolCallId: "t-deny-override-grant", input: { command: "cat " + inputFile + " > " + outputFile } };
+    const result = await pi.handlers.get("tool_call")?.(event, context as never);
+
+    expect(result).toBeUndefined();
+    expect(context.ui.select).toHaveBeenCalledOnce();
+    expect(context.ui.select.mock.calls[0]?.[0]).toContain("BLOCKED BY POLICY");
+    const helper = extractHelperInput(event.input.command);
+    expect(helper.runtimeConfig.filesystem.allowWrite).toContain(outputFile);
+    expect(await readFile(path.join(agentDir, "permissions.json"), "utf8")).not.toContain(outputFile);
+  });
+
   it("grants parent read-write access for a missing external output target", async () => {
     const agentDir = await makeTempDir("pi-permission-agent-");
     const projectDir = await makeTempDir("pi-permission-project-");

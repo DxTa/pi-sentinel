@@ -4,6 +4,7 @@ import {
   formatUserDeniedReason,
 } from "#src/denial-messages";
 import type { PermissionPromptDecision } from "#src/permission-dialog";
+import { markDenyOverride } from "#src/deny-override";
 import { applyPermissionGate } from "#src/permission-gate";
 import type { PermissionCheckResult } from "#src/types";
 import type { GateDescriptor, GateRunnerDeps } from "./descriptor";
@@ -173,6 +174,8 @@ export async function runGateCheck(
     logContext: { ...descriptor.logContext, agentName },
     messages,
   });
+
+  if (denyOverride && gateResult.action === "allow") markDenyOverride(toolCallId);
 
   // 4. Determine whether a non-default approval kind was granted
   const approvalKind = gateResult.action === "allow"

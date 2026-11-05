@@ -117,6 +117,7 @@ import {
   parseDotenvValues,
   readDotenvSourceWithinLimit,
 } from "./env-mask";
+import { canAutoGrantOverride, takeDenyOverride } from "./deny-override";
 import { isProtectedCredentialReadPath, prepareApprovedTarget, protectedBashReadPaths, protectedWriteRefusal } from "./protected-read";
 
 import { defaultSrtHelperPath, defaultSrtStatus } from "./sandbox/srt-status.js";
@@ -1698,6 +1699,8 @@ export default function piPermissionSystemExtension(pi: ExtensionAPI): void {
       }
       bashPermissionAlreadyChecked = true;
     }
+    // A person already approved this call over a policy deny: ordinary external paths need no second dialog.
+    const denyOverridden = takeDenyOverride(e.toolCallId);
 
     // Protected credential reads run without a prompt, so their whole output is redacted.
     const genericProtectedReadPaths = protectedReadPaths.filter((path) =>
@@ -1935,6 +1938,13 @@ export default function piPermissionSystemExtension(pi: ExtensionAPI): void {
           for (const { mode, paths, protectedWrite } of approvalGroups) {
             if (paths.length === 0) continue;
             promptedForExternalPaths = true;
+            if (denyOverridden && !protectedWrite && canAutoGrantOverride(paths.map((entry) => entry.path), ctx.cwd)) {
+              for (const { path } of paths) {
+                invocationPathGrants.push({ path, mode });
+                activeGrantPaths.add(path);
+              }
+              continue;
+            }
             // An approved protected target is writable for this one command; no session or persistent grant.
             const extPromptResult = await promptSandboxGrant(ctx, {
               change: {
@@ -2078,7 +2088,9 @@ export default function piPermissionSystemExtension(pi: ExtensionAPI): void {
     // 3. Delegate to upstream PermissionGateHandler (existing gates)
     if (bashPermissionAlreadyChecked) return undefined;
     try {
-      return await gates.handleToolCall(event, ctx);
+      const gateResult = await gates.handleToolCall(event, ctx);
+      takeDenyOverride(e.toolCallId);
+      return gateResult;
     } catch {
       return { block: true, reason: "Permission authorization failed; command blocked." };
     }

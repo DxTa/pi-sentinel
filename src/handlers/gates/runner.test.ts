@@ -1,5 +1,6 @@
 import { describe, expect, it, vi } from "vitest";
 
+import { takeDenyOverride } from "#src/deny-override";
 import { runGateCheck } from "./runner";
 
 describe("runGateCheck", () => {
@@ -227,6 +228,18 @@ describe("runGateCheck", () => {
       expect(deps.emitDecision).toHaveBeenCalledWith(
         expect.objectContaining({ result: "allow", resolution: "user_approved" }),
       );
+    });
+
+    it("marks the tool call so the sandbox gate can issue a one-shot grant", async () => {
+      const deps = makeDeps({ approved: true, state: "approved" });
+      await runGateCheck(descriptor as never, null, "t-mark", deps as never);
+      expect(takeDenyOverride("t-mark")).toBe(true);
+    });
+
+    it("does not mark a refused override", async () => {
+      const deps = makeDeps({ approved: false, state: "denied" });
+      await runGateCheck(descriptor as never, null, "t-nomark", deps as never);
+      expect(takeDenyOverride("t-nomark")).toBe(false);
     });
 
     it("records a session rule when the user grants for the session", async () => {
