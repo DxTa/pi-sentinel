@@ -60,6 +60,12 @@ describe("isProtectedCredentialReadPath", () => {
 });
 
 describe("protectedBashReadPaths", () => {
+  it("expands glob words so star and bracket forms of a credential file stay protected", async () => {
+    await expect(protectedBashReadPaths(`cat ${cwd}/cred*.json`, cwd)).resolves.toEqual([credentialsJson]);
+    await expect(protectedBashReadPaths(`cat ${cwd}/cre[d]entials.json`, cwd)).resolves.toEqual([credentialsJson]);
+    await expect(protectedBashReadPaths(`cat ${cwd}/nomatch*.json`, cwd)).resolves.toEqual([]);
+  });
+
   it("returns credential paths consumed by arbitrary Bash commands", async () => {
     await expect(protectedBashReadPaths(`docker run --env-file ${awsCredentials} alpine:latest`, cwd))
       .resolves.toEqual([awsCredentials]);

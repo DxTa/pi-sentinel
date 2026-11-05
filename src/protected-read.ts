@@ -1,6 +1,6 @@
-import { closeSync, existsSync, lstatSync, openSync, realpathSync, statSync } from "node:fs";
+import { closeSync, existsSync, globSync, lstatSync, openSync, realpathSync, statSync } from "node:fs";
 import { homedir } from "node:os";
-import { basename, dirname, join } from "node:path";
+import { basename, dirname, join, resolve } from "node:path";
 
 import { extractTokensForPathRules } from "./handlers/gates/bash-path-extractor";
 import {
@@ -113,6 +113,23 @@ function isWorkspaceDotenvPath(pathValue: string, cwd: string): boolean {
 }
 
 /** Credential path operands approved read-only by SRT; callers must redact all command output. */
+/**
+ * Shell glob words expanded against the filesystem. The path-token extractor drops bracket forms such as `[d]`,
+ * so the raw words are expanded here. Quotes are stripped: extra matches only add candidates, which are checked the same way.
+ */
+function expandGlobWords(command: string, cwd: string): string[] {
+  const home = homedir();
+  return command.split(/[\s;&|()<>]+/)
+    .filter((word) => /[*?[]/.test(word))
+    .flatMap((word) => {
+      const pattern = word
+        .replace(/["']/g, "")
+        .replace(/\$\{HOME\}|\$HOME/g, home)
+        .replace(/^~(?=\/)/, home);
+      return globSync(pattern, { cwd }).map((match) => resolve(cwd, match));
+    });
+}
+
 export async function protectedBashReadPaths(command: string, cwd: string): Promise<string[]> {
   const tokens = await extractTokensForPathRules(command);
   const embeddedMaskedPaths = detectMaskedFileAccess(
@@ -131,7 +148,7 @@ export async function protectedBashReadPaths(command: string, cwd: string): Prom
   const embeddedPaths = embeddedMaskedPaths.filter((path) =>
     ![...directPaths].some((directPath) => directPath !== path && directPath.startsWith(path)),
   );
-  for (const token of [...pathTokens, ...embeddedPaths]) {
+  for (const token of [...pathTokens, ...embeddedPaths, ...expandGlobWords(command, cwd)]) {
     const canonicalPath = resolveProtectedReadPath(token, cwd);
     if (
       canonicalPath
