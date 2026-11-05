@@ -834,11 +834,42 @@ function extractUvExecutable(node: TSNode): boolean {
 }
 
 
+/** `cd <dir> && uv ...` as a whole top-level chain: cd cannot skip uv, so uv runs as a plain command. */
+function isCdThenUvChain(node: TSNode): boolean {
+  const operands: TSNode[] = [];
+  if (!collectAndChainOperands(node, operands)) return false;
+  let hasUv = false;
+  for (const operand of operands) {
+    if (extractUvExecutable(operand)) {
+      hasUv = true;
+    } else if (extractCommandName(operand) !== "cd") {
+      return false;
+    }
+  }
+  return hasUv;
+}
+
+function collectAndChainOperands(node: TSNode, out: TSNode[]): boolean {
+  for (let index = 0; index < node.childCount; index += 1) {
+    const child = node.child(index);
+    if (!child || child.type === "&&") continue;
+    if (child.type === "list") {
+      if (!collectAndChainOperands(child, out)) return false;
+    } else if (child.type === "command") {
+      out.push(child);
+    } else {
+      return false;
+    }
+  }
+  return true;
+}
+
 function containsUvCommand(node: TSNode, inBooleanList = false): boolean {
   if (SKIP_SUBTREE_TYPES.has(node.type) || NON_EXECUTING_COMMAND_SUBTREE_TYPES.has(node.type)) {
     return false;
   }
   const booleanContext = inBooleanList || (node.type === "list" && /&&|\|\|/.test(node.text));
+  if (node.type === "list" && !inBooleanList && isCdThenUvChain(node)) return true;
   if (node.type === "command" && !booleanContext && extractUvExecutable(node)) {
     return true;
   }

@@ -91,6 +91,28 @@ describe("buildSrtCommandSpec", () => {
     }
   });
 
+  it("does not grant UV roots when a cd chain also runs non-cd commands", { timeout: 30_000 }, async () => {
+    const repoRoot = await makeTempDir("pi-srt-spec-uv-chain-");
+    const uvRoots = [
+      path.join(process.env.HOME!, ".local/share/uv"),
+      path.join(process.env.HOME!, ".cache/uv"),
+    ].map(canonicalPath);
+    for (const command of [
+      "cd repo && uv run pytest && cat ~/.cache/uv/sensitive-file",
+      "false || cd repo && uv run pytest\ncat ~/.cache/uv/sensitive-file",
+      "cd repo && cat ~/.cache/uv/sensitive-file",
+    ]) {
+      const spec = await buildSrtCommandSpecAsync({
+        command,
+        cwd: repoRoot,
+        repoRoot,
+        sandboxConfig: makeConfig(),
+        profile: makeProfile(),
+      });
+      expect(spec.runtimeReadAllowPaths, command).not.toEqual(expect.arrayContaining(uvRoots));
+    }
+  });
+
   it("scopes UV runtime roots to commands that invoke UV", { timeout: 30_000 }, async () => {
     const repoRoot = await makeTempDir("pi-srt-spec-uv-roots-");
     const uvRoots = [
@@ -121,6 +143,7 @@ describe("buildSrtCommandSpec", () => {
       "command uvx ruff",
       "exec /usr/local/bin/uv run pytest",
       "sudo uv run pytest",
+      "cd repo && uv run pytest",
       "echo preparing\nuv run pytest",
       "printf '%s\\n' '<<EOF'\nuv run pytest",
       "# <<EOF\nuv run pytest",
