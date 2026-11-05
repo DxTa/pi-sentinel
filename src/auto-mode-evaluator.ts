@@ -17,12 +17,13 @@ import type {
 
 type EvaluationFlow = "permission" | "secret_read";
 type EvaluationOperation = "read" | "list" | "write" | "edit" | "exec" | "tool";
-type EvaluationSkipReason =
+export type EvaluationSkipReason =
   | "not_candidate"
   | "result_scanning_disabled"
   | "unsupported_tool"
   | "unstable_tool_call_id"
   | "not_workspace_local"
+  | "not_eligible"
   | "too_many_units"
   | "unit_too_long";
 

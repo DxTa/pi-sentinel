@@ -181,7 +181,9 @@ describe("PermissionPrompter", () => {
 
   it("auto-allows workspace read-only Bash chains without the model or UI", async () => {
     const requestPermissionDecisionFromUi = vi.fn(async () => ({ approved: true, state: "approved" as const }));
-    const evaluate = vi.fn();
+    const evaluate = vi.fn(async () => ({
+      action: "prompt" as const, reason: "not_eligible", candidate: false, attempted: false, evaluationId: "eval-chain", audit: false,
+    }));
     const prompter = new PermissionPrompter({
       promptWaitTracker: new PromptWaitTracker({ emit() {} }),
       getConfig: () => ({ debugLog: false, permissionReviewLog: false, mode: "auto", yoloAskBashPatterns: [] }),
@@ -935,6 +937,49 @@ it("prompts for auto requests outside the model-eligible scope", async () => {
 
   expect(requestPermissionDecisionFromUi).toHaveBeenCalledOnce();
   expect(evaluate).not.toHaveBeenCalled();
+});
+
+it.each([
+  ["not_workspace_local", { autoModeWorkspaceLocal: false }],
+  ["not_eligible", { autoModeWorkspaceLocal: true }],
+] as const)("logs a %s skip through the evaluator in auto instead of silently prompting", async (skipReason, scope) => {
+  const requestPermissionDecisionFromUi = vi.fn(async () => ({
+    approved: false,
+    state: "denied" as const,
+  }));
+  const evaluate = vi.fn(async () => ({
+    action: "prompt" as const,
+    reason: skipReason,
+    candidate: false,
+    attempted: false,
+    evaluationId: "eval-skip-1",
+    audit: false,
+  }));
+  const prompter = new PermissionPrompter({
+    promptWaitTracker: new PromptWaitTracker({ emit() {} }),
+    getConfig: () => ({ debugLog: false, permissionReviewLog: false, mode: "auto", yoloAskBashPatterns: [] }),
+    autoModeEvaluator: { evaluate },
+    writeReviewLog() {},
+    subagentSessionsDir: "/tmp/subagents",
+    forwardingDir: "/tmp/forwarding",
+    requestPermissionDecisionFromUi,
+  });
+
+  await expect(prompter.prompt({ hasUI: true, ui: { setStatus() {} } } as never, {
+    requestId: `req-auto-skip-${skipReason}`,
+    source: "tool_call",
+    agentName: null,
+    message: "Need permission",
+    toolName: "bash",
+    command: "npm test",
+    autoModeEligible: false,
+    autoModeHardRuleHit: false,
+    autoModeOperation: "exec",
+    ...scope,
+  })).resolves.toEqual({ approved: false, state: "denied" });
+
+  expect(evaluate).toHaveBeenCalledWith(expect.objectContaining({ candidate: false, skipReason }));
+  expect(requestPermissionDecisionFromUi).toHaveBeenCalledOnce();
 });
 
 describe("auto mode keeps hard rules", () => {

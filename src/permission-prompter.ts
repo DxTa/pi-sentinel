@@ -16,7 +16,7 @@ import { PromptWaitTracker } from "./prompt-state";
 import { decideAutoMode } from "./auto-mode-policy";
 import { isReadOnlyBashChain, isReadOnlyBashDiagnostic } from "./bash-command-safety";
 import { buildAutoModeText, type AutoModeClient } from "./auto-mode-client";
-import type { AutoModeEvaluator } from "./auto-mode-evaluator";
+import type { AutoModeEvaluator, EvaluationSkipReason } from "./auto-mode-evaluator";
 import type {
   PermissionPromptDecision,
   RequestPermissionOptions,
@@ -340,16 +340,18 @@ export class PermissionPrompter implements PermissionPrompterApi {
     audit?: boolean;
   }> {
     const operation = details.autoModeOperation;
-    if (config.mode !== "auto" || !operation || !details.autoModeWorkspaceLocal) {
+    if (config.mode !== "auto" || !operation) {
       return { action: "prompt", reason: "disabled_or_ineligible" };
     }
-    if (!details.autoModeEligible) {
-      return { action: "prompt", reason: "not_configured_or_ineligible" };
-    }
+    // Skips still reach the evaluator so each one is logged; the model is never called for them.
+    const skipReason: EvaluationSkipReason | undefined = !details.autoModeWorkspaceLocal
+      ? "not_workspace_local"
+      : !details.autoModeEligible ? "not_eligible" : undefined;
     if (this.deps.autoModeEvaluator) {
       return this.deps.autoModeEvaluator.evaluate({
         flow: "permission",
-        candidate: true,
+        candidate: skipReason === undefined,
+        ...(skipReason ? { skipReason } : {}),
         enabled: true,
         permissionState: "ask",
         source: details.source,
@@ -375,6 +377,7 @@ export class PermissionPrompter implements PermissionPrompterApi {
         ...decisionStoreFields(details, cwd),
       });
     }
+    if (skipReason) return { action: "prompt", reason: skipReason };
     if (!this.deps.autoModeClient || !details.autoModeEligible) {
       return { action: "prompt", reason: "not_configured_or_ineligible" };
     }
