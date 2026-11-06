@@ -41,6 +41,8 @@ export interface PermissionRpcDeps {
    * Used by the prompt handler to check hasUI and access the UI dialog.
    */
   getRuntimeContext(): ExtensionContext | null;
+  /** Yolo approves RPC prompt requests itself; it never opens a dialog. */
+  isYolo?(): boolean;
   /** Show the interactive permission dialog in the parent session UI. */
   requestPermissionDecisionFromUi(
     ui: ExtensionContext["ui"],
@@ -151,6 +153,16 @@ async function handlePromptRpc(
     messagePresent: typeof message === "string" && message.length > 0,
     messageLength: typeof message === "string" ? message.length : 0,
   });
+
+  if (deps.isYolo?.() === true && typeof message === "string" && message) {
+    deps.writeReviewLog("permission_request.rpc_yolo_approved", {
+      requestId,
+      surface: surface ?? null,
+      agentName: agentName ?? null,
+    });
+    events.emit(replyChannel, successReply({ approved: true, state: "approved" }));
+    return;
+  }
 
   const ctx = deps.getRuntimeContext();
   if (!ctx?.hasUI) {

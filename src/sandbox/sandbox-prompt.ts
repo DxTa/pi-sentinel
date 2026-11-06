@@ -35,6 +35,36 @@ const CHOICE_WORKSPACE = "Allow for this workspace";
 const CHOICE_GLOBAL = "Allow globally";
 const CHOICE_DENY = "Deny";
 
+/** Registered by the extension so yolo can resolve every sandbox request without a dialog. */
+export interface SandboxYoloHooks {
+  isYolo(): boolean;
+  log(event: string, details: Record<string, unknown>): void;
+}
+
+let yoloHooks: SandboxYoloHooks | undefined;
+
+export function setSandboxYoloHooks(hooks: SandboxYoloHooks | undefined): void {
+  yoloHooks = hooks;
+}
+
+/**
+ * Yolo grants network and plain path requests once. Everything that touches credentials or leaves the sandbox
+ * (auth, host bypass, masked or protected paths, unscanned folders) is denied.
+ */
+function resolveYolo(details: SandboxPromptDetails): SandboxPromptResult {
+  const { change } = details;
+  const grantable = (change.type === "network" || change.type === "path")
+    && details.allowPersistentScopes !== false
+    && !change.authKind;
+  const result: SandboxPromptResult = grantable ? { action: "allow", duration: "once" } : { action: "deny" };
+  yoloHooks?.log(grantable ? "sandbox_request.yolo_granted_once" : "sandbox_request.yolo_denied", {
+    type: change.type,
+    mode: change.mode ?? null,
+    valueCount: change.values.length,
+  });
+  return result;
+}
+
 /**
  * Prompt the user for a sandbox policy change.
  * Returns the user's decision.
@@ -43,6 +73,7 @@ export async function promptSandboxGrant(
   ctx: ExtensionContext,
   details: SandboxPromptDetails,
 ): Promise<SandboxPromptResult> {
+  if (yoloHooks?.isYolo()) return resolveYolo(details);
   if (!ctx.hasUI) {
     // No UI available — default to deny (fail-closed)
     return { action: "deny" };

@@ -1,6 +1,6 @@
-import { describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
-import { promptSandboxGrant } from "./sandbox-prompt";
+import { promptSandboxGrant, setSandboxYoloHooks } from "./sandbox-prompt";
 
 describe("promptSandboxGrant", () => {
   it("maps workspace choice to persistent workspace scope", async () => {
@@ -110,3 +110,46 @@ describe("host-bypass persistent scopes", () => {
     );
   });
 });
+
+describe("promptSandboxGrant in yolo", () => {
+  const log = vi.fn();
+  const ctx = (select = vi.fn(async () => "Allow once")) => ({ hasUI: true, cwd: "/repo", ui: { select } }) as never;
+  const change = (overrides: Record<string, unknown>) => ({ type: "network", description: "d", values: ["example.com"], ...overrides }) as never;
+
+  beforeEach(() => setSandboxYoloHooks({ isYolo: () => true, log }));
+  afterEach(() => { setSandboxYoloHooks(undefined); log.mockClear(); });
+
+  it.each([
+    ["network", {}],
+    ["plain path", { type: "path", mode: "rw", values: ["/opt/data"] }],
+  ])("grants a %s request once without a dialog", async (_name, overrides) => {
+    const select = vi.fn(async () => "Deny");
+    await expect(promptSandboxGrant(ctx(select), { command: "c", change: change(overrides) }))
+      .resolves.toEqual({ action: "allow", duration: "once" });
+    expect(select).not.toHaveBeenCalled();
+    expect(log).toHaveBeenCalledWith("sandbox_request.yolo_granted_once", expect.objectContaining({ type: overrides.type ?? "network" }));
+  });
+
+  it.each([
+    ["auth bypass", { type: "auth-bypass", authKind: "ssh" }],
+    ["host bypass", { type: "host-bypass", values: ["git-push"] }],
+    ["masked auth path", { type: "path", mode: "ro", authKind: "aws" }],
+    ["env grant", { type: "env", cli: "gh" }],
+  ])("denies %s without a dialog", async (_name, overrides) => {
+    const select = vi.fn(async () => "Allow once");
+    await expect(promptSandboxGrant(ctx(select), { command: "c", change: change(overrides) }))
+      .resolves.toEqual({ action: "deny" });
+    expect(select).not.toHaveBeenCalled();
+    expect(log).toHaveBeenCalledWith("sandbox_request.yolo_denied", expect.anything());
+  });
+
+  it.each([
+    ["protected or unscanned paths", { allowPersistentScopes: false }],
+  ])("denies a path request with %s", async (_name, extra) => {
+    const select = vi.fn(async () => "Allow once");
+    await expect(promptSandboxGrant(ctx(select), { command: "c", change: change({ type: "path", mode: "ro", values: ["/x"] }), ...extra }))
+      .resolves.toEqual({ action: "deny" });
+    expect(select).not.toHaveBeenCalled();
+  });
+});
+

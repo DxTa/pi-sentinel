@@ -114,8 +114,8 @@ export async function runGateCheck(
 
   // 3. Apply the deny/ask/allow gate
   const canConfirm = deps.canConfirm(descriptor.promptDetails);
-  // A policy deny becomes a one-time or session-only grant request when a person can answer.
-  const denyOverride = check.state === "deny" && canConfirm;
+  // A policy deny becomes a one-time or session-only grant request when a person can answer; never in yolo.
+  const denyOverride = check.state === "deny" && canConfirm && deps.yolo !== true;
   const gateState = denyOverride ? "ask" : check.state;
   if (denyOverride) {
     deps.writeReviewLog("permission_request.deny_override_prompted", {

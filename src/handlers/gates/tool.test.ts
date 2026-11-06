@@ -56,6 +56,21 @@ describe("describeToolGate bash session approval", () => {
   });
 });
 
+describe("describeToolGate dotenv selector by mode", () => {
+  const input = { pattern: "KEY", glob: ".env*" };
+
+  it("forces the prompt outside yolo", () => {
+    const descriptor = describeToolGate({ ...context("grep", input), mode: "manual" }, check("grep"));
+    expect(descriptor.promptDetails.forcePromptInYolo).toBe(true);
+  });
+
+  it("does not force the prompt in yolo, whose result is redacted instead", () => {
+    const descriptor = describeToolGate({ ...context("grep", input), mode: "yolo" }, check("grep"));
+    expect(descriptor.promptDetails.forcePromptInYolo).toBeUndefined();
+    expect(descriptor.promptDetails.autoModeWorkspaceLocal).toBe(true);
+  });
+});
+
 describe("describeToolGate git push by mode", () => {
   const command = "git push origin main";
 

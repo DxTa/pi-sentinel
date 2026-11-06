@@ -128,7 +128,7 @@ export function createPermissionSystemLogger(
       return undefined;
     }
 
-    return writeLine("review", reviewLogPath, event, details);
+    return writeLine("review", reviewLogPath, event, { ...details, mode: options.getConfig().mode });
   };
 
   return { debug, review };

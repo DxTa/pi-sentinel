@@ -884,8 +884,6 @@ describe("piPermissionSystemExtension SRT default smoke", () => {
 
   it.each([
     { mode: "manual", surface: "user_bash" },
-    { mode: "yolo", surface: "tool_call" },
-    { mode: "yolo", surface: "user_bash" },
     { mode: "auto", surface: "user_bash" },
   ] as const)(
     "blocks shell-quoted protected paths from a GPG bypass in $mode mode through $surface",
@@ -932,6 +930,28 @@ describe("piPermissionSystemExtension SRT default smoke", () => {
       }
     },
   );
+
+  it("blocks an unsandboxed GPG bypass in yolo without a dialog", async () => {
+    const agentDir = await makeTempDir("pi-permission-agent-");
+    const projectDir = await makeTempDir("pi-permission-project-");
+    process.env.PI_CODING_AGENT_DIR = agentDir;
+    await writeExtensionConfig(agentDir, {
+      mode: "yolo",
+      permission: { "*": "allow", bash: { "*": "allow" }, path: { "*": "allow" }, external_directory: { "*": "allow" } },
+      sandbox: { enabled: true, backend: "srt", defaultProfile: "online-dev" },
+    });
+
+    const pi = createFakePi();
+    piPermissionSystemExtension(pi as never);
+    const context = createContext(projectDir, { hasUI: true, choices: ["Allow for session"] });
+    const result = await pi.handlers.get("tool_call")?.(
+      { toolName: "bash", toolCallId: "yolo-gpg", input: { command: "gpg --detach-sign artifact" } },
+      context as never,
+    );
+
+    expect(result).toMatchObject({ block: true, reason: expect.stringContaining("unsandboxed") });
+    expect(context.ui.select).not.toHaveBeenCalled();
+  });
 
   it.skipIf(process.platform !== "linux")("blocks credential consumption when SRT dependencies are unavailable", async () => {
     const agentDir = await makeTempDir("pi-permission-agent-");

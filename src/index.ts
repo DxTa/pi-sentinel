@@ -60,6 +60,7 @@ import { canonicalPath } from "./sandbox/sandbox-visible-paths.js";
 import { isReadOnlyBashChain, isReadOnlyBashDiagnostic } from "./bash-command-safety";
 import {
   getPathBearingToolPath,
+  hasProtectedEnvSelector,
   isPathWithinDirectory,
   isSensitiveEnvPath,
   isWorkspaceLocalFileOperation,
@@ -126,7 +127,8 @@ import { defaultSrtHelperPath, defaultSrtStatus } from "./sandbox/srt-status.js"
 import { diagnoseLinuxSandbox } from "./sandbox/linux-sandbox-doctor.js";
 import { SandboxPolicyManager, type Grant, type GrantDuration } from "./sandbox/policy-manager.js";
 import { createSandboxRuntimeLoader } from "./sandbox/runtime-lazy.js";
-import { promptSandboxGrant } from "./sandbox/sandbox-prompt.js";
+import { promptSandboxGrant, setSandboxYoloHooks } from "./sandbox/sandbox-prompt.js";
+import { loadThreatFeed } from "./network/threat-feed.js";
 import {
   DEFAULT_MASKED_PATTERNS,
   classifyMaskedPathKind,
@@ -771,7 +773,13 @@ async function resolveBashSandboxAccess(
 export default function piPermissionSystemExtension(pi: ExtensionAPI): void {
   // ── Upstream setup (identical to original index.ts) ───────────────────
   const runtime = createExtensionRuntime();
+  // Yolo resolves sandbox requests without a dialog; every decision is logged.
+  setSandboxYoloHooks({
+    isYolo: () => runtime.config.mode === "yolo",
+    log: (event, details) => runtime.writeReviewLog(event, details),
+  });
   const hostCapabilityBypassApprovals = new Set<string>();
+  let threatFeed: ReadonlySet<string> | undefined;
   const failedSrtPushes = new Set<string>();
   const failedSrtCommands = new Set<string>();
   let pushFallbackSession = 0;
@@ -1117,6 +1125,7 @@ export default function piPermissionSystemExtension(pi: ExtensionAPI): void {
     getPermissionManager: () => runtime.permissionManager,
     getSessionRules: () => runtime.sessionRules.getRuleset(),
     getRuntimeContext: () => runtime.runtimeContext,
+    isYolo: () => runtime.config.mode === "yolo",
     requestPermissionDecisionFromUi,
     writeReviewLog: runtime.writeReviewLog.bind(runtime),
     writeDebugLog: runtime.writeDebugLog.bind(runtime),
@@ -1237,6 +1246,8 @@ export default function piPermissionSystemExtension(pi: ExtensionAPI): void {
 
   let activeWorkspaceCwd = process.cwd();
   pi.on("session_start", (event, ctx) => {
+    // Refresh the egress threat feed in the background; the scan uses it once it loads.
+    void loadThreatFeed({ cacheFile: join(getExtensionDir(), "threat-feed.txt") }).then((feed) => { threatFeed = feed; });
     clipboardTempCleanup.reset();
     activeWorkspaceCwd = ctx.cwd;
     sandboxAuthorizationUnavailable = false;
@@ -1708,6 +1719,7 @@ export default function piPermissionSystemExtension(pi: ExtensionAPI): void {
           getNetworkConfig,
           getAgentDir: getAgentDir,
           autoApproveAsk: () => runtime.config.mode === "yolo",
+          getThreatFeed: () => threatFeed,
           promptWaitTracker,
           persistNetworkGrants: (domains, scope, state) =>
             persistNetworkGrantTransaction(policyManager, ctx.cwd, domains, scope, state),
@@ -2261,6 +2273,7 @@ export default function piPermissionSystemExtension(pi: ExtensionAPI): void {
       {
         getNetworkConfig,
         getAgentDir: getAgentDir,
+        getThreatFeed: () => threatFeed,
         promptWaitTracker,
         persistNetworkGrants: (domains, scope, state) =>
           persistNetworkGrantTransaction(policyManager, event.cwd, domains, scope, state),
@@ -2645,6 +2658,10 @@ export default function piPermissionSystemExtension(pi: ExtensionAPI): void {
     }
 
     if (wrapped?.redactOutput) return fullyRedactedResult(event.details);
+    // Yolo runs dotenv searches without asking, so their output never reaches the model.
+    if (runtime.config.mode === "yolo" && hasProtectedEnvSelector(event.toolName, event.input)) {
+      return fullyRedactedResult(event.details);
+    }
 
     let dotenvOutputResult: { content: typeof event.content; details?: unknown } | undefined;
     if (wrapped?.dotenvPaths?.length) {
@@ -2678,10 +2695,10 @@ export default function piPermissionSystemExtension(pi: ExtensionAPI): void {
       : "";
     const srtEgressMessage = srtEgressFailureMessage(text);
     if (event.toolName === "bash" && event.isError && srtEgressMessage) {
-      if (wrapped?.pushFallback?.session === pushFallbackSession) {
-        failedSrtPushes.add(wrapped.pushFallback.key);
-      }
-      return { content: [{ type: "text" as const, text: srtEgressFailureMessage(text, wrapped?.pushFallback?.session === pushFallbackSession)! }], details: dotenvOutputResult?.details ?? event.details };
+      // Yolo has no host retry to offer, so it never arms the one-time push fallback.
+      const pushFallbackArmed = runtime.config.mode !== "yolo" && wrapped?.pushFallback?.session === pushFallbackSession;
+      if (pushFallbackArmed) failedSrtPushes.add(wrapped!.pushFallback!.key);
+      return { content: [{ type: "text" as const, text: srtEgressFailureMessage(text, pushFallbackArmed)! }], details: dotenvOutputResult?.details ?? event.details };
     }
     if (event.toolName === "bash" && event.isError && wrapped?.retry && runtime.config.mode !== "yolo" && srtDenialMessage(text) !== undefined) {
       if (wrapped.retry.session === pushFallbackSession) failedSrtCommands.add(wrapped.retry.key);

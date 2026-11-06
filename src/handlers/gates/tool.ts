@@ -135,6 +135,7 @@ export function describeToolGate(
       && tcc.cwd !== undefined
       && isWorkspaceLocalFileOperation(tcc.toolName, tcc.input, tcc.cwd, {
         allowWorkspaceEnvRead: true,
+        allowEnvSelector: tcc.mode === "yolo",
       });
   const autoModeWorkspaceRelativePath =
     autoModeWorkspaceLocal && toolPath && tcc.cwd
@@ -162,7 +163,7 @@ export function describeToolGate(
     : undefined;
   const autoModeInner = autoModeOperation === "exec" ? bashInnerCommands(autoModeCommand ?? "") : null;
   const forcePromptInYolo =
-    (freshApproval && tcc.mode === "auto") || hasProtectedEnvSelector(tcc.toolName, tcc.input);
+    (freshApproval && tcc.mode === "auto") || (tcc.mode !== "yolo" && hasProtectedEnvSelector(tcc.toolName, tcc.input));
   // A local path was already resolved canonically inside the workspace. Elsewhere check every spelling,
   // including symlink targets, so a link cannot hide a system path.
   const autoModeHardRuleTargets = !tcc.cwd

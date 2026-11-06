@@ -20,3 +20,9 @@ vi.mock("../src/auto-mode-startup.ts", async (importOriginal) => {
     },
   };
 });
+
+// Tests never download the egress threat feed.
+vi.mock("../src/network/threat-feed.ts", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("../src/network/threat-feed.ts")>();
+  return { ...actual, loadThreatFeed: async () => new Set<string>() };
+});

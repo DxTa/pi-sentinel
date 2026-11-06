@@ -190,6 +190,8 @@ export function isSensitiveEnvPath(pathValue: string, cwd = process.cwd()): bool
  */
 export interface WorkspaceLocalFileOperationOptions {
   allowWorkspaceEnvRead?: boolean;
+  /** Treat a grep/find/ls with a dotenv selector as workspace-local; the caller redacts its output. */
+  allowEnvSelector?: boolean;
 }
 
 export function hasProtectedEnvSelector(toolName: string, input: unknown): boolean {
@@ -209,7 +211,7 @@ export function isWorkspaceLocalFileOperation(
 ): boolean {
   if (!PATH_BEARING_TOOLS.has(toolName) || !cwd) return false;
 
-  if (hasProtectedEnvSelector(toolName, input)) return false;
+  if (hasProtectedEnvSelector(toolName, input) && options.allowEnvSelector !== true) return false;
 
   const inputPath = getPathBearingToolPath(toolName, input);
   const pathValue = inputPath ?? (

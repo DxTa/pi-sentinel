@@ -159,6 +159,9 @@ export interface PermissionPrompterDeps {
  * parameter (e.g. a future sessionLabel variant) only requires changing
  * PromptPermissionDetails and this class — not the full threading chain.
  */
+/** Classifier findings that still block in yolo; every other non-allow result is allowed. */
+const YOLO_BLOCKING_REASONS: ReadonlySet<string> = new Set(["threat_not_benign", "injection_detected"]);
+
 export class PermissionPrompter implements PermissionPrompterApi {
   constructor(private readonly deps: PermissionPrompterDeps) {}
 
@@ -183,46 +186,14 @@ export class PermissionPrompter implements PermissionPrompterApi {
         ),
     };
 
-    // Yolo approves workspace calls, pathless tools and non-sensitive external reads itself; external writes
-    // and exec go to the model, and sensitive external reads prompt. Hard rules never reach this branch.
-    if (config.mode === "yolo" && shouldAutoApprovePermissionState("ask", config, yoloContext)) {
-      const operation = details.autoModeOperation;
-      const isExternal = details.autoModeWorkspaceLocal !== true;
-      const externalMutation = isExternal && (operation === "write" || operation === "edit" || operation === "exec");
-      const sensitiveExternalRead = isExternal && (operation === "read" || operation === "list")
-        && details.autoModeHardRuleHit !== false;
-      if (!externalMutation && !sensitiveExternalRead) {
-        this.writeReviewEntry("permission_request.auto_approved", details);
-        this.writeDebugPrompt("permission_prompt.resolved", details, {
-          approved: true,
-          resolution: "auto_approved",
-          latencyMs: Date.now() - startedAt,
-        });
-        return { approved: true, state: "approved", autoApproved: true };
-      }
-      if (externalMutation) {
-        const yoloDecision = await this.evaluateAutoMode(config, details, ctx.cwd, true);
-        if (yoloDecision.action === "allow") {
-          this.writeReviewEntry("permission_request.auto_mode_approved", {
-            ...details,
-            autoModeReason: yoloDecision.reason,
-            evaluationId: yoloDecision.evaluationId,
-            autoModeAudit: yoloDecision.audit,
-          });
-          this.writeDebugPrompt("permission_prompt.resolved", details, {
-            approved: true,
-            resolution: "auto_mode_approved",
-            autoModeReason: yoloDecision.reason,
-            latencyMs: Date.now() - startedAt,
-          });
-          return { approved: true, state: "approved", autoApproved: true };
-        }
-      }
+    // Yolo never opens a dialog: every request resolves to allow or block-with-reason.
+    if (config.mode === "yolo") {
+      return this.resolveYolo(config, details, yoloContext.forcePromptInYolo, ctx.cwd, startedAt);
     }
 
     const explicitlyForcedPrompt =
       details.forcePromptInYolo === true
-      || ((config.mode === "yolo" || config.mode === "auto")
+      || (config.mode === "auto"
         && typeof details.command === "string"
         && matchesBashAskPattern(config.yoloAskBashPatterns ?? [], details.command));
     if (
@@ -332,6 +303,56 @@ export class PermissionPrompter implements PermissionPrompterApi {
     } finally {
       this.deps.promptWaitTracker.end(ctx, promptToken);
     }
+  }
+
+  /**
+   * Yolo resolution. Workspace calls, pathless tools and non-sensitive external reads pass; external writes and exec
+   * go to the model, which can only block on a threat or injection finding. Forced prompts and sensitive external
+   * reads block. Hard rules never reach this method.
+   */
+  private async resolveYolo(
+    config: PermissionSystemExtensionConfig,
+    details: PromptPermissionDetails,
+    forced: boolean,
+    cwd: string | undefined,
+    startedAt: number,
+  ): Promise<PermissionPromptDecision> {
+    const block = (reason: string): PermissionPromptDecision => {
+      const denialReason = `Blocked by yolo mode: ${reason}`;
+      this.writeReviewEntry("permission_request.yolo_blocked", { ...details, resolution: "denied", denialReason });
+      this.writeDebugPrompt("permission_prompt.resolved", details, {
+        approved: false,
+        resolution: "yolo_blocked",
+        denialReason,
+        latencyMs: Date.now() - startedAt,
+      });
+      return { approved: false, state: "denied", denialReason };
+    };
+    const allow = (event: string, audit: { autoModeReason?: string; evaluationId?: string; autoModeAudit?: boolean } = {}): PermissionPromptDecision => {
+      this.writeReviewEntry(event, { ...details, ...audit });
+      this.writeDebugPrompt("permission_prompt.resolved", details, {
+        approved: true,
+        resolution: event.replace("permission_request.", ""),
+        autoModeReason: audit.autoModeReason ?? null,
+        latencyMs: Date.now() - startedAt,
+      });
+      return { approved: true, state: "approved", autoApproved: true };
+    };
+    if (forced) return block("this command needs explicit approval");
+    const operation = details.autoModeOperation;
+    const isExternal = details.autoModeWorkspaceLocal !== true;
+    if (isExternal && (operation === "read" || operation === "list") && details.autoModeHardRuleHit !== false) {
+      return block("sensitive path outside the workspace");
+    }
+    if (!(isExternal && (operation === "write" || operation === "edit" || operation === "exec"))) {
+      return allow("permission_request.auto_approved");
+    }
+
+    const decision = await this.evaluateAutoMode(config, details, cwd, true);
+    const audit = { autoModeReason: decision.reason, evaluationId: decision.evaluationId, autoModeAudit: decision.audit };
+    if (decision.action === "allow") return allow("permission_request.auto_mode_approved", audit);
+    if (YOLO_BLOCKING_REASONS.has(decision.reason)) return block(`the safety classifier flagged this call (${decision.reason})`);
+    return allow("permission_request.yolo_allowed_unclassified", audit);
   }
 
   // ── Private helpers ──────────────────────────────────────────────────────

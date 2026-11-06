@@ -13,7 +13,9 @@ import type {
   UserBashEvent,
   UserBashEventResult,
 } from "@earendil-works/pi-coding-agent";
+import { loadDomainPolicy } from "./config.js";
 import { checkBashNetworkPolicy } from "../network/domain-gate.js";
+import { scanEgress } from "./egress-scan.js";
 import type { PersistentApprovalScope } from "../scoped-config";
 import type { PromptWaitTracker } from "../prompt-state";
 import type { DomainGateConfig } from "../network/types.js";
@@ -23,6 +25,8 @@ export interface NetworkGateDeps {
   getAgentDir: () => string;
   /** Classic yolo: approve ask verdicts for this call without a prompt. Explicit denies still block. */
   autoApproveAsk?: () => boolean;
+  /** Hosts from the cached threat feed, when loaded. */
+  getThreatFeed?: () => ReadonlySet<string> | undefined;
   promptWaitTracker?: Pick<PromptWaitTracker, "begin" | "end">;
   persistNetworkGrant?: (
     domain: string,
@@ -230,6 +234,26 @@ export function getSessionNetworkApprovals(): string[] {
   return [...sessionApprovedDomains];
 }
 
+/** Text a network-capable tool call sends out: the bash command, or the JSON of a fetch or MCP input. */
+function egressText(toolName: string, input: unknown): string | undefined {
+  if (toolName === "bash") {
+    const command = (input as { command?: unknown } | undefined)?.command;
+    return typeof command === "string" ? command : undefined;
+  }
+  return toolName === "web_fetch" || toolName.startsWith("mcp") ? JSON.stringify(input ?? {}) : undefined;
+}
+
+/** Runs the egress scan on a call's URLs, headers and data. Applies in every mode, whatever the domain policy says. */
+function egressBlockReason(text: string, cwd: string, deps: NetworkGateDeps): string | undefined {
+  const policy = loadDomainPolicy({ network: deps.getNetworkConfig(cwd) }, cwd);
+  return scanEgress({
+    text,
+    allowedDomains: [...policy.allowedDomains, ...sessionApprovedDomains],
+    deniedDomains: policy.deniedDomains,
+    feed: deps.getThreatFeed?.(),
+  });
+}
+
 /**
  * Handle tool_call events for network domain gating.
  * Returns {block: true, reason} if domains are denied, undefined to allow.
@@ -239,10 +263,13 @@ export async function handleNetworkToolCall(
   ctx: ExtensionContext,
   deps: NetworkGateDeps,
 ): Promise<NetworkGateResult | undefined> {
+  const text = egressText(event.toolName, event.input);
+  if (text === undefined) return undefined;
+  const egressReason = egressBlockReason(text, ctx.cwd, deps);
+  if (egressReason) return { block: true, reason: egressReason };
   if (event.toolName !== "bash") return undefined;
 
-  const command = (event.input as { command?: unknown })?.command;
-  if (typeof command !== "string") return undefined;
+  const command = text;
 
   const result = checkBashNetworkPolicy(
     command,
@@ -274,6 +301,10 @@ export async function handleNetworkUserBash(
   ctx: ExtensionContext,
   deps: NetworkGateDeps,
 ): Promise<(UserBashEventResult & { approvedDomains?: string[] }) | undefined> {
+  const egressReason = egressBlockReason(event.command, event.cwd, deps);
+  if (egressReason) {
+    return { result: { output: `${egressReason}\n`, exitCode: 1, cancelled: false, truncated: false } };
+  }
   const result = checkBashNetworkPolicy(
     event.command,
     deps.getNetworkConfig(event.cwd),

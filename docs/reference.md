@@ -34,20 +34,40 @@ grep -noE '"(for|while|until|if|then|elif|else|do|done|fi|select|case|esac|bash|
 
 ## `yolo` mode: hard rules
 
-`yolo` lets workspace requests, pathless tools, network `ask` verdicts, and non-sensitive external reads run without a prompt. External writes, edits, and Bash go to the [classifier](#auto-mode-classifier): a benign verdict runs them, anything else (or an unavailable classifier, such as on Intel Macs) prompts. Sensitive external reads prompt. These hard rules never reach the model:
+`yolo` never opens a dialog. Every request resolves to allow or block-with-reason, so unattended runs do not stall.
 
-- **Denied, then asked:** `write`, `edit`, and readable Bash commands that write to a forbidden path: `/etc`, `/System`, `/Library`, `/usr` (except `/usr/local`), `/bin`, `/sbin`, `/private/etc`, `/var` (except `/var/folders` and `/var/tmp`), `~/.ssh`, `~/.aws`, and `~/.gnupg`. Symlinks into these paths count, including `link/../etc`. Bash writes are redirects (`>`, `>>`, `&>`) and the verbs `cp`, `mv`, `ln`, `install`, `rm`, `touch`, `mkdir`, `tee`, `truncate`, `chmod`, `chown`, `dd of=`, `sed -i`, `curl -o`, and `wget -O`. Reads are never denied. Because every policy deny prompts (see below), a person can still allow one of these writes once or for the session; the answer is never auto-approved.
-- **Prompt:** `rm`, `ssh`, `git push`, `npm`/`pnpm`/`yarn` `publish`, and kubectl commands that change a cluster (`apply`, `create`, `delete`, `edit`, `patch`, `replace`, `set`, `scale`, `rollout` except `status`/`history`, `drain`, `cordon`, `uncordon`, `taint`, `label`, `annotate`, `autoscale`, `run`, `expose`, `cp`). Matching uses the executable name and subcommand, so `/bin/rm`, `git -C repo push`, and `kubectl -n prod delete` count while `git log --grep push` does not. Add your own with `yoloAskBashPatterns`.
-- **Policy denies prompt:** an explicit `deny` rule, a hard rule above, `.env*` protection, or a push deny stops the call and shows "BLOCKED BY POLICY" with **Yes** (once) and **Yes, for this session** only; workspace and global grants are not offered. Yolo and `auto` never answer this prompt for you. Without a UI the call stays blocked. For Bash, a Yes also grants the sandbox one-shot access to the command's external write targets, so you get no second dialog; system roots and credential paths (`/etc`, `~/.ssh`, `~/.aws`) keep their separate sandbox prompt.
-- **Still blocked, no prompt:** explicitly denied network domains and sandbox auth-exception `deny` rules, because the SRT runtime enforces them. SRT sandbox grant prompts are unchanged.
+- **Allowed:** workspace requests, pathless tools, network `ask` verdicts, non-sensitive external reads, and `.env` searches (`grep`, `find`, `ls`), whose output is redacted.
+- **Classifier:** external writes, edits, and Bash go to the [classifier](#auto-mode-classifier). Only a `threat_not_benign` or `injection_detected` result blocks. Any other result, including an unavailable classifier, allows the call.
+- **Blocked, no dialog:** these never reach the model.
+  - Writes to a forbidden path: `/etc`, `/System`, `/Library`, `/usr` (except `/usr/local`), `/bin`, `/sbin`, `/private/etc`, `/var` (except `/var/folders` and `/var/tmp`), `~/.ssh`, `~/.aws`, `~/.gnupg`. Symlinks into these paths count, including `link/../etc`. Bash writes are redirects (`>`, `>>`, `&>`) and the verbs `cp`, `mv`, `ln`, `install`, `rm`, `touch`, `mkdir`, `tee`, `truncate`, `chmod`, `chown`, `dd of=`, `sed -i`, `curl -o`, and `wget -O`. Reads are never denied.
+  - `rm`, `ssh`, `git push`, `npm`/`pnpm`/`yarn` `publish`, and kubectl commands that change a cluster (`apply`, `create`, `delete`, `edit`, `patch`, `replace`, `set`, `scale`, `rollout` except `status`/`history`, `drain`, `cordon`, `uncordon`, `taint`, `label`, `annotate`, `autoscale`, `run`, `expose`, `cp`). Matching uses the executable name and subcommand, so `/bin/rm` and `git -C repo push` count while `git log --grep push` does not. Add your own with `yoloAskBashPatterns`.
+  - Sensitive external reads, and any explicit `deny` rule: a policy deny stays a deny, with no override dialog.
+  - Explicitly denied network domains and sandbox auth-exception `deny` rules.
+- **Sandbox requests:** network and plain path grants are given once. Credential and masked-auth access, unsandboxed or host execution, protected writes, and unscanned folders are denied.
+- **Extension permission requests** (`permissions:rpc:prompt`) are approved automatically.
+
+Every yolo block and sandbox decision is written to the review log, and every review entry records the `mode`.
 
 Limits:
 
 - The forbidden-path check is best effort. It reads only commands the parser can read, so `eval`, interpreter code (`python -c`), and writer commands not in the list (`tar -C`, `unzip -d`, `git clone <dir>`) pass. The SRT sandbox stays on and is the backstop.
 - A `cd` inside a subshell is tracked as if it carried over, so a later relative write in the same command can be denied by mistake.
 - `kubectl exec` is not treated as a write.
+- With the classifier unavailable, external writes and Bash run unchecked except for the hard rules.
 
 `manual` is unchanged. `auto` also sends hard-rule commands to the classifier; see below.
+
+## Egress scan
+
+Before `bash`, `web_fetch`, and MCP tool calls run, the egress scan checks the URLs, headers, and data they send. It runs in every mode and blocks with a reason when it finds:
+
+- a host in `deniedDomains`;
+- a host on the bundled exfiltration list (paste, tunnel, request-catcher, and OAST services; `src/network/exfil-domains.ts`);
+- a host on the URLhaus threat feed, downloaded at session start, cached in `~/.pi/agent/extensions/pi-sentinel/threat-feed.txt`, and refreshed every 24 hours (a failed download uses the stale cache);
+- a raw public IP address or a punycode (`xn--`) host;
+- a known secret pattern in the request, sent to a host that is not in `allowedDomains`.
+
+The scan reads text only. It cannot see encoded data, DNS tunnels, or an upload done inside a script file.
 
 ## `auto` mode classifier
 

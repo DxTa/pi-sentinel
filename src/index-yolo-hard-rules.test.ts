@@ -119,7 +119,7 @@ async function setup(
     }),
     "utf8",
   );
-  const pi = createFakePi(["bash", "write", "edit", "read"]);
+  const pi = createFakePi(["bash", "write", "edit", "read", "grep"]);
   piPermissionSystemExtension(pi as never);
   const context = createContext(projectDir, { hasUI: true, choices: Array(10).fill("Yes") });
   const run = (toolName: string, input: Record<string, unknown>) =>
@@ -144,27 +144,22 @@ describe("yolo mode hard rules", () => {
     ["edit", { path: "/usr/bin/yolo-test", oldText: "a", newText: "b" }],
     ["bash", { command: "echo x > /etc/yolo-test" }],
     ["bash", { command: "for f in a; do cp $f /usr/bin/yolo-test; done" }],
-  ])("asks before writing %s into a forbidden path and blocks on refusal", async (toolName, input) => {
+  ])("blocks writing %s into a forbidden path without a dialog", async (toolName, input) => {
     const { run, context } = await setup("yolo");
-    context.ui.select.mockImplementation(async () => "No");
     const result = await run(toolName, input);
 
     expect(result).toMatchObject({ block: true });
     expect(result?.reason).toContain("yolo");
-    expect(context.ui.select).toHaveBeenCalledOnce();
-    const [title, choices] = context.ui.select.mock.calls[0] as unknown as [string, string[]];
-    expect(title).toContain("BLOCKED BY POLICY");
-    expect(choices).toEqual(["Yes", "Yes, for this session", "No", "No, provide reason"]);
+    expect(context.ui.select).not.toHaveBeenCalled();
   });
 
-  it("allows a forbidden write once when the user approves, and asks again next time", async () => {
+  it("keeps blocking a forbidden write on every attempt", async () => {
     const { run, context } = await setup("yolo");
     const input = { path: "/etc/yolo-test", content: "x" };
 
-    expect((await run("write", input))?.block).toBeUndefined();
-    expect((await run("write", input))?.block).toBeUndefined();
-    // Each run asks for the policy deny and, with the classifier unavailable, once more for the external write.
-    expect(context.ui.select).toHaveBeenCalledTimes(4);
+    expect(await run("write", input)).toMatchObject({ block: true });
+    expect(await run("write", input)).toMatchObject({ block: true });
+    expect(context.ui.select).not.toHaveBeenCalled();
   });
 
   it("does not apply the forbidden-path deny in manual mode", async () => {
@@ -178,11 +173,12 @@ describe("yolo mode hard rules", () => {
     ["write", (dir: string) => ({ path: path.join(dir, "..", "yolo-outside.txt"), content: "x" })],
     ["bash", () => ({ command: "cat /etc/hosts" })],
     ["bash", () => ({ command: "echo x > /tmp/yolo-test" })],
-  ])("prompts for external %s when the classifier is unavailable", async (toolName, makeInput) => {
+  ])("lets external %s run without a dialog when the classifier is unavailable", async (toolName, makeInput) => {
     const { run, context, projectDir } = await setup("yolo");
-    await run(toolName, makeInput(projectDir));
+    const result = await run(toolName, makeInput(projectDir));
 
-    expect(context.ui.select).toHaveBeenCalled();
+    expect(result?.block).toBeUndefined();
+    expect(context.ui.select).not.toHaveBeenCalled();
   });
 
   it.each([
@@ -203,11 +199,11 @@ describe("yolo mode hard rules", () => {
     "kubectl apply -f x.yaml",
     "kubectl set image deploy/a a=b",
     "kubectl delete pod a",
-  ])("still prompts for %s", async (command) => {
+  ])("blocks %s without a dialog", async (command) => {
     const { run, context } = await setup("yolo");
-    await run("bash", { command });
 
-    expect(context.ui.select).toHaveBeenCalledOnce();
+    expect(await run("bash", { command })).toMatchObject({ block: true });
+    expect(context.ui.select).not.toHaveBeenCalled();
   });
 
   it("blocks host SSH when the SRT credential boundary is disabled", async () => {
@@ -313,16 +309,13 @@ describe("yolo mode hard rules", () => {
     expect(await run("bash", { command: template.replace("@REMOTE@", SSH_REMOTE) })).toMatchObject({ block: true });
   });
 
-  it("asks for external network exec while the classifier is unavailable, and never prompts for a denied domain", async () => {
+  it("runs external network exec without a dialog and blocks a denied domain", async () => {
     const { run, context } = await setup("yolo", { enabled: true, unknownDomains: "ask", allowedDomains: [], deniedDomains: ["blocked.test"] });
-    context.ui.select.mockImplementation(async () => "No");
 
-    expect(await run("bash", { command: "curl https://example.test" })).toMatchObject({ block: true });
-    expect(context.ui.select).toHaveBeenCalled();
+    expect((await run("bash", { command: "curl https://example.test" }))?.block).toBeUndefined();
     expect(await run("bash", { command: "curl -o /etc/yolo-test https://example.test" })).toMatchObject({ block: true });
-    const before = context.ui.select.mock.calls.length;
     expect(await run("bash", { command: "curl https://blocked.test" })).toMatchObject({ block: true });
-    expect(context.ui.select.mock.calls.length).toBe(before);
+    expect(context.ui.select).not.toHaveBeenCalled();
   });
 
   it.each(["manual", "auto"])("keeps prompting for a write outside the workspace in %s mode", async (mode) => {
@@ -332,21 +325,19 @@ describe("yolo mode hard rules", () => {
     expect(context.ui.select).toHaveBeenCalled();
   });
 
-  it("does not hard-deny an external Bash write in yolo; it asks only because the classifier is unavailable", async () => {
+  it("does not hard-deny an external Bash write in yolo and opens no dialog", async () => {
     const { run, context } = await setup("yolo");
     const result = await run("bash", { command: "touch /opt/yolo-shared/notes.txt" });
 
     expect(result?.block).toBeUndefined();
-    expect(context.ui.select).toHaveBeenCalledOnce();
-    const [title] = context.ui.select.mock.calls[0] as unknown as [string];
-    expect(title).not.toContain("BLOCKED BY POLICY");
+    expect(context.ui.select).not.toHaveBeenCalled();
   });
 
-  it.each(["/bin/rm notes.txt", "rm\tnotes.txt", "kubectl uncordon node-a"])("prompts for %s", async (command) => {
+  it.each(["/bin/rm notes.txt", "rm\tnotes.txt", "kubectl uncordon node-a"])("blocks %s without a dialog", async (command) => {
     const { run, context } = await setup("yolo");
-    await run("bash", { command });
 
-    expect(context.ui.select).toHaveBeenCalledOnce();
+    expect(await run("bash", { command })).toMatchObject({ block: true });
+    expect(context.ui.select).not.toHaveBeenCalled();
   });
 
   it("asks before an explicitly denied Git push and blocks on refusal", async () => {
@@ -376,6 +367,26 @@ describe("yolo mode hard rules", () => {
     for (const [, choices] of context.ui.select.mock.calls) {
       expect(choices).toEqual(["Yes", "No", "No, provide reason"]);
     }
+  });
+});
+
+describe("yolo dotenv selector", () => {
+  const input = { pattern: "KEY", glob: ".env*" };
+  const result = { toolName: "grep", toolCallId: "t-env", input, isError: false, content: [{ type: "text", text: ".env:API_KEY=abc123" }], details: undefined };
+
+  it("runs without a dialog and redacts the result", async () => {
+    const { pi, run, context } = await setup("yolo");
+
+    expect((await run("grep", input))?.block).toBeUndefined();
+    expect(context.ui.select).not.toHaveBeenCalled();
+    const redacted = await pi.handlers.get("tool_result")?.(result, context as never) as { content: { text: string }[] };
+    expect(JSON.stringify(redacted)).not.toContain("abc123");
+  });
+
+  it("leaves the result alone outside yolo, where the user approved the prompt", async () => {
+    const { pi, context } = await setup("manual");
+
+    expect(await pi.handlers.get("tool_result")?.(result, context as never)).toBeUndefined();
   });
 });
 

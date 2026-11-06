@@ -724,7 +724,7 @@ describe("PermissionPrompter", () => {
     ]);
   });
 
-  it("prompts for matching bash yolo exceptions", async () => {
+  it("blocks matching bash yolo exceptions without a dialog", async () => {
     const requestPermissionDecisionFromUi = vi.fn(async () => ({
       approved: true,
       state: "approved" as const,
@@ -761,15 +761,15 @@ describe("PermissionPrompter", () => {
       command: "git push origin main",
     });
 
-    expect(result).toEqual({ approved: true, state: "approved" });
-    expect(requestPermissionDecisionFromUi).toHaveBeenCalledOnce();
+    expect(result).toMatchObject({ approved: false, state: "denied" });
+    expect(result.denialReason).toContain("yolo");
+    expect(requestPermissionDecisionFromUi).not.toHaveBeenCalled();
     expect(reviewLog.map((entry) => entry.event)).toEqual([
-      "permission_request.waiting",
-      "permission_request.approved",
+      "permission_request.yolo_blocked",
     ]);
   });
 
-  it("prompts when forcePromptInYolo is set for non-bash external writes", async () => {
+  it("blocks forcePromptInYolo non-bash external writes without a dialog", async () => {
     const requestPermissionDecisionFromUi = vi.fn(async () => ({
       approved: true,
       state: "approved" as const,
@@ -807,18 +807,18 @@ describe("PermissionPrompter", () => {
       forcePromptInYolo: true,
     } as any);
 
-    expect(result).toEqual({ approved: true, state: "approved" });
-    expect(requestPermissionDecisionFromUi).toHaveBeenCalledOnce();
+    expect(result).toMatchObject({ approved: false, state: "denied" });
+    expect(result.denialReason).toContain("yolo");
+    expect(requestPermissionDecisionFromUi).not.toHaveBeenCalled();
     expect(reviewLog.map((entry) => entry.event)).toEqual([
-      "permission_request.waiting",
-      "permission_request.approved",
+      "permission_request.yolo_blocked",
     ]);
   });
 
   it.each([
     "rm -rf /Volumes/NvmeExt1/openimages/OpenImages/.shards",
     "rm *",
-  ])("prompts for destructive %s commands in YOLO mode", async (command: string) => {
+  ])("blocks destructive %s commands in YOLO mode without a dialog", async (command: string) => {
     const requestPermissionDecisionFromUi = vi.fn(async () => ({
       approved: true,
       state: "approved" as const,
@@ -855,11 +855,11 @@ describe("PermissionPrompter", () => {
       command,
     });
 
-    expect(result).toEqual({ approved: true, state: "approved" });
-    expect(requestPermissionDecisionFromUi).toHaveBeenCalledOnce();
+    expect(result).toMatchObject({ approved: false, state: "denied" });
+    expect(result.denialReason).toContain("yolo");
+    expect(requestPermissionDecisionFromUi).not.toHaveBeenCalled();
     expect(reviewLog.map((entry) => entry.event)).toEqual([
-      "permission_request.waiting",
-      "permission_request.approved",
+      "permission_request.yolo_blocked",
     ]);
   });
 
@@ -1034,11 +1034,11 @@ it("sends a non-local eligible request to the model as a candidate", async () =>
 });
 
 describe("yolo mode sends external writes and exec to the model", () => {
-  const modelResult = (action: "allow" | "prompt") => ({
-    action, reason: action === "allow" ? "model_allow" : "threat_not_benign", candidate: true, attempted: true, evaluationId: "e", audit: false,
+  const modelResult = (action: "allow" | "prompt", reason = "threat_not_benign") => ({
+    action, reason: action === "allow" ? "model_allow" : reason, candidate: true, attempted: true, evaluationId: "e", audit: false,
   });
-  const setup = (action: "allow" | "prompt" | undefined) => {
-    const evaluate = vi.fn(async () => modelResult(action ?? "prompt"));
+  const setup = (action: "allow" | "prompt" | undefined, reason?: string) => {
+    const evaluate = vi.fn(async () => modelResult(action ?? "prompt", reason));
     const requestPermissionDecisionFromUi = vi.fn(async () => ({ approved: false, state: "denied" as const }));
     const prompter = new PermissionPrompter({
       promptWaitTracker: new PromptWaitTracker({ emit() {} }),
@@ -1066,16 +1066,27 @@ describe("yolo mode sends external writes and exec to the model", () => {
     expect(requestPermissionDecisionFromUi).not.toHaveBeenCalled();
   });
 
-  it("prompts for an external write the model does not allow", async () => {
-    const { requestPermissionDecisionFromUi, run } = setup("prompt");
-    expect((await run(externalWrite)).approved).toBe(false);
-    expect(requestPermissionDecisionFromUi).toHaveBeenCalledOnce();
+  it.each(["threat_not_benign", "injection_detected"])("blocks an external write the model flags as %s", async (reason) => {
+    const { requestPermissionDecisionFromUi, run } = setup("prompt", reason);
+    const result = await run(externalWrite);
+    expect(result).toMatchObject({ approved: false, state: "denied" });
+    expect(result.denialReason).toContain(reason);
+    expect(requestPermissionDecisionFromUi).not.toHaveBeenCalled();
   });
 
-  it("prompts for an external write when no classifier is configured", async () => {
+  it.each(["too_many_units", "unit_too_long", "threat_benign_low_confidence", "startup_failed", "worker_unavailable"])(
+    "allows an external write when the model result is %s",
+    async (reason) => {
+      const { requestPermissionDecisionFromUi, run } = setup("prompt", reason);
+      expect((await run(externalWrite)).approved).toBe(true);
+      expect(requestPermissionDecisionFromUi).not.toHaveBeenCalled();
+    },
+  );
+
+  it("allows an external write when no classifier is configured", async () => {
     const { requestPermissionDecisionFromUi, run } = setup(undefined);
-    expect((await run(externalWrite)).approved).toBe(false);
-    expect(requestPermissionDecisionFromUi).toHaveBeenCalledOnce();
+    expect((await run(externalWrite)).approved).toBe(true);
+    expect(requestPermissionDecisionFromUi).not.toHaveBeenCalled();
   });
 
   it("sends external exec to the model", async () => {
@@ -1098,17 +1109,19 @@ describe("yolo mode sends external writes and exec to the model", () => {
     expect(requestPermissionDecisionFromUi).not.toHaveBeenCalled();
   });
 
-  it("prompts for a sensitive external read without the model", async () => {
+  it("blocks a sensitive external read without the model or a dialog", async () => {
     const { evaluate, requestPermissionDecisionFromUi, run } = setup("allow");
-    await run({ toolName: "read", autoModeOperation: "read", autoModeEligible: true, autoModeWorkspaceLocal: false, autoModeHardRuleHit: true });
+    const result = await run({ toolName: "read", autoModeOperation: "read", autoModeEligible: true, autoModeWorkspaceLocal: false, autoModeHardRuleHit: true });
+    expect(result).toMatchObject({ approved: false, state: "denied" });
     expect(evaluate).not.toHaveBeenCalled();
-    expect(requestPermissionDecisionFromUi).toHaveBeenCalledOnce();
+    expect(requestPermissionDecisionFromUi).not.toHaveBeenCalled();
   });
 
-  it("keeps hard rules prompting without the model", async () => {
+  it("blocks forced prompts without the model or a dialog", async () => {
     const { evaluate, requestPermissionDecisionFromUi, run } = setup("allow");
-    await run({ ...externalWrite, toolName: "bash", command: "rm -rf build", autoModeOperation: "exec" });
+    const result = await run({ ...externalWrite, toolName: "bash", command: "rm -rf build", autoModeOperation: "exec" });
+    expect(result).toMatchObject({ approved: false, state: "denied" });
     expect(evaluate).not.toHaveBeenCalled();
-    expect(requestPermissionDecisionFromUi).toHaveBeenCalledOnce();
+    expect(requestPermissionDecisionFromUi).not.toHaveBeenCalled();
   });
 });

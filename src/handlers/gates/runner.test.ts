@@ -206,7 +206,8 @@ describe("runGateCheck", () => {
       decision: { surface: "bash", value: "cat /etc/hosts" },
       preCheck: denyCheck,
     };
-    const makeDeps = (decision: unknown, canConfirm = true) => ({
+    const makeDeps = (decision: unknown, canConfirm = true, yolo = false) => ({
+      yolo,
       checkPermission: vi.fn(),
       getSessionRuleset: () => [],
       approveSessionRule: vi.fn(),
@@ -228,6 +229,15 @@ describe("runGateCheck", () => {
       expect(deps.emitDecision).toHaveBeenCalledWith(
         expect.objectContaining({ result: "allow", resolution: "user_approved" }),
       );
+    });
+
+    it("blocks without a dialog or override in yolo", async () => {
+      const deps = makeDeps({ approved: true, state: "approved" }, true, true);
+      const result = await runGateCheck(descriptor as never, null, "t-yolo", deps as never);
+      expect(result.action).toBe("block");
+      expect(deps.promptPermission).not.toHaveBeenCalled();
+      expect(deps.writeReviewLog).not.toHaveBeenCalledWith("permission_request.deny_override_prompted", expect.anything());
+      expect(takeDenyOverride("t-yolo")).toBe(false);
     });
 
     it("marks the tool call so the sandbox gate can issue a one-shot grant", async () => {

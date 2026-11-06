@@ -194,6 +194,7 @@ export class PermissionGateHandler {
       writeDebugLog: session.logger.debug,
       emitDecision,
       canConfirm,
+      yolo: session.config.mode === "yolo",
       promptPermission,
     };
 

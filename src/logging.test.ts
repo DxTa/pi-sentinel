@@ -82,6 +82,16 @@ describe("createPermissionSystemLogger", () => {
     }
   });
 
+  it("records the permission mode on every review entry", () => {
+    const { logger, config, reviewLogPath } = loggerFixture(false);
+    logger.review("first", {});
+    (config as { mode: string }).mode = "yolo";
+    logger.review("second", {});
+
+    const modes = readFileSync(reviewLogPath, "utf8").trim().split("\n").map((line) => JSON.parse(line).mode);
+    expect(modes).toEqual(["manual", "yolo"]);
+  });
+
   it("creates logs with mode 0600 and tightens existing log permissions", () => {
     const { logger, debugLogPath, reviewLogPath } = loggerFixture(true);
     writeFileSync(reviewLogPath, "old record\n", "utf8");

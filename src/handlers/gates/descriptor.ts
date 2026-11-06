@@ -100,6 +100,8 @@ export interface GateRunnerDeps {
   writeDebugLog?: (event: string, details: Record<string, unknown>) => void;
   emitDecision(event: PermissionDecisionEvent): void;
   canConfirm(details: Omit<PromptPermissionDetails, "requestId">): boolean;
+  /** Yolo never opens a dialog, so a policy deny stays a deny instead of becoming an override request. */
+  yolo?: boolean;
   promptPermission(
     details: PromptPermissionDetails,
   ): Promise<PermissionPromptDecision>;
