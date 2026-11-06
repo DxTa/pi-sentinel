@@ -143,8 +143,19 @@ describe("promptSandboxGrant in yolo", () => {
     expect(log).toHaveBeenCalledWith("sandbox_request.yolo_denied", expect.anything());
   });
 
+  it("grants unscanned folders for the session so bash is not blocked on every command", async () => {
+    const select = vi.fn(async () => "Deny");
+    await expect(promptSandboxGrant(ctx(select), {
+      command: "c",
+      change: change({ type: "path", mode: "ro", values: ["/Users/me/dev"] }),
+      allowPersistentScopes: false,
+      unscannedRoots: true,
+    })).resolves.toEqual({ action: "allow", duration: "session" });
+    expect(select).not.toHaveBeenCalled();
+  });
+
   it.each([
-    ["protected or unscanned paths", { allowPersistentScopes: false }],
+    ["protected paths", { allowPersistentScopes: false }],
   ])("denies a path request with %s", async (_name, extra) => {
     const select = vi.fn(async () => "Allow once");
     await expect(promptSandboxGrant(ctx(select), { command: "c", change: change({ type: "path", mode: "ro", values: ["/x"] }), ...extra }))

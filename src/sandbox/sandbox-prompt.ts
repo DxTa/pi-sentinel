@@ -27,6 +27,8 @@ export interface SandboxPromptDetails {
   allowPersistentScopes?: boolean;
   /** Set false for a strictly invocation-scoped decision. */
   allowSession?: boolean;
+  /** The request is read access to folders the masked-file scan could not check. */
+  unscannedRoots?: boolean;
 }
 
 const CHOICE_ONCE = "Allow once";
@@ -48,15 +50,17 @@ export function setSandboxYoloHooks(hooks: SandboxYoloHooks | undefined): void {
 }
 
 /**
- * Yolo grants network and plain path requests once. Everything that touches credentials or leaves the sandbox
- * (auth, host bypass, masked or protected paths, unscanned folders) is denied.
+ * Yolo grants network and plain path requests once, and unscanned folders for the session (a once-grant would
+ * block every later command in a large folder). Everything that touches credentials or leaves the sandbox
+ * (auth, host bypass, masked or protected paths) is denied.
  */
 function resolveYolo(details: SandboxPromptDetails): SandboxPromptResult {
   const { change } = details;
   const grantable = (change.type === "network" || change.type === "path")
-    && details.allowPersistentScopes !== false
+    && (details.allowPersistentScopes !== false || details.unscannedRoots === true)
     && !change.authKind;
-  const result: SandboxPromptResult = grantable ? { action: "allow", duration: "once" } : { action: "deny" };
+  const duration = details.unscannedRoots ? "session" : "once";
+  const result: SandboxPromptResult = grantable ? { action: "allow", duration } : { action: "deny" };
   yoloHooks?.log(grantable ? "sandbox_request.yolo_granted_once" : "sandbox_request.yolo_denied", {
     type: change.type,
     mode: change.mode ?? null,

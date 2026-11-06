@@ -43,7 +43,7 @@ grep -noE '"(for|while|until|if|then|elif|else|do|done|fi|select|case|esac|bash|
   - `rm`, `ssh`, `git push`, `npm`/`pnpm`/`yarn` `publish`, and kubectl commands that change a cluster (`apply`, `create`, `delete`, `edit`, `patch`, `replace`, `set`, `scale`, `rollout` except `status`/`history`, `drain`, `cordon`, `uncordon`, `taint`, `label`, `annotate`, `autoscale`, `run`, `expose`, `cp`). Matching uses the executable name and subcommand, so `/bin/rm` and `git -C repo push` count while `git log --grep push` does not. Add your own with `yoloAskBashPatterns`.
   - Sensitive external reads, and any explicit `deny` rule: a policy deny stays a deny, with no override dialog.
   - Explicitly denied network domains and sandbox auth-exception `deny` rules.
-- **Sandbox requests:** network and plain path grants are given once. Credential and masked-auth access, unsandboxed or host execution, protected writes, and unscanned folders are denied.
+- **Sandbox requests:** network and plain path grants are given once; folders the masked-file scan cannot check are granted for the session. Credential and masked-auth access, unsandboxed or host execution, and protected writes are denied.
 - **Extension permission requests** (`permissions:rpc:prompt`) are approved automatically.
 
 Every yolo block and sandbox decision is written to the review log, and every review entry records the `mode`.

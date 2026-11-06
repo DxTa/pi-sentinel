@@ -372,6 +372,7 @@ function promptScanUnavailableRoots(
     command,
     promptWaitTracker,
     allowPersistentScopes: false,
+    unscannedRoots: true,
   });
 }
 
