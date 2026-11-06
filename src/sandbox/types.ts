@@ -72,6 +72,8 @@ export interface SandboxConfig {
    * all Bash commands host-accessible while keeping direct file-tool gates active.
    * Recognized mutating commands still hard-block unsafe paths. */
   bypassCommands?: string[];
+  /** Command prefixes (for example "docker build") that may run on the host after an approved sandbox block or SRT denial. */
+  hostFallbackCommands?: string[];
   /** Optional command-specific auth exception policy. */
   authExceptions?: SandboxAuthExceptionRule[];
 }

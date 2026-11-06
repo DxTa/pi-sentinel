@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 
 import {
+  isHostFallbackGranted,
   isDockerCommand,
   hasDockerEndpointOverride,
   isDockerDaemonCommand,
@@ -194,5 +195,23 @@ describe("isHostCapabilityBootstrapCommand", () => {
     "python -m venv .venv | cat",
   ])("rejects indirect or unrelated command %s", (command) => {
     expect(isHostCapabilityBootstrapCommand(command)).toBe(false);
+  });
+});
+
+describe("isHostFallbackGranted", () => {
+  const grants = ["docker build"];
+
+  it("grants a plain granted prefix", () => {
+    expect(isHostFallbackGranted("docker build -t beaver:local .", grants)).toBe(true);
+  });
+
+  it.each([
+    "sudo -n docker build .",
+    "HOME=/tmp/h docker build .",
+    "bash -c 'docker build .'",
+    "docker build . ; cat ~/.ssh/id_rsa",
+    "docker build . > ~/.zshrc",
+  ])("rejects %s", (command) => {
+    expect(isHostFallbackGranted(command, grants)).toBe(false);
   });
 });

@@ -1130,6 +1130,182 @@ describe("piPermissionSystemExtension SRT default smoke", () => {
     expect(writeResult).toEqual({});
   });
 
+  it("runs a granted docker build on the host instead of forcing it through SRT", async () => {
+    const agentDir = await makeTempDir("pi-host-fallback-agent-");
+    const projectDir = await makeTempDir("pi-host-fallback-project-");
+    process.env.PI_CODING_AGENT_DIR = agentDir;
+    await writeExtensionConfig(agentDir, {
+      permission: { "*": "allow", bash: { "*": "allow" }, external_directory: { "*": "allow" } },
+      sandbox: {
+        enabled: true,
+        backend: "srt",
+        defaultProfile: "online-dev",
+        bypassCommands: ["*"],
+        hostFallbackCommands: ["docker build"],
+      },
+    });
+
+    const pi = createFakePi();
+    piPermissionSystemExtension(pi as never);
+    const command = "docker build -t beaver:local .";
+    const event = { toolName: "bash", toolCallId: "docker-build-granted", input: { command } };
+    await expect(pi.handlers.get("tool_call")?.(event, createContext(projectDir) as never))
+      .resolves.toBeUndefined();
+    expect(event.input.command).toBe(command);
+  });
+
+  it("runs a granted docker build on the host even when bypassCommands is empty", async () => {
+    const agentDir = await makeTempDir("pi-host-fallback-agent-");
+    const projectDir = await makeTempDir("pi-host-fallback-project-");
+    process.env.PI_CODING_AGENT_DIR = agentDir;
+    await writeExtensionConfig(agentDir, {
+      permission: { "*": "allow", bash: { "*": "allow" }, external_directory: { "*": "allow" } },
+      sandbox: {
+        enabled: true,
+        backend: "srt",
+        defaultProfile: "online-dev",
+        bypassCommands: [],
+        hostFallbackCommands: ["docker build"],
+      },
+    });
+
+    const pi = createFakePi();
+    piPermissionSystemExtension(pi as never);
+    const command = "docker build -t beaver:local .";
+    const event = { toolName: "bash", toolCallId: "docker-build-granted-empty-bypass", input: { command } };
+    await expect(pi.handlers.get("tool_call")?.(event, createContext(projectDir) as never))
+      .resolves.toBeUndefined();
+    expect(event.input.command).toBe(command);
+  });
+
+  it("prompts before blocking a sandbox-blocked command and runs it on the host once approved", async () => {
+    const agentDir = await makeTempDir("pi-blocked-prompt-agent-");
+    const projectDir = await makeTempDir("pi-blocked-prompt-project-");
+    process.env.PI_CODING_AGENT_DIR = agentDir;
+    await writeExtensionConfig(agentDir, {
+      permission: { "*": "allow", bash: { "*": "allow" }, external_directory: { "*": "allow" } },
+      sandbox: { enabled: true, backend: "srt", defaultProfile: "online-dev", bypassCommands: ["*"] },
+    });
+
+    const pi = createFakePi();
+    piPermissionSystemExtension(pi as never);
+    const command = "DOCKER_HOST=tcp://127.0.0.1:2375 docker build -t beaver:local .";
+    const ctx = createContext(projectDir, { hasUI: true, choices: ["Allow once"] });
+    const event = { toolName: "bash", toolCallId: "blocked-then-allowed", input: { command } };
+    await expect(pi.handlers.get("tool_call")?.(event, ctx as never)).resolves.toBeUndefined();
+    expect(event.input.command).toBe(command);
+    expect(ctx.ui.select).toHaveBeenCalledWith(expect.any(String), ["Allow once", "Deny"]);
+  });
+
+  it("keeps a policy-denied command blocked even when the sandbox-block prompt is allowed", async () => {
+    const agentDir = await makeTempDir("pi-blocked-policy-agent-");
+    const projectDir = await makeTempDir("pi-blocked-policy-project-");
+    process.env.PI_CODING_AGENT_DIR = agentDir;
+    await writeExtensionConfig(agentDir, {
+      permission: { "*": "allow", bash: { "*": "allow", "DOCKER_HOST=*": "deny" }, external_directory: { "*": "allow" } },
+      sandbox: { enabled: true, backend: "srt", defaultProfile: "online-dev", bypassCommands: ["*"] },
+    });
+
+    const pi = createFakePi();
+    piPermissionSystemExtension(pi as never);
+    const ctx = createContext(projectDir, { hasUI: true, choices: ["Allow once"] });
+    const event = {
+      toolName: "bash",
+      toolCallId: "blocked-and-policy-denied",
+      input: { command: "DOCKER_HOST=tcp://127.0.0.1:2375 docker build -t beaver:local ." },
+    };
+    await expect(pi.handlers.get("tool_call")?.(event, ctx as never)).resolves.toMatchObject({ block: true });
+    expect(ctx.ui.select).not.toHaveBeenCalledWith(expect.any(String), ["Allow once", "Deny"]);
+  });
+
+  it("blocks a sandbox-blocked command when the prompt is denied", async () => {
+    const agentDir = await makeTempDir("pi-blocked-deny-agent-");
+    const projectDir = await makeTempDir("pi-blocked-deny-project-");
+    process.env.PI_CODING_AGENT_DIR = agentDir;
+    await writeExtensionConfig(agentDir, {
+      permission: { "*": "allow", bash: { "*": "allow" }, external_directory: { "*": "allow" } },
+      sandbox: { enabled: true, backend: "srt", defaultProfile: "online-dev", bypassCommands: ["*"] },
+    });
+
+    const pi = createFakePi();
+    piPermissionSystemExtension(pi as never);
+    const ctx = createContext(projectDir, { hasUI: true, choices: ["Deny"] });
+    const event = {
+      toolName: "bash",
+      toolCallId: "blocked-then-denied",
+      input: { command: "DOCKER_HOST=tcp://127.0.0.1:2375 docker build -t beaver:local ." },
+    };
+    await expect(pi.handlers.get("tool_call")?.(event, ctx as never)).resolves.toMatchObject({
+      block: true,
+      reason: expect.stringContaining("Docker endpoint overrides"),
+    });
+  });
+
+  it("prompts before rerunning on the host after an SRT denial of the same command", async () => {
+    const agentDir = await makeTempDir("pi-srt-denial-agent-");
+    const projectDir = await makeTempDir("pi-srt-denial-project-");
+    process.env.PI_CODING_AGENT_DIR = agentDir;
+    await writeExtensionConfig(agentDir, {
+      permission: { "*": "allow", bash: { "*": "allow" }, external_directory: { "*": "allow" } },
+      sandbox: { enabled: true, backend: "srt", defaultProfile: "online-dev", bypassCommands: ["*"] },
+    });
+
+    const pi = createFakePi();
+    piPermissionSystemExtension(pi as never);
+    const command = "docker build -t beaver:local .";
+    const firstCtx = createContext(projectDir, { hasUI: true });
+    const first = { toolName: "bash", toolCallId: "srt-denial-1", input: { command } };
+    await pi.handlers.get("tool_call")?.(first, firstCtx as never);
+    expect(first.input.command).not.toBe(command);
+
+    const denial = await pi.handlers.get("tool_result")?.({
+      toolName: "bash",
+      toolCallId: "srt-denial-1",
+      input: first.input,
+      content: [{ type: "text", text: "open /Users/x/.docker/buildx: operation not permitted" }],
+      details: {},
+      isError: true,
+    }, firstCtx as never);
+    expect(JSON.stringify(denial)).toContain("call Bash again with the exact original command");
+
+    const retryCtx = createContext(projectDir, { hasUI: true, choices: ["Allow once"] });
+    const retry = { toolName: "bash", toolCallId: "srt-denial-2", input: { command } };
+    await expect(pi.handlers.get("tool_call")?.(retry, retryCtx as never)).resolves.toBeUndefined();
+    expect(retry.input.command).toBe(command);
+    expect(retryCtx.ui.select).toHaveBeenCalledWith(expect.any(String), ["Allow once", "Deny"]);
+  });
+
+  it("runs an SRT-denied retry inside SRT when the host prompt is denied", async () => {
+    const agentDir = await makeTempDir("pi-srt-deny-agent-");
+    const projectDir = await makeTempDir("pi-srt-deny-project-");
+    process.env.PI_CODING_AGENT_DIR = agentDir;
+    await writeExtensionConfig(agentDir, {
+      permission: { "*": "allow", bash: { "*": "allow" }, external_directory: { "*": "allow" } },
+      sandbox: { enabled: true, backend: "srt", defaultProfile: "online-dev", bypassCommands: ["*"] },
+    });
+
+    const pi = createFakePi();
+    piPermissionSystemExtension(pi as never);
+    const command = "docker build -t beaver:local .";
+    const firstCtx = createContext(projectDir, { hasUI: true });
+    const first = { toolName: "bash", toolCallId: "srt-deny-1", input: { command } };
+    await pi.handlers.get("tool_call")?.(first, firstCtx as never);
+    await pi.handlers.get("tool_result")?.({
+      toolName: "bash",
+      toolCallId: "srt-deny-1",
+      input: first.input,
+      content: [{ type: "text", text: "open /x: operation not permitted" }],
+      details: {},
+      isError: true,
+    }, firstCtx as never);
+
+    const retryCtx = createContext(projectDir, { hasUI: true, choices: ["Deny"] });
+    const retry = { toolName: "bash", toolCallId: "srt-deny-2", input: { command } };
+    await expect(pi.handlers.get("tool_call")?.(retry, retryCtx as never)).resolves.toBeUndefined();
+    expect(retryCtx.ui.select).toHaveBeenCalledWith(expect.any(String), ["Allow once", "Deny"]);
+    expect(retry.input.command).not.toBe(command);
+  });
+
   it("routes default-context Docker ps through SRT despite wildcard host bypass", async () => {
     const agentDir = await makeTempDir("pi-permission-agent-");
     const projectDir = await makeTempDir("pi-permission-project-");
@@ -1341,7 +1517,9 @@ describe("piPermissionSystemExtension SRT default smoke", () => {
         const result = surface === "tool_call"
           ? await pi.handlers.get("tool_call")?.({ toolName: "bash", input: { command } }, createContext(projectDir) as never)
           : await pi.handlers.get("user_bash")?.({ command, cwd: projectDir }, createContext(projectDir) as never);
-        expect(JSON.stringify(result)).toContain("explicit Docker endpoint overrides are not supported");
+        // tool_call runs policy gates before the endpoint reason; with no UI, any block is the fail-closed outcome.
+        if (surface === "tool_call") expect(result).toMatchObject({ block: true });
+        else expect(JSON.stringify(result)).toContain("explicit Docker endpoint overrides are not supported");
       }
     },
   );

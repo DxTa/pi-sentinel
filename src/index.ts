@@ -14,7 +14,7 @@ import { openDecisionStore, type DecisionStore } from "./auto-mode-decision-stor
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
 import type { ChildProcess } from "node:child_process";
 import { toRecord } from "./common";
-import { srtEgressFailureMessage } from "./sandbox/srt-egress-error";
+import { srtDenialMessage, srtEgressFailureMessage } from "./sandbox/srt-egress-error";
 import { implicitAuthIsGitPushOnly, literalGitPushKey } from "./sandbox/git-push-host-fallback";
 
 // ── Extension imports ────────────────────────────────────────────────────
@@ -102,6 +102,7 @@ import type { ResolvedSandboxProfile, UnmaskedPath } from "./sandbox/types.js";
 import {
   hasDockerEndpointOverride,
   isDockerDaemonCommand,
+  isHostFallbackGranted,
   isHostCapabilityBootstrapCommand,
   shouldBypassSandboxCommand,
 } from "./sandbox/bypass-command.js";
@@ -709,10 +710,11 @@ async function resolveBashSandboxAccess(
   const fileAuthRequiresSrt = config.enabled
     && (implicitAuth?.candidatePaths.length ?? 0) > 0
     && !implicitAuth?.needsSocketFallback;
-  const forceSrt = hasProtectedRead || dockerRequiresSrt || fileAuthRequiresSrt;
+  const hostFallbackGranted = isHostFallbackGranted(command, config.hostFallbackCommands ?? []);
+  const forceSrt = !hostFallbackGranted && (hasProtectedRead || dockerRequiresSrt || fileAuthRequiresSrt);
   const sandboxed = config.enabled
     && config.backend === "srt"
-    && (forceSrt || !bypassed);
+    && (forceSrt || (!bypassed && !hostFallbackGranted));
 
   // Redaction hides stdout only; a file written from a credential read would escape it.
   const credentialReads = protectedReadPaths.filter((path) => isProtectedCredentialReadPath(path, cwd));
@@ -771,6 +773,7 @@ export default function piPermissionSystemExtension(pi: ExtensionAPI): void {
   const runtime = createExtensionRuntime();
   const hostCapabilityBypassApprovals = new Set<string>();
   const failedSrtPushes = new Set<string>();
+  const failedSrtCommands = new Set<string>();
   let pushFallbackSession = 0;
   const resolvePushHostFallback = async (
     command: string,
@@ -794,6 +797,24 @@ export default function piPermissionSystemExtension(pi: ExtensionAPI): void {
     return result.action === "allow" && result.duration === "once" && approvalSession === pushFallbackSession
       ? "allowed"
       : "denied";
+  };
+  const resolveBlockedHostRun = async (
+    command: string,
+    reason: string,
+    ctx: ExtensionContext,
+  ): Promise<"allowed" | "denied"> => {
+    const result = await promptSandboxGrant(ctx, {
+      change: {
+        type: "host-bypass",
+        values: ["sandbox-block"],
+        description: `${reason}\n\nRun "${command}" in "${ctx.cwd}" outside sandbox protections once? Host filesystem, credentials and network will be accessible.`,
+      },
+      command,
+      promptWaitTracker,
+      allowPersistentScopes: false,
+      allowSession: false,
+    });
+    return result.action === "allow" ? "allowed" : "denied";
   };
   const resolveHostCapabilityDecision = async (
     command: string,
@@ -837,6 +858,7 @@ export default function piPermissionSystemExtension(pi: ExtensionAPI): void {
     dotenvPaths?: string[];
     redactOutput?: boolean;
     pushFallback?: { key: string; session: number };
+    retry?: { key: string; session: number };
   }>();
 
   refreshExtensionConfig(runtime);
@@ -1222,6 +1244,7 @@ export default function piPermissionSystemExtension(pi: ExtensionAPI): void {
     sessionBypassApprovals.clear();
     hostCapabilityBypassApprovals.clear();
     failedSrtPushes.clear();
+    failedSrtCommands.clear();
     pushFallbackSession++;
     clearSessionNetworkApprovals();
     clearMaskedAuthSessionGrants();
@@ -1241,6 +1264,7 @@ export default function piPermissionSystemExtension(pi: ExtensionAPI): void {
     sessionBypassApprovals.clear();
     hostCapabilityBypassApprovals.clear();
     failedSrtPushes.clear();
+    failedSrtCommands.clear();
     pushFallbackSession++;
     clearSessionNetworkApprovals();
     clearMaskedAuthSessionGrants();
@@ -1708,6 +1732,7 @@ export default function piPermissionSystemExtension(pi: ExtensionAPI): void {
     let forceSrtForProtectedResource = false;
     let dockerRequiresSrtForInvocation = false;
     let hasApprovedProtectedWrite = false;
+    let hostRunBlock: { command: string; reason: string; fallbackToSrt?: boolean } | undefined;
     if (typeof bashCommand === "string") {
       try {
         const access = await resolveBashSandboxAccess(
@@ -1717,7 +1742,11 @@ export default function piPermissionSystemExtension(pi: ExtensionAPI): void {
           sc,
           bypassesSandbox(bashCommand, ctx.cwd),
         );
-        if (access.blockReason) return { block: true, reason: access.blockReason };
+        const srtRetry = runtime.config.mode !== "yolo" && failedSrtCommands.delete(JSON.stringify([ctx.cwd, bashCommand]));
+        hostRunBlock = access.blockReason
+          ? { command: bashCommand, reason: access.blockReason }
+          : srtRetry ? { command: bashCommand, reason: "The last run of this exact command printed a permission error that SRT may have caused. Running it outside SRT needs approval.", fallbackToSrt: true } : undefined;
+        if (hostRunBlock && runtime.config.mode === "yolo") return { block: true, reason: hostRunBlock.reason };
         protectedReadPaths = access.protectedReadPaths;
         sandboxedBash = access.sandboxed;
         forceSrtForProtectedResource = access.forceSrt;
@@ -1740,6 +1769,11 @@ export default function piPermissionSystemExtension(pi: ExtensionAPI): void {
         return { block: true, reason: "Permission authorization failed; command blocked." };
       }
       bashPermissionAlreadyChecked = true;
+    }
+    if (hostRunBlock) {
+      // Policy gates ran first; only then may a person approve running the blocked command on the host.
+      if (await resolveBlockedHostRun(hostRunBlock.command, hostRunBlock.reason, ctx) === "allowed") return undefined;
+      if (!hostRunBlock.fallbackToSrt) return { block: true, reason: hostRunBlock.reason };
     }
     // A person already approved this call over a policy deny: ordinary external paths need no second dialog.
     const denyOverridden = takeDenyOverride(e.toolCallId);
@@ -2120,15 +2154,7 @@ export default function piPermissionSystemExtension(pi: ExtensionAPI): void {
         if (result && "command" in result) {
           (e.input as { command: string }).command = result.command;
           const pushKey = literalGitPushKey(command, ctx.cwd);
-          if (e.toolCallId && (
-            pushKey !== undefined
-            || result.cleanup
-            || result.helperPayloadBytes !== undefined
-            || result.rawCommandBytes !== undefined
-            || autoAllowedDotenvPaths.length > 0
-            || protectedReadPaths.length > 0
-            || redactProtectedReadOutput
-          )) {
+          if (e.toolCallId) {
             pendingSrtWraps.set(e.toolCallId, {
               cleanup: result.cleanup,
               helperPayloadBytes: result.helperPayloadBytes,
@@ -2136,6 +2162,7 @@ export default function piPermissionSystemExtension(pi: ExtensionAPI): void {
               dotenvPaths: autoAllowedDotenvPaths,
               redactOutput: redactProtectedReadOutput,
               pushFallback: pushKey === undefined ? undefined : { key: pushKey, session: pushFallbackSession },
+              retry: { key: JSON.stringify([ctx.cwd, command]), session: pushFallbackSession },
             });
           }
         }
@@ -2655,6 +2682,11 @@ export default function piPermissionSystemExtension(pi: ExtensionAPI): void {
         failedSrtPushes.add(wrapped.pushFallback.key);
       }
       return { content: [{ type: "text" as const, text: srtEgressFailureMessage(text, wrapped?.pushFallback?.session === pushFallbackSession)! }], details: dotenvOutputResult?.details ?? event.details };
+    }
+    if (event.toolName === "bash" && event.isError && wrapped?.retry && runtime.config.mode !== "yolo" && srtDenialMessage(text) !== undefined) {
+      if (wrapped.retry.session === pushFallbackSession) failedSrtCommands.add(wrapped.retry.key);
+      const original = dotenvOutputResult?.content ?? event.content;
+      return { content: [...original, { type: "text" as const, text: srtDenialMessage(text, wrapped.retry.session === pushFallbackSession)! }], details: dotenvOutputResult?.details ?? event.details };
     }
 
     const isPiSpawnE2Big = /^spawn(?:[ \t]+.+)?[ \t]+E2BIG$/.test(text);

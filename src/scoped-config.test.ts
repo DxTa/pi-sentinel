@@ -11,6 +11,7 @@ import {
   persistNetworkGrantToConfig,
   persistPermissionRuleToConfig,
   persistSandboxNetworkGrantToConfig,
+  persistSandboxHostFallbackToConfig,
   persistSandboxPathGrantToConfig,
   resolveConfinedConfigPath,
   removeNetworkGrantFromConfig,
@@ -402,6 +403,20 @@ describe("persistNetworkGrantToConfig", () => {
         allowedDomains: [],
         deniedDomains: ["api.github.com"],
       },
+    });
+  });
+});
+
+describe("persistSandboxHostFallbackToConfig", () => {
+  it("appends a command prefix once inside sandbox config", async () => {
+    const dir = await makeTempDir("pi-scoped-config-");
+    const configPath = path.join(dir, "config.json");
+
+    persistSandboxHostFallbackToConfig(configPath, "docker build");
+    persistSandboxHostFallbackToConfig(configPath, "docker build");
+
+    expect(JSON.parse(await readFile(configPath, "utf8"))).toEqual({
+      sandbox: { hostFallbackCommands: ["docker build"] },
     });
   });
 });

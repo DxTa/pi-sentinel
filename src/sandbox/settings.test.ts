@@ -6,6 +6,12 @@ import { describe, expect, it } from "vitest";
 import { normalizeSandboxConfig, validateSandboxBindPath } from "./settings.js";
 
 describe("normalizeSandboxConfig", () => {
+  it("reads host fallback command prefixes without duplicates", () => {
+    expect(normalizeSandboxConfig(undefined).hostFallbackCommands).toEqual([]);
+    expect(normalizeSandboxConfig({ hostFallbackCommands: ["docker build", "docker build"] }).hostFallbackCommands)
+      .toEqual(["docker build"]);
+  });
+
   it("defaults to enabled SRT with online network profile", () => {
     const config = normalizeSandboxConfig(undefined);
 

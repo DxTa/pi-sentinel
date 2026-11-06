@@ -132,7 +132,7 @@ export async function promptSandboxGrant(
   const hasWorkspaceScope = Boolean(ctx.cwd) && allowPersistentScopes;
   const options = !allowSession
     ? [CHOICE_ONCE, CHOICE_DENY]
-    : change.type === "auth-bypass" || change.type === "host-bypass" || !allowPersistentScopes
+    : change.type === "auth-bypass" || !allowPersistentScopes
       ? [CHOICE_ONCE, CHOICE_SESSION, CHOICE_DENY]
       : [
           CHOICE_ONCE,

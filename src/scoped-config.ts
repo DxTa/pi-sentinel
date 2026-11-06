@@ -633,6 +633,30 @@ export function removeNetworkGrantFromConfig(
   return nextConfig;
 }
 
+export function persistSandboxHostFallbackToConfig(
+  configPath: string,
+  prefix: string,
+  workspaceRoot?: string,
+): JsonObject {
+  const targetPath = workspaceRoot
+    ? resolveConfinedConfigPath(configPath, workspaceRoot)
+    : configPath;
+  const current = readConfigForWrite(targetPath);
+  if (!current) throw new Error(`Failed to read sandbox config at '${configPath}'.`);
+  const sandbox = requireConfigObject(current.sandbox, "sandbox");
+  const nextConfig = {
+    ...current,
+    sandbox: {
+      ...sandbox,
+      hostFallbackCommands: dedupeStrings([...toStringArray(sandbox.hostFallbackCommands), prefix.trim()]),
+    },
+  };
+  if (!writeConfigFile(configPath, nextConfig, workspaceRoot)) {
+    throw new Error(`Failed to persist sandbox host fallback at '${configPath}'.`);
+  }
+  return nextConfig;
+}
+
 export function persistSandboxPathGrantToConfig(
   configPath: string,
   targetPath: string,

@@ -7,3 +7,13 @@ export function srtEgressFailureMessage(output: string, hostFallbackAvailable = 
     ? summary + "\n\nONE-TIME HOST FALLBACK IS AVAILABLE. To request explicit user approval, call Bash again with the exact original command in the same working directory and Pi session. The next call will show Allow once / Deny for execution outside SRT. Do not change the command, restart Pi, or bypass approval."
     : summary + " Host fallback is unavailable. Check the sandbox proxy before retrying.";
 }
+
+const SRT_DENIAL_PATTERN = /operation not permitted|read-only file system|permission denied|\b(?:EACCES|EPERM|EROFS)\b/i;
+
+export function srtDenialMessage(output: string, hostFallbackAvailable = false): string | undefined {
+  if (!SRT_DENIAL_PATTERN.test(output)) return undefined;
+  const summary = "Sandbox denied a file operation. The command was not retried automatically.";
+  return hostFallbackAvailable
+    ? summary + " To request host execution, call Bash again with the exact original command in the same working directory. The next call will show Allow / Deny for execution outside SRT."
+    : summary + " Host fallback is unavailable.";
+}

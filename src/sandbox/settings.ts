@@ -50,6 +50,7 @@ const DEFAULT_SANDBOX_CONFIG: SandboxConfig = {
   defaultProfile: "online-dev",
   roBinds: [],
   rwBinds: [],
+  hostFallbackCommands: [],
   bypassCommands: ["*"],
   authExceptions: [],
 };
@@ -64,7 +65,7 @@ function dedupeStrings(values: string[]): string[] {
   });
 }
 
-function coerceBindList(values: unknown): string[] {
+function coerceStringList(values: unknown): string[] {
   if (!Array.isArray(values)) return [];
   return dedupeStrings(values.map(String));
 }
@@ -130,8 +131,8 @@ export function normalizeSandboxConfig(raw: unknown): SandboxConfig {
         profiles[name] = {
           network: p.network === true,
           allowDocker: p.allowDocker === undefined ? true : p.allowDocker === true,
-          roBinds: coerceBindList(p.roBinds),
-          rwBinds: coerceBindList(p.rwBinds),
+          roBinds: coerceStringList(p.roBinds),
+          rwBinds: coerceStringList(p.rwBinds),
           env: normalizeEnvPolicy(p.env),
           maskedPaths: [...new Set([
             ...DEFAULT_MASKED_PATTERNS,
@@ -155,8 +156,9 @@ export function normalizeSandboxConfig(raw: unknown): SandboxConfig {
       }
       return r.defaultProfile;
     })(),
-    roBinds: coerceBindList(r.roBinds),
-    rwBinds: coerceBindList(r.rwBinds),
+    roBinds: coerceStringList(r.roBinds),
+    rwBinds: coerceStringList(r.rwBinds),
+    hostFallbackCommands: coerceStringList(r.hostFallbackCommands),
     bypassCommands: Array.isArray(r.bypassCommands)
       ? (r.bypassCommands as string[]).map(String).filter((s) => s.length > 0)
       : [],

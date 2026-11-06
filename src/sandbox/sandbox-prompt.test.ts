@@ -91,3 +91,22 @@ describe("host toolchain prompt", () => {
     );
   });
 });
+
+describe("host-bypass persistent scopes", () => {
+  it("offers workspace and global scopes when persistent scopes are allowed", async () => {
+    const select = vi.fn(async () => "Allow for this workspace");
+    const ctx = { hasUI: true, cwd: "/repo", ui: { select } } as never;
+
+    await expect(
+      promptSandboxGrant(ctx, {
+        command: "docker build -t x .",
+        change: { type: "host-bypass", description: "SRT denied buildx", values: ["docker build"] },
+        allowPersistentScopes: true,
+      }),
+    ).resolves.toEqual({ action: "allow", duration: "always", scope: "workspace" });
+    expect(select).toHaveBeenCalledWith(
+      expect.any(String),
+      ["Allow once", "Allow for session", "Allow for this workspace", "Allow globally", "Deny"],
+    );
+  });
+});

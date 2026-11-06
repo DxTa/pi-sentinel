@@ -81,6 +81,9 @@ Bundled defaults: [`config.json`](config.json). Precedence and all options: [ref
 ## What the defaults do
 
 - Approved Bash runs on the host, not in the sandbox (`bypassCommands: ["*"]`). Commands touching credentials, dotenv files, or Docker still go through SRT. Use `bypassCommands: []` to sandbox everything.
+- When SRT blocks a command (credential access, Docker endpoint override, SRT unavailable), Pi asks once: Allow once runs it on the host, Deny keeps it blocked. Bash deny rules still apply first. `yolo` never prompts; blocks stay blocks.
+- When a sandboxed command fails with a permission error, the identical retry asks once to run outside SRT. Deny runs it inside SRT again.
+- `sandbox.hostFallbackCommands` (for example `["docker build"]`) lists command prefixes that run on the host without a prompt. Such commands skip output redaction, so a command that prints `.env` values exposes them to the model.
 - Bash prompts, except `git status` and `git diff`. `sudo` always prompts in `manual` and `auto`. `git push` prompts every time in every mode.
 - Workspace file tools (`read`, `write`, `edit`, `grep`, `find`, `ls`) run without a prompt after path and symlink checks. External paths prompt; `.env*` stays write-protected.
 - Unknown network domains prompt. Detection is static, so obfuscated destinations can be missed.

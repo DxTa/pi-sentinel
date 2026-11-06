@@ -1,5 +1,6 @@
 import { basename, isAbsolute } from "node:path";
 
+import { prefix } from "../bash-arity.js";
 import { bashInnerCommands, bashLiteralWords, bashWordsWithoutRedirections, splitBashSegments } from "../bash-segments.js";
 import { wildcardMatch } from "../wildcard-matcher.js";
 
@@ -79,6 +80,19 @@ function isDockerClientOnly(words: string[]): boolean {
   const args = words.slice(1);
   return args[0] === "help"
     || (args.length === 1 && ["--help", "-h", "--version", "-v"].includes(args[0] ?? ""));
+}
+
+/** True when every command segment's arity prefix (e.g. "docker build") is a granted host-fallback prefix. */
+export function isHostFallbackGranted(command: string, grants: readonly string[]): boolean {
+  if (grants.length === 0) return false;
+  const segments = splitBashSegments(command);
+  if (!segments || segments.length === 0) return false;
+  // Literal words of the raw segment: a wrapper, env assignment or redirect makes the prefix miss.
+  return segments.every((segment) => {
+    if (/[<>]/.test(segment)) return false;
+    const words = bashLiteralWords(segment);
+    return words !== null && grants.includes(prefix(words).join(" "));
+  });
 }
 
 export function isDockerDaemonCommand(command: string): boolean {
