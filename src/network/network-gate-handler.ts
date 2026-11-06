@@ -27,6 +27,7 @@ export interface NetworkGateDeps {
   autoApproveAsk?: () => boolean;
   /** Hosts from the cached threat feed, when loaded. */
   getThreatFeed?: () => ReadonlySet<string> | undefined;
+  writeReviewLog?: (event: string, details: Record<string, unknown>) => void;
   promptWaitTracker?: Pick<PromptWaitTracker, "begin" | "end">;
   persistNetworkGrant?: (
     domain: string,
@@ -266,7 +267,10 @@ export async function handleNetworkToolCall(
   const text = egressText(event.toolName, event.input);
   if (text === undefined) return undefined;
   const egressReason = egressBlockReason(text, ctx.cwd, deps);
-  if (egressReason) return { block: true, reason: egressReason };
+  if (egressReason) {
+    deps.writeReviewLog?.("network_gate.egress_blocked", { toolName: event.toolName, reason: egressReason });
+    return { block: true, reason: egressReason };
+  }
   if (event.toolName !== "bash") return undefined;
 
   const command = text;
@@ -303,6 +307,7 @@ export async function handleNetworkUserBash(
 ): Promise<(UserBashEventResult & { approvedDomains?: string[] }) | undefined> {
   const egressReason = egressBlockReason(event.command, event.cwd, deps);
   if (egressReason) {
+    deps.writeReviewLog?.("network_gate.egress_blocked", { toolName: "user_bash", reason: egressReason });
     return { result: { output: `${egressReason}\n`, exitCode: 1, cancelled: false, truncated: false } };
   }
   const result = checkBashNetworkPolicy(

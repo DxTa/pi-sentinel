@@ -1721,6 +1721,7 @@ export default function piPermissionSystemExtension(pi: ExtensionAPI): void {
           getAgentDir: getAgentDir,
           autoApproveAsk: () => runtime.config.mode === "yolo",
           getThreatFeed: () => threatFeed,
+          writeReviewLog: runtime.writeReviewLog.bind(runtime),
           promptWaitTracker,
           persistNetworkGrants: (domains, scope, state) =>
             persistNetworkGrantTransaction(policyManager, ctx.cwd, domains, scope, state),
@@ -2275,6 +2276,7 @@ export default function piPermissionSystemExtension(pi: ExtensionAPI): void {
         getNetworkConfig,
         getAgentDir: getAgentDir,
         getThreatFeed: () => threatFeed,
+        writeReviewLog: runtime.writeReviewLog.bind(runtime),
         promptWaitTracker,
         persistNetworkGrants: (domains, scope, state) =>
           persistNetworkGrantTransaction(policyManager, event.cwd, domains, scope, state),

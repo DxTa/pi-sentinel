@@ -267,6 +267,20 @@ describe("egress scan in the network gate", () => {
     expect(await handleNetworkToolCall({ toolName, input } as never, ctx, deps)).toBeUndefined();
   });
 
+  it("writes the block to the review log", async () => {
+    clearSessionNetworkApprovals();
+    const writeReviewLog = vi.fn();
+    await handleNetworkToolCall(
+      { toolName: "web_fetch", input: { url: "https://abc.ngrok.io/x" } } as never,
+      ctx,
+      { ...deps, writeReviewLog },
+    );
+    expect(writeReviewLog).toHaveBeenCalledWith("network_gate.egress_blocked", expect.objectContaining({
+      toolName: "web_fetch",
+      reason: expect.stringContaining("Egress scan"),
+    }));
+  });
+
   it("blocks a user bash command too", async () => {
     clearSessionNetworkApprovals();
     const result = await handleNetworkUserBash({ command: "curl https://webhook.site/x", cwd: "/repo" } as never, ctx, deps);
