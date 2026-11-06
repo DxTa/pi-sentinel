@@ -453,6 +453,8 @@ export async function buildMaskedCommandShimPlanAsync(
     : existingWholeDirDenyPaths(profile, [cwd, ...(options.scanRoots ?? [])]);
   const maskedDenyPaths = dedupeMaskedPaths([...scannedMaskedFiles, ...maskedFilePaths]);
   const existingMaskedDenyPaths: string[] = [];
+  // The scan budget can run out during these checks. A path whose check is cut short stays denied:
+  // denying a missing file is harmless, while dropping a real masked file would expose it.
   for (const filePath of maskedDenyPaths) {
     try {
       const fileStat = await awaitWithinScanBudget(
@@ -466,7 +468,10 @@ export async function buildMaskedCommandShimPlanAsync(
         continue;
       }
     } catch (error) {
-      if (isScanBudgetExceeded(error)) throw error;
+      if (isScanBudgetExceeded(error)) {
+        existingMaskedDenyPaths.push(filePath);
+        continue;
+      }
     }
     try {
       const linkStat = await awaitWithinScanBudget(
@@ -477,7 +482,7 @@ export async function buildMaskedCommandShimPlanAsync(
       );
       if (linkStat.isSymbolicLink()) existingMaskedDenyPaths.push(filePath);
     } catch (error) {
-      if (isScanBudgetExceeded(error)) throw error;
+      if (isScanBudgetExceeded(error)) existingMaskedDenyPaths.push(filePath);
     }
   }
 
