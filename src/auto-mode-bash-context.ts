@@ -69,17 +69,26 @@ function systemBinUses(command: string): Map<string, number> {
 
 const CD_COMMAND = new RegExp("^cd(?:\\s+(\\S+))?(?:\\s|$)");
 const LOOPBACK_WITH_USERINFO = /:\/\/[^\s/]*@/;
+const DIRECTORY_CHANGE_TARGET = /(?:^|[\s;&|(){`$])(?:cd|pushd)(?:\s+(\S+))?(?=\s|$)/g;
 const DIRECTORY_CHANGE = /(?:^|[\s;&|(){`$])(?:cd|pushd)(?:\s|$)/;
 const LOOPBACK_TARGET = /^(?:localhost|127\.0\.0\.1|\[?::1\]?)(?::\d+)?$/;
 const UNRESOLVABLE_CD = new RegExp("^[-~$]");
 
 /** `cd` with no slash (`cd ..`, bare `cd`, `cd -`) escapes path extraction; check it directly. */
-function cdLeavesWorkspace(command: string, cwd: string | undefined): boolean {
+function cdLeavesWorkspace(command: string, cwd: string | undefined, literalCdAllowed = false): boolean {
   if (!cwd) return true;
   let dir = cwd;
   const inner = bashInnerCommands(command);
   // An unsplittable command can only change directory through a literal cd or pushd word.
-  if (inner === null) return DIRECTORY_CHANGE.test(command.replace(/['"\\]/g, ""));
+  if (inner === null) {
+    const text = command.replace(/['"\\]/g, "");
+    if (!literalCdAllowed) return DIRECTORY_CHANGE.test(text);
+    // Every cd or pushd word must name a literal directory inside the workspace.
+    return [...text.matchAll(DIRECTORY_CHANGE_TARGET)].some((match) => {
+      const target = match[1];
+      return !target || UNRESOLVABLE_CD.test(target) || !isPathWithinCanonicalWorkingDirectory(resolve(cwd, target), cwd);
+    });
+  }
   for (const part of inner.commands) {
     const cd = part.match(CD_COMMAND);
     if (!cd) continue;
@@ -154,8 +163,9 @@ export function buildAutoModeBashContext(
   // A URL with userinfo (`http://127.0.0.1@host`) is read by curl as host `host`, not loopback.
   const hasNetworkTarget = LOOPBACK_WITH_USERINFO.test(command)
     || extractAllNetworkTargets(command).some((target) => !LOOPBACK_TARGET.test(target));
-  const staysLocal = !hasNetworkTarget && !cdLeavesWorkspace(command, cwd);
-  workspaceLocal = workspaceLocal && staysLocal;
+  workspaceLocal = workspaceLocal && !hasNetworkTarget && !cdLeavesWorkspace(command, cwd);
+  // targetsWorkspace tolerates a literal in-workspace cd before an unsplittable command such as a heredoc.
+  const staysLocal = !hasNetworkTarget && !cdLeavesWorkspace(command, cwd, true);
 
   const inner = bashInnerCommands(command);
   return {

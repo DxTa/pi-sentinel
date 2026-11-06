@@ -190,6 +190,22 @@ describe("bash context hardening", () => {
     expect(context.targetsWorkspace).toBe(true);
   });
 
+  it("keeps targetsWorkspace true for a cd into the workspace before an unsplittable heredoc", () => {
+    const command = "cd " + workspace + " && cat > notes.ts <<'EOF'\nconst route = \"/oauth/callback\";\nEOF";
+    const context = buildAutoModeBashContext(command, [workspace, "notes.ts"], workspace);
+
+    expect(context.workspaceLocal).toBe(false);
+    expect(context.targetsWorkspace).toBe(true);
+  });
+
+  it.each([
+    "cd .. && cat > x <<'EOF'\nbody\nEOF",
+    "cd /opt && cat > x <<'EOF'\nbody\nEOF",
+    "cd $DIR && cat > x <<'EOF'\nbody\nEOF",
+  ])("sets targetsWorkspace false when an unsplittable command cds out: %s", (command) => {
+    expect(buildAutoModeBashContext(command, ["x"], workspace).targetsWorkspace).toBe(false);
+  });
+
   it.each([
     ["an external operand", "cat > /opt/out.txt", ["/opt/out.txt"]],
     ["a network target", "curl https://example.com -o out.txt", ["out.txt"]],
