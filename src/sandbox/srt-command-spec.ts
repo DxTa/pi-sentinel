@@ -265,14 +265,18 @@ export async function buildSrtCommandSpecAsync(
       canonicalPathWithinScanBudget(root, deadline, maxScanDurationMs),
     ),
   );
-  const maskedShimPlan = await filterMaskedShimPlanWithinScanBudget(
-    await buildMaskedCommandShimPlanAsync(input.command, input.profile, cwd, {
-      scanRoots: withoutApprovedScanRoots(filterMaskedScanRoots(visibleReadPaths, infrastructureRoots), input.scanApprovedRoots ?? []),
-      deadline,
-      maxScanDurationMs,
-    }),
-    unmaskedPaths,
+  // Unscannable roots reach the user before the post-scan path checks run.
+  const scannedPlan = await buildMaskedCommandShimPlanAsync(input.command, input.profile, cwd, {
+    scanRoots: withoutApprovedScanRoots(filterMaskedScanRoots(visibleReadPaths, infrastructureRoots), input.scanApprovedRoots ?? []),
     deadline,
+    maxScanDurationMs,
+  });
+  assertMaskedScanComplete(scannedPlan);
+  // Post-scan checks canonicalize a few known paths; they get a fresh budget, not the scan's spent one.
+  const maskedShimPlan = await filterMaskedShimPlanWithinScanBudget(
+    scannedPlan,
+    unmaskedPaths,
+    Date.now() + maxScanDurationMs,
     maxScanDurationMs,
   );
   assertMaskedScanComplete(maskedShimPlan);
