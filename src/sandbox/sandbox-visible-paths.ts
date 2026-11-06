@@ -55,9 +55,17 @@ const KNOWN_HOME_VISIBLE_PATHS: string[] = [
   ".config",
   ".local/bin",
   ".local/lib",
+  ".local/share",
   ".cargo/bin",
   ".bun/bin",
 ];
+/** Home-level tool installs and stores: readable, and never masked-scanned (large trees, not project files). */
+const TOOL_HOME_ROOTS: string[] = [".local", ".cargo", ".bun", ".rd", ".rd2", ".orbstack", ".opencode", ".pkgx"];
+
+export function toolHomeRoots(): string[] {
+  return TOOL_HOME_ROOTS.map((relativePath) => canonicalPath(resolve(homedir(), relativePath)));
+}
+
 const UV_HOME_VISIBLE_PATHS: string[] = [".local/share/uv", ".cache/uv"];
 
 /** UV package cache/data roots: readable for uv commands, but too large to masked-scan (hundreds of thousands of public package files). */

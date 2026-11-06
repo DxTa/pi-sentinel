@@ -12,6 +12,7 @@ import {
   homeSymlinkNodes,
   systemSymlinkNodes,
   uvHomeRoots,
+  toolHomeRoots,
 } from "./sandbox-visible-paths.js";
 import {
   buildMaskedCommandShimPlan,
@@ -73,11 +74,13 @@ export function buildSrtExecShimPlan(
 function filterMaskedScanRoots(scanRoots: string[], infrastructureRoots: string[]): string[] {
   const roots = infrastructureRoots.map(canonicalPath);
   const uvRoots = uvHomeRoots();
+  const toolRoots = toolHomeRoots();
   // Tool directories on $PATH hold binaries, can be huge (SDKs), and need no masked-file scan.
   const toolDirs = (process.env.PATH ?? "").split(":").filter((entry) => entry.startsWith("/")).map(canonicalPath);
   return scanRoots.filter((scanRoot) =>
     !uvRoots.some((uvRoot) => scanRoot === uvRoot || scanRoot.startsWith(`${uvRoot}/`))
     && !toolDirs.some((toolDir) => scanRoot === toolDir || scanRoot.startsWith(`${toolDir}/`))
+    && !toolRoots.some((toolRoot) => scanRoot === toolRoot || scanRoot.startsWith(`${toolRoot}/`))
     && !roots.some((root) =>
       scanRoot === root ||
       scanRoot.startsWith(`${root}/`) ||

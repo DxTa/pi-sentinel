@@ -1,5 +1,7 @@
 import { describe, expect, it, vi } from "vitest";
 
+import { homedir } from "node:os";
+
 import { canonicalPath } from "./sandbox-visible-paths.js";
 
 const planState = vi.hoisted(() => ({
@@ -48,5 +50,18 @@ describe("buildSrtCommandSpec scan approval", () => {
     buildSrtCommandSpec(specInput({ scanApprovedRoots: [repo] }));
 
     expect(planState.calls.at(-1)?.scanRoots ?? []).not.toContain(repo);
+  });
+});
+
+describe("tool home folders", () => {
+  it("reads ~/.local/share without masked-scanning it", () => {
+    planState.calls.length = 0;
+    planState.unscannedRoots = [];
+
+    const spec = buildSrtCommandSpec(specInput());
+
+    const share = canonicalPath(homedir() + "/.local/share");
+    expect(spec.runtimeReadAllowPaths).toContain(share);
+    expect(planState.calls.at(-1)?.scanRoots ?? []).not.toContain(share);
   });
 });
