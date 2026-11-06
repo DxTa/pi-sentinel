@@ -163,6 +163,7 @@ import {
   getMaskedAuthSessionGrants,
 } from "./sandbox/masked-auth-grants.js";
 import { resolveAuthExceptionPolicy, type ResolvedAuthException } from "./sandbox/auth-exception-policy.js";
+import type { UnscannedRoot } from "./sandbox/masked-command-shim.js";
 import { existsSync, lstatSync, realpathSync, unlinkSync } from "node:fs";
 import { dirname, isAbsolute, join, resolve } from "node:path";
 import { homedir } from "node:os";
@@ -346,6 +347,29 @@ function tokenizeSandboxCommandArgs(args: string): string[] {
   if (quote) throw new Error("Unclosed quote in sandbox grant arguments.");
   if (token) tokens.push(token);
   return tokens;
+}
+
+/** Folders the masked-file scan could not check and the user approved for read access; not scanned again this session. */
+const sessionScanApprovedRoots = new Set<string>();
+
+/** Asks once for read access to folders the masked-file scan could not check. */
+function promptScanUnavailableRoots(
+  ctx: Parameters<typeof promptSandboxGrant>[0],
+  command: string,
+  roots: UnscannedRoot[],
+  promptWaitTracker: PromptWaitTracker,
+) {
+  return promptSandboxGrant(ctx, {
+    change: {
+      type: "path",
+      mode: "ro",
+      values: roots.map((entry) => entry.root),
+      description: `Pi could not check these folders for masked files (${roots.map((entry) => entry.reason).join("; ")}). Allow read access to them?`,
+    },
+    command,
+    promptWaitTracker,
+    allowPersistentScopes: false,
+  });
 }
 
 function expandGrantPath(rawPath: string, cwd: string): string {
@@ -1201,6 +1225,7 @@ export default function piPermissionSystemExtension(pi: ExtensionAPI): void {
     pushFallbackSession++;
     clearSessionNetworkApprovals();
     clearMaskedAuthSessionGrants();
+    sessionScanApprovedRoots.clear();
     sandboxRuntime.clearGrants();
     runtime.sessionMode = undefined;
     recordInteractiveSession(runtime, ctx);
@@ -2062,18 +2087,33 @@ export default function piPermissionSystemExtension(pi: ExtensionAPI): void {
 
         // Use the policy-resolved profile (includes dynamic grants for network/path)
         const repoRoot = resolveRepoRoot(ctx.cwd);
-        const result = await getSandboxBackend(ctx.cwd).wrapCommand({
-          command,
-          sandboxConfig: effectiveConfig,
-          forceSrt: forceSrtForProtectedResource,
-          cwd: ctx.cwd,
-          repoRoot,
-          unmaskedPaths,
-          preResolvedProfile: resolved.profile,
-          secretEnv,
-          unifiedConfig: { network: getNetworkConfig(ctx.cwd) },
-          approvedDomains: approvedNetworkDomains,
-        });
+        const wrapWith = (grants: UnmaskedPath[], scanApprovedRoots: string[]) =>
+          getSandboxBackend(ctx.cwd).wrapCommand({
+            command,
+            sandboxConfig: effectiveConfig,
+            forceSrt: forceSrtForProtectedResource,
+            cwd: ctx.cwd,
+            repoRoot,
+            unmaskedPaths: grants,
+            scanApprovedRoots,
+            preResolvedProfile: resolved.profile,
+            secretEnv,
+            unifiedConfig: { network: getNetworkConfig(ctx.cwd) },
+            approvedDomains: approvedNetworkDomains,
+          });
+        let result = await wrapWith(unmaskedPaths, [...sessionScanApprovedRoots]);
+        if (result && "scanUnavailable" in result && result.scanUnavailable) {
+          // A folder the masked-file scan cannot check asks once; approval grants read access and skips its scan.
+          const unavailable = result.scanUnavailable;
+          const decision = await promptScanUnavailableRoots(ctx, command, unavailable, promptWaitTracker);
+          if (decision.action === "deny") {
+            return { block: true, reason: `Sandbox: read access to ${unavailable.map((entry) => entry.root).join(", ")} was denied; command blocked.` };
+          }
+          const approvedRoots = unavailable.map((entry) => entry.root);
+          if (decision.duration === "session") for (const root of approvedRoots) sessionScanApprovedRoots.add(root);
+          const grants: UnmaskedPath[] = [...unmaskedPaths, ...approvedRoots.map((path) => ({ path, writable: false }))];
+          result = await wrapWith(grants, [...sessionScanApprovedRoots, ...approvedRoots]);
+        }
         if (result && "block" in result) {
           return { block: true, reason: result.reason };
         }

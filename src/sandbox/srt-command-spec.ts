@@ -16,6 +16,7 @@ import {
 import {
   buildMaskedCommandShimPlan,
   buildMaskedCommandShimPlanAsync,
+  type UnscannedRoot,
   type MaskedCommandShimPlan,
 } from "./masked-command-shim.js";
 import { DEFAULT_SCAN_DURATION_MS } from "./scan-budget.js";
@@ -23,6 +24,8 @@ import { buildSrtNetworkPlanFromConfig, type SrtNetworkPlan } from "./srt-networ
 import type { UnmaskedPath, ResolvedSandboxProfile, SandboxConfig, SandboxResourceLimits } from "./types.js";
 
 export interface SrtCommandSpecInput {
+  /** Roots the user approved after a failed masked-file scan; they are read-only and not scanned again. */
+  scanApprovedRoots?: string[];
   command: string;
   cwd: string;
   repoRoot: string;
@@ -91,7 +94,29 @@ function filterMaskedShimPlan(
   const maskedFilePaths = plan.maskedFilePaths.filter((path) => !approved.has(canonicalPath(path)));
   const maskedDenyPaths = plan.maskedDenyPaths.filter((path) => !approved.has(canonicalPath(path)));
   const shimCommands = maskedFilePaths.length === 0 ? [] : plan.shimCommands;
-  return { maskedFilePaths, maskedDenyPaths, shimCommands };
+  return { maskedFilePaths, maskedDenyPaths, shimCommands, unscannedRoots: plan.unscannedRoots };
+}
+
+/** A masked-file scan failed for these roots; the command runs only after the user approves them. */
+export class MaskedScanUnavailableError extends Error {
+  readonly roots: UnscannedRoot[];
+
+  constructor(roots: UnscannedRoot[]) {
+    super(roots.map((entry) => `Masked file scan failed for ${entry.root}: ${entry.reason}`).join("; "));
+    this.name = "MaskedScanUnavailableError";
+    this.roots = roots;
+  }
+}
+
+function assertMaskedScanComplete(plan: MaskedCommandShimPlan): void {
+  if (plan.unscannedRoots.length > 0) throw new MaskedScanUnavailableError(plan.unscannedRoots);
+}
+
+function withoutApprovedScanRoots(roots: string[], approved: string[]): string[] {
+  const approvedRoots = approved.map(canonicalPath);
+  return roots.filter((root) =>
+    !approvedRoots.some((approvedRoot) => root === approvedRoot || root.startsWith(`${approvedRoot}/`)),
+  );
 }
 
 async function filterMaskedShimPlanWithinScanBudget(
@@ -110,7 +135,7 @@ async function filterMaskedShimPlanWithinScanBudget(
     canonicalPathWithinScanBudget(filePath, deadline, durationMs),
   ))).filter((filePath) => !approved.has(filePath));
   const shimCommands = maskedFilePaths.length === 0 ? [] : plan.shimCommands;
-  return { maskedFilePaths, maskedDenyPaths, shimCommands };
+  return { maskedFilePaths, maskedDenyPaths, shimCommands, unscannedRoots: plan.unscannedRoots };
 }
 
 /** Adds home symlink nodes of logical allowed paths; masked scans keep the pre-link roots. */
@@ -159,13 +184,14 @@ export function buildSrtCommandSpec(input: SrtCommandSpecInput): SrtCommandSpec 
   }));
   const maskedShimPlan = filterMaskedShimPlan(
     buildMaskedCommandShimPlan(input.command, input.profile, cwd, {
-      scanRoots: filterMaskedScanRoots(
-        readAllowPaths,
-        input.sandboxConfig.infrastructureReadPaths ?? [],
+      scanRoots: withoutApprovedScanRoots(
+        filterMaskedScanRoots(readAllowPaths, input.sandboxConfig.infrastructureReadPaths ?? []),
+        input.scanApprovedRoots ?? [],
       ),
     }),
     unmaskedPaths,
   );
+  assertMaskedScanComplete(maskedShimPlan);
 
   return {
     command: input.command,
@@ -241,7 +267,7 @@ export async function buildSrtCommandSpecAsync(
   );
   const maskedShimPlan = await filterMaskedShimPlanWithinScanBudget(
     await buildMaskedCommandShimPlanAsync(input.command, input.profile, cwd, {
-      scanRoots: filterMaskedScanRoots(visibleReadPaths, infrastructureRoots),
+      scanRoots: withoutApprovedScanRoots(filterMaskedScanRoots(visibleReadPaths, infrastructureRoots), input.scanApprovedRoots ?? []),
       deadline,
       maxScanDurationMs,
     }),
@@ -249,6 +275,7 @@ export async function buildSrtCommandSpecAsync(
     deadline,
     maxScanDurationMs,
   );
+  assertMaskedScanComplete(maskedShimPlan);
 
   return {
     command: input.command,

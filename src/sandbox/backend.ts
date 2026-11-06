@@ -1,3 +1,4 @@
+import type { UnscannedRoot } from "./masked-command-shim.js";
 import type { BashOperations } from "@earendil-works/pi-coding-agent";
 
 import type { DomainGateConfig } from "#src/network/config.js";
@@ -12,6 +13,8 @@ export interface SandboxWrapInput {
   cwd: string;
   repoRoot?: string;
   unmaskedPaths?: UnmaskedPath[];
+  /** Roots approved after a failed masked-file scan; read-only and not scanned again. */
+  scanApprovedRoots?: string[];
   preResolvedProfile?: ResolvedSandboxProfile;
   secretEnv?: Record<string, string>;
   unifiedConfig?: { network?: DomainGateConfig };
@@ -25,6 +28,8 @@ export interface SandboxOperationsInput {
   cwd: string;
   repoRoot?: string;
   unmaskedPaths?: UnmaskedPath[];
+  /** Roots approved after a failed masked-file scan; read-only and not scanned again. */
+  scanApprovedRoots?: string[];
   preResolvedProfile?: ResolvedSandboxProfile;
   secretEnv?: Record<string, string>;
   unifiedConfig?: { network?: DomainGateConfig };
@@ -42,7 +47,7 @@ export type SandboxWrapResult =
       helperPayloadBytes?: number;
       rawCommandBytes?: number;
     }
-  | { block: true; reason: string }
+  | { block: true; reason: string; scanUnavailable?: UnscannedRoot[] }
   | undefined;
 
 export interface SandboxBackend {

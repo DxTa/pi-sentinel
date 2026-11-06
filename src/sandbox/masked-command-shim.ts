@@ -28,12 +28,20 @@ export interface MaskedCommandShimPlanOptions {
   maxScanDurationMs?: number;
 }
 
+/** A scan root whose masked-file scan failed; the caller must approve it before the command runs. */
+export interface UnscannedRoot {
+  root: string;
+  reason: string;
+}
+
 export interface MaskedCommandShimPlan {
   /** Concrete files that get placeholder UX through reader shims. */
   maskedFilePaths: string[];
   /** Concrete files denied by SRT regardless of shim coverage. */
   maskedDenyPaths: string[];
   shimCommands: string[];
+  /** Roots whose scan failed (timeout, budget, unreadable entries); empty when every root was scanned. */
+  unscannedRoots: UnscannedRoot[];
 }
 
 const NON_SECRET_SYSTEM_ROOTS = [
@@ -355,6 +363,7 @@ export function buildMaskedCommandShimPlan(
   // relying on command-text detection or an unsupported pattern-only fallback.
   const scanDeadline = Date.now() + maxScanDurationMs;
   const scannedMaskedFiles: string[] = [];
+  const unscannedRoots: UnscannedRoot[] = [];
   for (const root of scanRoots) {
     try {
       scannedMaskedFiles.push(
@@ -368,8 +377,7 @@ export function buildMaskedCommandShimPlan(
         ),
       );
     } catch (scanError) {
-      const reason = String(scanError).replace(/^Error: /, "");
-      throw new Error(`Masked file scan failed for ${root}: ${reason}`);
+      unscannedRoots.push({ root, reason: String(scanError).replace(/^Error: /, "") });
     }
   }
 
@@ -388,7 +396,7 @@ export function buildMaskedCommandShimPlan(
   }), ...wholeDirDenyPaths];
 
   if (maskedFilePaths.length === 0) {
-    return { maskedFilePaths: [], maskedDenyPaths, shimCommands: [] };
+    return { maskedFilePaths: [], maskedDenyPaths, shimCommands: [], unscannedRoots };
   }
 
   // Prototype scope: only provide nicer `(masked)` content for common direct reads.
@@ -398,7 +406,7 @@ export function buildMaskedCommandShimPlan(
     new RegExp(`(^|[\\s;&|()])${reader}([\\s;&|()]|$)`).test(command),
   );
 
-  return { maskedFilePaths, maskedDenyPaths, shimCommands };
+  return { maskedFilePaths, maskedDenyPaths, shimCommands, unscannedRoots };
 }
 
 export async function buildMaskedCommandShimPlanAsync(
@@ -420,6 +428,7 @@ export async function buildMaskedCommandShimPlanAsync(
         ...(options.scanRoots ?? []),
       ], profile).filter(isScannableRoot);
   const scannedMaskedFiles: string[] = [];
+  const unscannedRoots: UnscannedRoot[] = [];
 
   for (const root of scanRoots) {
     if (!isScannableRoot(root)) continue;
@@ -435,8 +444,7 @@ export async function buildMaskedCommandShimPlanAsync(
         )),
       );
     } catch (scanError) {
-      const reason = String(scanError).replace(/^Error: /, "");
-      throw new Error(`Masked file scan failed for ${root}: ${reason}`);
+      unscannedRoots.push({ root, reason: String(scanError).replace(/^Error: /, "") });
     }
   }
 
@@ -476,14 +484,14 @@ export async function buildMaskedCommandShimPlanAsync(
   existingMaskedDenyPaths.push(...wholeDirDenyPaths);
 
   if (maskedFilePaths.length === 0) {
-    return { maskedFilePaths: [], maskedDenyPaths: existingMaskedDenyPaths, shimCommands: [] };
+    return { maskedFilePaths: [], maskedDenyPaths: existingMaskedDenyPaths, shimCommands: [], unscannedRoots };
   }
 
   const supportedReaders = ["cat", "head", "tail", "grep", "rg"];
   const shimCommands = supportedReaders.filter((reader) =>
     new RegExp(`(^|[\\s;&|()])${reader}([\\s;&|()]|$)`).test(command),
   );
-  return { maskedFilePaths, maskedDenyPaths: existingMaskedDenyPaths, shimCommands };
+  return { maskedFilePaths, maskedDenyPaths: existingMaskedDenyPaths, shimCommands, unscannedRoots };
 }
 
 function isScannableRoot(root: string): boolean {

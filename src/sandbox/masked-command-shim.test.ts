@@ -122,6 +122,7 @@ describe("buildMaskedCommandShimPlan", () => {
     expect(buildMaskedCommandShimPlan("cat .env", makeProfile(), cwd)).toEqual({
       maskedFilePaths: [envPath],
       maskedDenyPaths: [envPath],
+      unscannedRoots: [],
       shimCommands: ["cat"],
     });
     expect(buildMaskedCommandShimPlan("head .env", makeProfile(), cwd).shimCommands).toEqual(["head"]);
@@ -138,6 +139,7 @@ describe("buildMaskedCommandShimPlan", () => {
     expect(buildMaskedCommandShimPlan("sh read-secret.sh", makeProfile(), cwd)).toEqual({
       maskedFilePaths: [],
       maskedDenyPaths: [envPath],
+      unscannedRoots: [],
       shimCommands: [],
     });
   });
@@ -173,6 +175,7 @@ describe("buildMaskedCommandShimPlan", () => {
     ).toEqual({
       maskedFilePaths: [],
       maskedDenyPaths: [],
+      unscannedRoots: [],
       shimCommands: [],
     });
   });
@@ -196,6 +199,7 @@ describe("buildMaskedCommandShimPlan", () => {
     ).resolves.toEqual({
       maskedFilePaths: [],
       maskedDenyPaths: [],
+      unscannedRoots: [],
       shimCommands: [],
     });
   });
@@ -336,43 +340,44 @@ describe("buildMaskedCommandShimPlan", () => {
     expect(buildMaskedCommandShimPlan("echo ok", makeProfile(), cwd)).toEqual({
       maskedFilePaths: [],
       maskedDenyPaths: [envPath],
+      unscannedRoots: [],
       shimCommands: [],
     });
   });
 
-  it("fails closed when masked candidate scan limit is exceeded", async () => {
+  it("reports a root whose masked candidate scan limit is exceeded instead of throwing", async () => {
     const cwd = await makeTempDir("pi-mask-shim-");
     await writeFile(path.join(cwd, ".env"), "a", "utf8");
     await writeFile(path.join(cwd, "b.pem"), "b", "utf8");
 
-    expect(() =>
-      buildMaskedCommandShimPlan("echo ok", makeProfile(), cwd, { maxEntries: 1 }),
-    ).toThrow(/masked file scan failed/i);
+    const plan = buildMaskedCommandShimPlan("echo ok", makeProfile(), cwd, { maxEntries: 1 });
+
+    expect(plan.unscannedRoots).toEqual([expect.objectContaining({ root: cwd, reason: expect.stringMatching(/exceeded/i) })]);
   });
 
-  it("fails closed when async masked candidate scan limit is exceeded", async () => {
+  it("reports a root whose async masked candidate scan limit is exceeded instead of throwing", async () => {
     const cwd = await makeTempDir("pi-mask-shim-");
     await writeFile(path.join(cwd, ".env"), "a", "utf8");
     await writeFile(path.join(cwd, "b.pem"), "b", "utf8");
 
-    await expect(
-      buildMaskedCommandShimPlanAsync("echo ok", makeProfile(), cwd, {
-        maxEntries: 1,
-        deadline: Date.now() + 1_000,
-        maxScanDurationMs: 1_000,
-      }),
-    ).rejects.toThrow(/masked file scan failed/i);
+    const plan = await buildMaskedCommandShimPlanAsync("echo ok", makeProfile(), cwd, {
+      maxEntries: 1,
+      deadline: Date.now() + 1_000,
+      maxScanDurationMs: 1_000,
+    });
+
+    expect(plan.unscannedRoots).toEqual([expect.objectContaining({ root: cwd, reason: expect.stringMatching(/exceeded/i) })]);
   });
 
-  it("fails closed when scan duration budget is exceeded", async () => {
+  it("reports a root whose scan duration budget is exceeded instead of throwing", async () => {
     const cwd = await makeTempDir("pi-mask-shim-");
     await writeFile(path.join(cwd, "secret.pem"), "SECRET=1\n", "utf8");
 
-    expect(() =>
-      buildMaskedCommandShimPlan("echo ok", makeProfile(), cwd, {
-        maxScanDurationMs: 0,
-      }),
-    ).toThrow(/masked file scan failed.*exceeded 0 ms/i);
+    const plan = buildMaskedCommandShimPlan("echo ok", makeProfile(), cwd, {
+      maxScanDurationMs: 0,
+    });
+
+    expect(plan.unscannedRoots).toEqual([expect.objectContaining({ root: cwd, reason: expect.stringMatching(/exceeded 0 ms/i) })]);
   });
 
   it("skips system temp roots before scanning", async () => {
@@ -383,6 +388,7 @@ describe("buildMaskedCommandShimPlan", () => {
     ).toEqual({
       maskedFilePaths: [],
       maskedDenyPaths: [],
+      unscannedRoots: [],
       shimCommands: [],
     });
     await expect(
@@ -393,6 +399,7 @@ describe("buildMaskedCommandShimPlan", () => {
     ).resolves.toEqual({
       maskedFilePaths: [],
       maskedDenyPaths: [],
+      unscannedRoots: [],
       shimCommands: [],
     });
   });
@@ -412,6 +419,7 @@ describe("buildMaskedCommandShimPlan", () => {
     ).toEqual({
       maskedFilePaths: [],
       maskedDenyPaths: [],
+      unscannedRoots: [],
       shimCommands: [],
     });
     expect(
@@ -422,6 +430,7 @@ describe("buildMaskedCommandShimPlan", () => {
     ).toEqual({
       maskedFilePaths: [envPath],
       maskedDenyPaths: [envPath],
+      unscannedRoots: [],
       shimCommands: ["cat"],
     });
   });
@@ -473,6 +482,7 @@ describe("buildMaskedCommandShimPlan", () => {
     ).toEqual({
       maskedFilePaths: [],
       maskedDenyPaths: [bindPem],
+      unscannedRoots: [],
       shimCommands: [],
     });
   });

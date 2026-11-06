@@ -8,7 +8,7 @@ import type { SandboxBackend, SandboxOperationsInput, SandboxWrapInput, SandboxW
 import { shouldBypassSandboxCommand } from "../bypass-command.js";
 import { maskSecretValues, parseDotenvValues } from "../../env-mask.js";
 import type { SrtCommandSpec } from "../srt-command-spec.js";
-import { buildSrtCommandSpec, buildSrtCommandSpecAsync } from "../srt-command-spec.js";
+import { buildSrtCommandSpec, buildSrtCommandSpecAsync, MaskedScanUnavailableError } from "../srt-command-spec.js";
 import { buildSrtRuntimeConfig } from "../srt-runtime-config.js";
 import { ripgrepCommand } from "../ripgrep.js";
 import { summarizeEnvironmentSizes } from "../spawn-diagnostics.js";
@@ -224,6 +224,7 @@ function buildSpecInput(
     unifiedConfig: input.unifiedConfig,
     approvedDomains: input.approvedDomains,
     unmaskedPaths: input.unmaskedPaths,
+    scanApprovedRoots: input.scanApprovedRoots,
     secretEnv: input.secretEnv,
   };
 }
@@ -305,6 +306,7 @@ async function wrapSrtCommand(
   } catch (error) {
     transport?.cleanup?.();
     const message = error instanceof Error ? error.message : String(error);
+    if (error instanceof MaskedScanUnavailableError) return { block: true, reason: message, scanUnavailable: error.roots };
     return { block: true, reason: message };
   }
 }
