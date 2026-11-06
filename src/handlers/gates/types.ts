@@ -15,6 +15,7 @@ export interface ToolCallContext {
   mode?: string;
   autoModeHardRuleHit?: boolean;
   autoModeWorkspaceLocal?: boolean;
+  autoModeTargetsWorkspace?: boolean;
   autoModeCommand?: string;
   /** Redacted inner Bash commands, classified one by one. */
   autoModeUnits?: readonly string[];

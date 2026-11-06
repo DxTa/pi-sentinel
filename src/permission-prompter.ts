@@ -53,6 +53,8 @@ export interface PromptPermissionDetails {
   autoModeEligible?: boolean;
   /** Whether eligible request path is workspace-local. */
   autoModeWorkspaceLocal?: boolean;
+  /** Every operand stays in the workspace, even when the text holds other path-like strings (yolo injection allowance). */
+  autoModeTargetsWorkspace?: boolean;
   /** Caller-side sensitive-path result; absolute paths never cross this boundary. */
   autoModeHardRuleHit?: boolean;
   /** Classifier operation for eligible workspace files or sandboxed Bash. */
@@ -351,7 +353,9 @@ export class PermissionPrompter implements PermissionPrompterApi {
     const decision = await this.evaluateAutoMode(config, details, cwd, true);
     const audit = { autoModeReason: decision.reason, evaluationId: decision.evaluationId, autoModeAudit: decision.audit };
     if (decision.action === "allow") return allow("permission_request.auto_mode_approved", audit);
-    if (YOLO_BLOCKING_REASONS.has(decision.reason)) return block(`the safety classifier flagged this call (${decision.reason})`);
+    // A workspace write is not an exfiltration risk, and code that handles tokens often scores as injection.
+    const falseInjection = decision.reason === "injection_detected" && details.autoModeTargetsWorkspace === true;
+    if (!falseInjection && YOLO_BLOCKING_REASONS.has(decision.reason)) return block(`the safety classifier flagged this call (${decision.reason})`);
     return allow("permission_request.yolo_allowed_unclassified", audit);
   }
 

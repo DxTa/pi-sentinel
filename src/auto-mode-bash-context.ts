@@ -23,6 +23,8 @@ const DISCARD_DEVICES = new Set(["/dev/null", "/dev/stdout", "/dev/stderr"]);
 export interface AutoModeBashContext {
   command: string;
   workspaceLocal: boolean;
+  /* Every operand the parser found stays in the workspace; path-like text inside a heredoc body does not count. */
+  targetsWorkspace: boolean;
   hardRuleHit: boolean;
   /* Redacted inner commands; empty when the command cannot be split. */
   units: string[];
@@ -135,6 +137,7 @@ export function buildAutoModeBashContext(
   const unclassifiedPaths = [...unclassifiedCommand.matchAll(ABSOLUTE_PATH_PATTERN)]
     .map((match) => match[2] ?? "")
     .filter((path) => !DISCARD_DEVICES.has(path) && !isSystemBinOnly(path));
+  const operandsInWorkspace = workspaceLocal;
   workspaceLocal = unclassifiedPaths.length === 0 ? workspaceLocal : false;
   for (const path of unclassifiedPaths) {
     const normalizedPath = normalizePathForComparison(path, cwd ?? "/");
@@ -151,12 +154,14 @@ export function buildAutoModeBashContext(
   // A URL with userinfo (`http://127.0.0.1@host`) is read by curl as host `host`, not loopback.
   const hasNetworkTarget = LOOPBACK_WITH_USERINFO.test(command)
     || extractAllNetworkTargets(command).some((target) => !LOOPBACK_TARGET.test(target));
-  workspaceLocal = workspaceLocal && !hasNetworkTarget && !cdLeavesWorkspace(command, cwd);
+  const staysLocal = !hasNetworkTarget && !cdLeavesWorkspace(command, cwd);
+  workspaceLocal = workspaceLocal && staysLocal;
 
   const inner = bashInnerCommands(command);
   return {
     command: redact(command),
     workspaceLocal,
+    targetsWorkspace: operandsInWorkspace && staysLocal && !hardRuleHit,
     hardRuleHit,
     units: inner ? inner.commands.map(redact) : [],
     opaque: inner === null || inner.opaque,

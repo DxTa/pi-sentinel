@@ -1074,6 +1074,19 @@ describe("yolo mode sends external writes and exec to the model", () => {
     expect(requestPermissionDecisionFromUi).not.toHaveBeenCalled();
   });
 
+  it("allows injection_detected when every operand stays in the workspace", async () => {
+    const { requestPermissionDecisionFromUi, run } = setup("prompt", "injection_detected");
+    const result = await run({ ...externalWrite, toolName: "bash", command: "cat > a.ts", autoModeOperation: "exec", autoModeTargetsWorkspace: true });
+    expect(result.approved).toBe(true);
+    expect(requestPermissionDecisionFromUi).not.toHaveBeenCalled();
+  });
+
+  it("still blocks threat_not_benign for a workspace write", async () => {
+    const { run } = setup("prompt", "threat_not_benign");
+    const result = await run({ ...externalWrite, autoModeTargetsWorkspace: true });
+    expect(result.approved).toBe(false);
+  });
+
   it.each(["too_many_units", "unit_too_long", "threat_benign_low_confidence", "startup_failed", "worker_unavailable"])(
     "allows an external write when the model result is %s",
     async (reason) => {

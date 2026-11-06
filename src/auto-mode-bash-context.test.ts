@@ -54,6 +54,7 @@ b"`;
     expect(result).toEqual({
       command: "cat src/index.ts",
       workspaceLocal: true,
+      targetsWorkspace: true,
       hardRuleHit: false,
       units: ["cat src/index.ts"],
       opaque: false,
@@ -179,5 +180,22 @@ describe("bash context hardening", () => {
     for (const token of ["~/.ssh/authorized_keys", "~/.zshrc"]) {
       expect(buildAutoModeBashContext("echo k >> " + token, [token], workspace).hardRuleHit, token).toBe(true);
     }
+  });
+
+  it("keeps targetsWorkspace true when a heredoc body only mentions a path-like string", () => {
+    const command = "cat > notes.ts <<'EOF'\nconst route = \"/oauth/callback\";\nEOF";
+    const context = buildAutoModeBashContext(command, ["notes.ts"], workspace);
+
+    expect(context.workspaceLocal).toBe(false);
+    expect(context.targetsWorkspace).toBe(true);
+  });
+
+  it.each([
+    ["an external operand", "cat > /opt/out.txt", ["/opt/out.txt"]],
+    ["a network target", "curl https://example.com -o out.txt", ["out.txt"]],
+    ["a cd out of the workspace", "cd .. && touch x", ["x"]],
+    ["a sensitive path", "echo k >> ~/.zshrc", ["~/.zshrc"]],
+  ])("sets targetsWorkspace false for %s", (_name, command, tokens) => {
+    expect(buildAutoModeBashContext(command, tokens, workspace).targetsWorkspace).toBe(false);
   });
 });

@@ -430,6 +430,7 @@ export class PermissionGateHandler {
           ...tcc,
           autoModeHardRuleHit: autoModeBashContext.hardRuleHit,
           autoModeWorkspaceLocal: autoModeBashContext.workspaceLocal,
+          autoModeTargetsWorkspace: autoModeBashContext.targetsWorkspace,
           autoModeCommand: autoModeBashContext.command,
           autoModeUnits: autoModeBashContext.units,
           autoModeOpaque: autoModeBashContext.opaque,

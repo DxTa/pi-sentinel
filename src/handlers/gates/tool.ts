@@ -220,6 +220,9 @@ export function describeToolGate(
                     // Host Bash reaches the model only without command substitution.
                     || autoModeInner !== null))),
             autoModeWorkspaceLocal,
+            autoModeTargetsWorkspace: autoModeOperation === "exec"
+              ? tcc.autoModeTargetsWorkspace === true
+              : autoModeWorkspaceLocal,
             autoModeHardRuleHit,
             ...(autoModeWorkspaceRelativePath
               ? { autoModeWorkspaceRelativePath }
