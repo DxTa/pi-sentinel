@@ -48,7 +48,7 @@ export function scanEgress(input: EgressScanInput): string | undefined {
 
   for (const host of hosts) {
     if (input.deniedDomains.some((pattern) => domainMatchesPattern(host, pattern))) {
-      return `Egress scan blocked "${host}": it is in deniedDomains.`;
+      return `Domain gate blocked network access to "${host}": it is in deniedDomains.`;
     }
     if (EXFIL_DOMAINS.some((pattern) => !pattern.includes("/") && domainMatchesPattern(host, pattern))) {
       return `Egress scan blocked "${host}": known exfiltration host (paste, tunnel or request-catcher service).`;

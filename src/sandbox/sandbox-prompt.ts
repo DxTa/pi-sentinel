@@ -29,6 +29,8 @@ export interface SandboxPromptDetails {
   allowSession?: boolean;
   /** The request is read access to folders the masked-file scan could not check. */
   unscannedRoots?: boolean;
+  /** One-time host rerun of a workspace-only command the sandbox denied; the caller has checked its operands. */
+  yoloHostRerun?: boolean;
 }
 
 const CHOICE_ONCE = "Allow once";
@@ -56,10 +58,11 @@ export function setSandboxYoloHooks(hooks: SandboxYoloHooks | undefined): void {
  */
 function resolveYolo(details: SandboxPromptDetails): SandboxPromptResult {
   const { change } = details;
-  const grantable = (change.type === "network" || change.type === "path")
-    && (details.allowPersistentScopes !== false || details.unscannedRoots === true)
-    && !change.authKind;
-  const duration = details.unscannedRoots ? "session" : "once";
+  const grantable = details.yoloHostRerun === true
+    || ((change.type === "network" || change.type === "path")
+      && (details.allowPersistentScopes !== false || details.unscannedRoots === true)
+      && !change.authKind);
+  const duration = details.unscannedRoots && !details.yoloHostRerun ? "session" : "once";
   const result: SandboxPromptResult = grantable ? { action: "allow", duration } : { action: "deny" };
   yoloHooks?.log(grantable ? "sandbox_request.yolo_granted_once" : "sandbox_request.yolo_denied", {
     type: change.type,

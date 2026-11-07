@@ -130,6 +130,19 @@ describe("promptSandboxGrant in yolo", () => {
     expect(log).toHaveBeenCalledWith("sandbox_request.yolo_granted_once", expect.objectContaining({ type: overrides.type ?? "network" }));
   });
 
+  it("grants a host rerun once when the caller marks it as a workspace-only rerun", async () => {
+    const select = vi.fn(async () => "Deny");
+    await expect(promptSandboxGrant(ctx(select), {
+      command: "c",
+      change: change({ type: "host-bypass", values: ["sandbox-block"] }),
+      allowPersistentScopes: false,
+      allowSession: false,
+      yoloHostRerun: true,
+    })).resolves.toEqual({ action: "allow", duration: "once" });
+    expect(select).not.toHaveBeenCalled();
+    expect(log).toHaveBeenCalledWith("sandbox_request.yolo_granted_once", expect.objectContaining({ type: "host-bypass" }));
+  });
+
   it.each([
     ["auth bypass", { type: "auth-bypass", authKind: "ssh" }],
     ["host bypass", { type: "host-bypass", values: ["git-push"] }],

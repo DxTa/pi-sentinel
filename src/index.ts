@@ -55,6 +55,8 @@ import { AUTO_MODE_BUILD_ID } from "./auto-mode-build";
 import { resolveModelDir } from "./auto-mode-model";
 import { PromptWaitTracker } from "./prompt-state";
 import { getHardBlockedBashMutationPaths } from "./handlers/gates/bash-external-directory.js";
+import { buildAutoModeBashContext } from "./auto-mode-bash-context.js";
+import { extractTokensForPathRules } from "./handlers/gates/bash-path-extractor.js";
 import { extractAllWriteTargetsFromBashCommand, extractExternalPathsFromBashCommand, extractExternalWritePathsFromBashCommand } from "./handlers/gates/bash-path-extractor.js";
 import { canonicalPath } from "./sandbox/sandbox-visible-paths.js";
 import { isReadOnlyBashChain, isReadOnlyBashDiagnostic } from "./bash-command-safety";
@@ -807,10 +809,16 @@ export default function piPermissionSystemExtension(pi: ExtensionAPI): void {
       ? "allowed"
       : "denied";
   };
+  /** Every operand stays in the workspace, no network target, no hard rule: the only commands yolo may rerun on the host. */
+  const isWorkspaceOnlyBash = async (command: string, cwd: string): Promise<boolean> => {
+    const context = buildAutoModeBashContext(command, await extractTokensForPathRules(command), cwd);
+    return context.targetsWorkspace && !context.hardRuleHit;
+  };
   const resolveBlockedHostRun = async (
     command: string,
     reason: string,
     ctx: ExtensionContext,
+    yoloHostRerun = false,
   ): Promise<"allowed" | "denied"> => {
     const result = await promptSandboxGrant(ctx, {
       change: {
@@ -822,6 +830,7 @@ export default function piPermissionSystemExtension(pi: ExtensionAPI): void {
       promptWaitTracker,
       allowPersistentScopes: false,
       allowSession: false,
+      yoloHostRerun,
     });
     return result.action === "allow" ? "allowed" : "denied";
   };
@@ -867,7 +876,7 @@ export default function piPermissionSystemExtension(pi: ExtensionAPI): void {
     dotenvPaths?: string[];
     redactOutput?: boolean;
     pushFallback?: { key: string; session: number };
-    retry?: { key: string; session: number };
+    retry?: { key: string; session: number; workspaceOnly: boolean };
   }>();
 
   refreshExtensionConfig(runtime);
@@ -1756,11 +1765,11 @@ export default function piPermissionSystemExtension(pi: ExtensionAPI): void {
           sc,
           bypassesSandbox(bashCommand, ctx.cwd),
         );
-        const srtRetry = runtime.config.mode !== "yolo" && failedSrtCommands.delete(JSON.stringify([ctx.cwd, bashCommand]));
+        const srtRetry = failedSrtCommands.delete(JSON.stringify([ctx.cwd, bashCommand]));
         hostRunBlock = access.blockReason
           ? { command: bashCommand, reason: access.blockReason }
           : srtRetry ? { command: bashCommand, reason: "The last run of this exact command printed a permission error that SRT may have caused. Running it outside SRT needs approval.", fallbackToSrt: true } : undefined;
-        if (hostRunBlock && runtime.config.mode === "yolo") return { block: true, reason: hostRunBlock.reason };
+        if (hostRunBlock && runtime.config.mode === "yolo" && !hostRunBlock.fallbackToSrt) return { block: true, reason: hostRunBlock.reason };
         protectedReadPaths = access.protectedReadPaths;
         sandboxedBash = access.sandboxed;
         forceSrtForProtectedResource = access.forceSrt;
@@ -1786,7 +1795,7 @@ export default function piPermissionSystemExtension(pi: ExtensionAPI): void {
     }
     if (hostRunBlock) {
       // Policy gates ran first; only then may a person approve running the blocked command on the host.
-      if (await resolveBlockedHostRun(hostRunBlock.command, hostRunBlock.reason, ctx) === "allowed") return undefined;
+      if (await resolveBlockedHostRun(hostRunBlock.command, hostRunBlock.reason, ctx, runtime.config.mode === "yolo") === "allowed") return undefined;
       if (!hostRunBlock.fallbackToSrt) return { block: true, reason: hostRunBlock.reason };
     }
     // A person already approved this call over a policy deny: ordinary external paths need no second dialog.
@@ -2176,7 +2185,11 @@ export default function piPermissionSystemExtension(pi: ExtensionAPI): void {
               dotenvPaths: autoAllowedDotenvPaths,
               redactOutput: redactProtectedReadOutput,
               pushFallback: pushKey === undefined ? undefined : { key: pushKey, session: pushFallbackSession },
-              retry: { key: JSON.stringify([ctx.cwd, command]), session: pushFallbackSession },
+              retry: {
+                key: JSON.stringify([ctx.cwd, command]),
+                session: pushFallbackSession,
+                workspaceOnly: await isWorkspaceOnlyBash(command, ctx.cwd),
+              },
             });
           }
         }
@@ -2703,7 +2716,7 @@ export default function piPermissionSystemExtension(pi: ExtensionAPI): void {
       if (pushFallbackArmed) failedSrtPushes.add(wrapped!.pushFallback!.key);
       return { content: [{ type: "text" as const, text: srtEgressFailureMessage(text, pushFallbackArmed)! }], details: dotenvOutputResult?.details ?? event.details };
     }
-    if (event.toolName === "bash" && event.isError && wrapped?.retry && runtime.config.mode !== "yolo" && srtDenialMessage(text) !== undefined) {
+    if (event.toolName === "bash" && event.isError && wrapped?.retry && (runtime.config.mode !== "yolo" || wrapped.retry.workspaceOnly) && srtDenialMessage(text) !== undefined) {
       if (wrapped.retry.session === pushFallbackSession) failedSrtCommands.add(wrapped.retry.key);
       const original = dotenvOutputResult?.content ?? event.content;
       return { content: [...original, { type: "text" as const, text: srtDenialMessage(text, wrapped.retry.session === pushFallbackSession)! }], details: dotenvOutputResult?.details ?? event.details };

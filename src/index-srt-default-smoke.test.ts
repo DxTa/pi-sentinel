@@ -1295,6 +1295,67 @@ describe("piPermissionSystemExtension SRT default smoke", () => {
     expect(retryCtx.ui.select).toHaveBeenCalledWith(expect.any(String), ["Allow once", "Deny"]);
   });
 
+  it("reruns a workspace-only command on the host in yolo after an SRT denial, with no dialog", async () => {
+    const agentDir = await makeTempDir("pi-srt-yolo-agent-");
+    const projectDir = await makeTempDir("pi-srt-yolo-project-");
+    process.env.PI_CODING_AGENT_DIR = agentDir;
+    await writeExtensionConfig(agentDir, {
+      mode: "yolo",
+      permission: { "*": "allow", bash: { "*": "allow" }, external_directory: { "*": "allow" } },
+      sandbox: { enabled: true, backend: "srt", defaultProfile: "online-dev", bypassCommands: ["*"] },
+    });
+
+    const pi = createFakePi();
+    piPermissionSystemExtension(pi as never);
+    const command = "docker build -t beaver:local .";
+    const firstCtx = createContext(projectDir, { hasUI: true });
+    const first = { toolName: "bash", toolCallId: "srt-yolo-1", input: { command } };
+    await pi.handlers.get("tool_call")?.(first, firstCtx as never);
+    const denial = await pi.handlers.get("tool_result")?.({
+      toolName: "bash",
+      toolCallId: "srt-yolo-1",
+      input: first.input,
+      content: [{ type: "text", text: "open /x: operation not permitted" }],
+      details: {},
+      isError: true,
+    }, firstCtx as never);
+    expect(JSON.stringify(denial)).toContain("call Bash again with the exact original command");
+
+    const retryCtx = createContext(projectDir, { hasUI: true, choices: ["Deny"] });
+    const retry = { toolName: "bash", toolCallId: "srt-yolo-2", input: { command } };
+    await expect(pi.handlers.get("tool_call")?.(retry, retryCtx as never)).resolves.toBeUndefined();
+    expect(retry.input.command).toBe(command);
+    expect(retryCtx.ui.select).not.toHaveBeenCalled();
+  });
+
+  it("does not offer a host rerun in yolo when the denied command targets outside the workspace", async () => {
+    const agentDir = await makeTempDir("pi-srt-yolo-out-agent-");
+    const projectDir = await makeTempDir("pi-srt-yolo-out-project-");
+    process.env.PI_CODING_AGENT_DIR = agentDir;
+    await writeExtensionConfig(agentDir, {
+      mode: "yolo",
+      permission: { "*": "allow", bash: { "*": "allow" }, external_directory: { "*": "allow" } },
+      sandbox: { enabled: true, backend: "srt", defaultProfile: "online-dev", bypassCommands: ["*"] },
+    });
+
+    const pi = createFakePi();
+    piPermissionSystemExtension(pi as never);
+    const command = "docker build -t beaver:local /opt/outside";
+    const firstCtx = createContext(projectDir, { hasUI: true });
+    const first = { toolName: "bash", toolCallId: "srt-yolo-out-1", input: { command } };
+    await pi.handlers.get("tool_call")?.(first, firstCtx as never);
+    const denial = await pi.handlers.get("tool_result")?.({
+      toolName: "bash",
+      toolCallId: "srt-yolo-out-1",
+      input: first.input,
+      content: [{ type: "text", text: "open /x: operation not permitted" }],
+      details: {},
+      isError: true,
+    }, firstCtx as never);
+
+    expect(JSON.stringify(denial ?? "")).not.toContain("call Bash again");
+  });
+
   it("runs an SRT-denied retry inside SRT when the host prompt is denied", async () => {
     const agentDir = await makeTempDir("pi-srt-deny-agent-");
     const projectDir = await makeTempDir("pi-srt-deny-project-");
