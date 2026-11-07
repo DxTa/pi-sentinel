@@ -89,6 +89,17 @@ function isBuiltInAskCommand(words: string[]): boolean {
   return name === "kubectl" && isKubectlWrite(words);
 }
 
+/**
+ * True when rm is the only reason a yolo command is forced: no ssh, publish, kubectl write, non-plain push or
+ * configured pattern. A removal is bounded by its path operands, which the caller checks against the workspace.
+ */
+export function isRemovalOnlyAsk(command: string, config: PermissionSystemExtensionConfig): boolean {
+  if (matchesBashAskPattern(config.yoloAskBashPatterns ?? [], command)) return false;
+  const parts = [...(bashInnerCommands(command)?.commands ?? [command]), ...(splitBashSegments(command) ?? [])];
+  const asking = parts.map((part) => bashWords(part)).filter((words): words is string[] => words !== null && isBuiltInAskCommand(words));
+  return asking.length > 0 && asking.every((words) => words[0]?.slice(words[0].lastIndexOf("/") + 1) === "rm");
+}
+
 export function matchesGitPushCommand(command: string): boolean {
   return (bashInnerCommands(command)?.commands ?? [command]).some((part) => {
     const words = bashWords(part);

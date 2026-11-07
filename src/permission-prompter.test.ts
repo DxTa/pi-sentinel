@@ -1122,6 +1122,29 @@ describe("yolo mode sends external writes and exec to the model", () => {
     expect(requestPermissionDecisionFromUi).not.toHaveBeenCalled();
   });
 
+  describe("rm inside the workspace", () => {
+    const rmCall = { toolName: "bash", autoModeOperation: "exec", autoModeEligible: true, autoModeWorkspaceLocal: true, autoModeHardRuleHit: false, autoModeTargetsWorkspace: true };
+
+    it.each(["rm -rf gitprobe", "cd sub && rm x"])("allows %s without the model or a dialog", async (command) => {
+      const { evaluate, requestPermissionDecisionFromUi, run } = setup("prompt");
+      expect((await run({ ...rmCall, command })).approved).toBe(true);
+      expect(evaluate).not.toHaveBeenCalled();
+      expect(requestPermissionDecisionFromUi).not.toHaveBeenCalled();
+    });
+
+    it.each([
+      ["an external target", { command: "rm -rf /opt/x", autoModeTargetsWorkspace: false, autoModeWorkspaceLocal: false }],
+      ["a hard rule hit", { command: "rm ~/.zshrc", autoModeHardRuleHit: true }],
+      ["ssh in the same command", { command: "rm x && ssh host ls" }],
+      ["a policy-forced prompt", { command: "rm x", forcePromptInYolo: true }],
+    ])("still blocks rm with %s", async (_name, extra) => {
+      const { requestPermissionDecisionFromUi, run } = setup("allow");
+      const result = await run({ ...rmCall, ...extra });
+      expect(result).toMatchObject({ approved: false, state: "denied" });
+      expect(requestPermissionDecisionFromUi).not.toHaveBeenCalled();
+    });
+  });
+
   it("blocks a sensitive external read without the model or a dialog", async () => {
     const { evaluate, requestPermissionDecisionFromUi, run } = setup("allow");
     const result = await run({ toolName: "read", autoModeOperation: "read", autoModeEligible: true, autoModeWorkspaceLocal: false, autoModeHardRuleHit: true });

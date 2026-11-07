@@ -23,6 +23,7 @@ import type {
 } from "./permission-dialog";
 import {
   matchesBashAskPattern,
+  isRemovalOnlyAsk,
   matchesYoloAskBashPattern,
   shouldAutoApprovePermissionState,
 } from "./yolo-mode";
@@ -340,7 +341,13 @@ export class PermissionPrompter implements PermissionPrompterApi {
       });
       return { approved: true, state: "approved", autoApproved: true };
     };
-    if (forced) return block("this command needs explicit approval");
+    // rm stays allowed when every operand is inside the workspace and no hard rule hits.
+    const workspaceRemoval = details.forcePromptInYolo !== true
+      && typeof details.command === "string"
+      && details.autoModeTargetsWorkspace === true
+      && details.autoModeHardRuleHit === false
+      && isRemovalOnlyAsk(details.command, config);
+    if (forced && !workspaceRemoval) return block("this command needs explicit approval");
     const operation = details.autoModeOperation;
     const isExternal = details.autoModeWorkspaceLocal !== true;
     if (isExternal && (operation === "read" || operation === "list") && details.autoModeHardRuleHit !== false) {

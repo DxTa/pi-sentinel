@@ -41,7 +41,7 @@ That's it: the defaults work as they are. `auto` mode needs Apple silicon on mac
 | --- | --- | --- |
 | `manual` | Prompts for every gated request. | Unfamiliar repositories. |
 | `auto` (default) | Your own `allow` rules and workspace reads need no model. The local classifier judges everything else: workspace and external writes, edits, Bash, MCP, and forced prompts such as `rm` or `git push`. Sensitive paths (system roots, credential folders, shell startup files, `.pi/` config) and `.env*` selectors always prompt, as do model doubt, unavailability, and errors. | Daily work. |
-| `yolo` | Approves workspace calls, pathless tools, and non-sensitive external reads. It never opens a dialog: every request is allowed or blocked with a reason. The classifier can block external writes and Bash; if it is unavailable they run. [Hard rules](docs/reference.md#yolo-mode-hard-rules) (system paths, `rm`, `ssh`, `git push`, cluster changes) block and never reach the model. An [egress scan](docs/reference.md#egress-scan) blocks exfiltration-shaped network calls. | Throwaway environments only. |
+| `yolo` | Approves workspace calls, pathless tools, and non-sensitive external reads. It never opens a dialog: every request is allowed or blocked with a reason. The classifier can block external writes and Bash; if it is unavailable they run. [Hard rules](docs/reference.md#yolo-mode-hard-rules) (system paths, `ssh`, `git push`, cluster changes, `rm` outside the workspace) block and never reach the model. An [egress scan](docs/reference.md#egress-scan) blocks exfiltration-shaped network calls. | Throwaway environments only. |
 
 ```text
 /sentinel mode manual           # save where the mode is currently set

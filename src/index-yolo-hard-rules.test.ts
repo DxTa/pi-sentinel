@@ -193,9 +193,15 @@ describe("yolo mode hard rules", () => {
     expect(context.ui.select).not.toHaveBeenCalled();
   });
 
+  it.each(["rm notes.txt", "cd src && rm -rf build", "/bin/rm notes.txt"])("lets %s run inside the workspace without a dialog", async (command) => {
+    const { run, context } = await setup("yolo");
+
+    expect((await run("bash", { command }))?.block).toBeUndefined();
+    expect(context.ui.select).not.toHaveBeenCalled();
+  });
+
   it.each([
-    "rm notes.txt",
-    "cd src && rm -rf build",
+    "rm /opt/notes.txt",
     "kubectl apply -f x.yaml",
     "kubectl set image deploy/a a=b",
     "kubectl delete pod a",
@@ -333,7 +339,7 @@ describe("yolo mode hard rules", () => {
     expect(context.ui.select).not.toHaveBeenCalled();
   });
 
-  it.each(["/bin/rm notes.txt", "rm\tnotes.txt", "kubectl uncordon node-a"])("blocks %s without a dialog", async (command) => {
+  it.each(["rm /opt/notes.txt", "kubectl uncordon node-a"])("blocks %s without a dialog", async (command) => {
     const { run, context } = await setup("yolo");
 
     expect(await run("bash", { command })).toMatchObject({ block: true });
