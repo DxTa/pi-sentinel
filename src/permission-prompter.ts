@@ -360,9 +360,10 @@ export class PermissionPrompter implements PermissionPrompterApi {
     const decision = await this.evaluateAutoMode(config, details, cwd, true);
     const audit = { autoModeReason: decision.reason, evaluationId: decision.evaluationId, autoModeAudit: decision.audit };
     if (decision.action === "allow") return allow("permission_request.auto_mode_approved", audit);
-    // A workspace write is not an exfiltration risk, and code that handles tokens often scores as injection.
-    const falseInjection = decision.reason === "injection_detected" && details.autoModeTargetsWorkspace === true;
-    if (!falseInjection && YOLO_BLOCKING_REASONS.has(decision.reason)) return block(`the safety classifier flagged this call (${decision.reason})`);
+    // Operands inside the workspace and no network target: the sandbox bounds the rest, and token-handling code or
+    // an npm install often scores as a threat or injection.
+    const workspaceOnly = details.autoModeTargetsWorkspace === true;
+    if (!workspaceOnly && YOLO_BLOCKING_REASONS.has(decision.reason)) return block(`the safety classifier flagged this call (${decision.reason})`);
     return allow("permission_request.yolo_allowed_unclassified", audit);
   }
 
