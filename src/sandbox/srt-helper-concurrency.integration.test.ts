@@ -4,6 +4,7 @@ import { mkdir, mkdtemp, readFile, readdir, realpath, rm, writeFile } from "node
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { promisify } from "node:util";
+import { rootCertificates } from "node:tls";
 
 import { afterEach, describe, expect, it } from "vitest";
 import { createSrtBackend, DEFAULT_SRT_HELPER_ENV } from "./backends/srt-backend.js";
@@ -82,6 +83,33 @@ async function runHelper(command: string, label: string) {
 
 
 maybeDescribe("sandbox-run SRT helper concurrency", () => {
+  it("gives the child a read-only certificate copy while keeping the original private", async () => {
+    const cwd = await realpath(await makeTempDir("pi-srt-ca-project-"));
+    const caDir = await realpath(await makeTempDir("pi-srt-ca-source-"));
+    const ca = path.join(caDir, "cert.pem");
+    await writeFile(ca, rootCertificates[0]);
+    const previous = process.env.SSL_CERT_FILE;
+    process.env.SSL_CERT_FILE = ca;
+    try {
+      const result = await runHelperInput({
+        command: `printf 'COPY:%s\n' "$SSL_CERT_FILE"; head -1 "$SSL_CERT_FILE"; if cat '${ca}' >/dev/null 2>&1; then echo ORIGINAL_READABLE; else echo ORIGINAL_DENIED; fi; if printf x >> "$SSL_CERT_FILE" 2>/dev/null; then echo COPY_WRITABLE; else echo COPY_READONLY; fi`,
+        cwd,
+        runtimeConfig: { filesystem: { allowRead: [cwd, "/bin", "/usr", "/dev", "/private/var/select"], allowWrite: [cwd], denyRead: ["/"], denyWrite: [] }, network: { allowedDomains: [], deniedDomains: [], strictAllowlist: true } },
+        unmatchedHostAction: "deny",
+        trustedCa: { value: ca, path: ca },
+        maskedShimPlan: { maskedFilePaths: [], maskedDenyPaths: [], shimCommands: [] },
+      });
+      const copy = /^COPY:(.+)$/m.exec(result.stdout)?.[1];
+      expect(copy).toBeTruthy();
+      expect(copy).not.toBe(ca);
+      expect(result.stdout).toContain("-----BEGIN CERTIFICATE-----\nORIGINAL_DENIED\nCOPY_READONLY");
+      expect(existsSync(copy!)).toBe(false);
+    } finally {
+      if (previous === undefined) delete process.env.SSL_CERT_FILE;
+      else process.env.SSL_CERT_FILE = previous;
+    }
+  }, 30_000);
+
   it("allows read-only credential access while denying overwrite, removal, and rename", async () => {
     const cwd = await realpath(await makeTempDir("pi-srt-read-only-credential-"));
     const envPath = path.join(cwd, ".env");

@@ -686,6 +686,38 @@ describe("createSrtBackend", () => {
     expect(JSON.stringify(diagnostic)).not.toContain(command);
   });
 
+  it("passes the configured CA path to the helper only when enabled", async () => {
+    const dir = await mkdtemp(path.join(tmpdir(), "pi-srt-ca-input-"));
+    const file = path.join(dir, "ca.pem");
+    const previous = process.env.SSL_CERT_FILE;
+    await writeFile(file, "certificate");
+    process.env.SSL_CERT_FILE = file;
+    try {
+      const backend = createSrtBackend({
+        helperPath: () => "/helper.mjs",
+        processExecPath: () => "/usr/bin/node",
+        checkSrtStatus: () => ({ available: true, platform: "darwin", packageAvailable: true, entrypointPath: "/helper.mjs", entrypointExists: true, dependencyChecks: [] }),
+        buildSrtCommandSpec: ({ command }) => makeSrtCommandSpec(command),
+        buildSrtRuntimeConfig: () => ({ filesystem: { allowRead: [], allowWrite: [], denyRead: [], denyWrite: [] } }),
+      });
+      const makeInput = (trustCaBundle: boolean) => ({
+        command: "npm install", sandboxConfig: makeConfig(), cwd: "/repo", preResolvedProfile: makeProfile(), trustCaBundle,
+      });
+      const decode = async (enabled: boolean) => {
+        const result = await backend.wrapCommand(makeInput(enabled));
+        if (!result || !("command" in result)) throw new Error("Expected SRT command");
+        const encoded = new RegExp(`${DEFAULT_SRT_HELPER_ENV}='?([A-Za-z0-9+/=]+)`).exec(result.command)?.[1];
+        return JSON.parse(Buffer.from(String(encoded), "base64").toString("utf8"));
+      };
+      expect((await decode(false)).trustedCa).toBeUndefined();
+      expect((await decode(true)).trustedCa).toEqual({ value: file, path: expect.any(String) });
+    } finally {
+      if (previous === undefined) delete process.env.SSL_CERT_FILE;
+      else process.env.SSL_CERT_FILE = previous;
+      await rm(dir, { recursive: true, force: true });
+    }
+  });
+
   it("keeps forced resource-backed Git commands inside SRT wrapping", async () => {
     const command = "git push git@example.invalid:org/repo.git";
     const unmaskedPaths = [{ path: "/tmp/synthetic-ssh/id_ed25519", writable: false }];

@@ -1,6 +1,8 @@
 import { execFile } from "node:child_process";
 import { existsSync } from "node:fs";
-import { mkdtemp, rm, writeFile } from "node:fs/promises";
+import { mkdtemp, rm, symlink, writeFile } from "node:fs/promises";
+import { rootCertificates } from "node:tls";
+import { X509Certificate } from "node:crypto";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { promisify } from "node:util";
@@ -22,6 +24,30 @@ afterEach(async () => {
 });
 
 describe("sandbox-run helper input files", () => {
+  it("copies only valid certificates from a CA bundle", async () => {
+    const helperPath = pathToFileURL(path.join(process.cwd(), "bin", "sandbox-run-env.mjs")).href;
+    const { certificateOnlyBundle } = await import(helperPath) as {
+      certificateOnlyBundle: (text: string) => string | null;
+    };
+    expect(certificateOnlyBundle(`# comment\n${rootCertificates[0]}\n`)).toBe(new X509Certificate(rootCertificates[0]).toString());
+    expect(certificateOnlyBundle(`${rootCertificates[0]}\n-----BEGIN PRIVATE KEY-----\nsecret\n-----END PRIVATE KEY-----`)).toBeNull();
+    expect(certificateOnlyBundle("-----BEGIN CERTIFICATE-----\ninvalid\n-----END CERTIFICATE-----")).toBeNull();
+    expect(certificateOnlyBundle("# no certificates")).toBeNull();
+    expect(certificateOnlyBundle(`${rootCertificates[0]}\n-----BEGIN TRUSTED CERTIFICATE-----\nabc\n-----END TRUSTED CERTIFICATE-----`)).toBeNull();
+  });
+
+  it("rejects symlink CA files", async () => {
+    const helperPath = pathToFileURL(path.join(process.cwd(), "bin", "sandbox-run-env.mjs")).href;
+    const { readTrustedCaBundle } = await import(helperPath) as {
+      readTrustedCaBundle: (file: string) => Promise<string | null>;
+    };
+    const dir = await makeTempDir("pi-ca-test-");
+    await writeFile(path.join(dir, "ca.pem"), rootCertificates[0]);
+    await symlink(path.join(dir, "ca.pem"), path.join(dir, "link.pem"));
+    expect(await readTrustedCaBundle(path.join(dir, "ca.pem"))).toBe(new X509Certificate(rootCertificates[0]).toString());
+    expect(await readTrustedCaBundle(path.join(dir, "link.pem"))).toBeNull();
+  });
+
   it("pins Docker socket selection over an inherited context", async () => {
     const helperPath = pathToFileURL(path.join(process.cwd(), "bin", "sandbox-run-env.mjs")).href;
     const { setDockerHostEnvironment } = await import(helperPath) as {

@@ -1328,6 +1328,44 @@ describe("piPermissionSystemExtension SRT default smoke", () => {
     expect(retryCtx.ui.select).not.toHaveBeenCalled();
   });
 
+  it("does not offer or arm a host retry from a TLS error", async () => {
+    const fixture = await setupPushFallback({ mode: "yolo" });
+    const ctx = createContext(fixture.projectDir, { hasUI: true });
+    const command = "npm install";
+    const first = await fixture.run(ctx, command);
+    expect(first.event.input.command).not.toBe(command);
+    const result = await fixture.fail(first.event, ctx, "UNABLE_TO_GET_ISSUER_CERT_LOCALLY");
+    expect(JSON.stringify(result ?? "")).not.toContain("call Bash again");
+    const next = await fixture.run(ctx, command);
+    expect(next.event.input.command).not.toBe(command);
+  });
+
+  it.each(["manual", "auto", "yolo"])("enables the trusted CA copy only in %s mode", async (mode) => {
+    const agentDir = await makeTempDir("pi-srt-ca-mode-agent-");
+    const projectDir = await makeTempDir("pi-srt-ca-mode-project-");
+    const caDir = await makeTempDir("pi-srt-ca-mode-source-");
+    const ca = path.join(caDir, "cert.pem");
+    await writeFile(ca, "certificate");
+    const previous = process.env.SSL_CERT_FILE;
+    process.env.SSL_CERT_FILE = ca;
+    try {
+      process.env.PI_CODING_AGENT_DIR = agentDir;
+      await writeExtensionConfig(agentDir, {
+        mode, permission: { "*": "allow", bash: { "*": "allow" }, external_directory: { "*": "allow" } },
+      });
+      const pi = createFakePi();
+      piPermissionSystemExtension(pi as never);
+      const event = { toolName: "bash", toolCallId: "srt-ca-mode", input: { command: "echo ok" } };
+      await pi.handlers.get("tool_call")?.(event, createContext(projectDir) as never);
+      const trustedCa = extractHelperInput(event.input.command).trustedCa;
+      if (mode === "yolo") expect(trustedCa).toEqual({ value: ca, path: ca });
+      else expect(trustedCa).toBeUndefined();
+    } finally {
+      if (previous === undefined) delete process.env.SSL_CERT_FILE;
+      else process.env.SSL_CERT_FILE = previous;
+    }
+  });
+
   it("does not offer a host rerun in yolo when the denied command targets outside the workspace", async () => {
     const agentDir = await makeTempDir("pi-srt-yolo-out-agent-");
     const projectDir = await makeTempDir("pi-srt-yolo-out-project-");

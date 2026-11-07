@@ -6,6 +6,7 @@ import type { BashOperations } from "@earendil-works/pi-coding-agent";
 
 import type { SandboxBackend, SandboxOperationsInput, SandboxWrapInput, SandboxWrapResult } from "../backend.js";
 import { shouldBypassSandboxCommand } from "../bypass-command.js";
+import { trustedCaFile } from "../trusted-ca.js";
 import { maskSecretValues, parseDotenvValues } from "../../env-mask.js";
 import type { SrtCommandSpec } from "../srt-command-spec.js";
 import { buildSrtCommandSpec, buildSrtCommandSpecAsync, MaskedScanUnavailableError } from "../srt-command-spec.js";
@@ -31,6 +32,7 @@ export interface SrtHelperInput {
   envAllowPatterns?: SrtCommandSpec["envAllowPatterns"];
   envDenyPatterns: SrtCommandSpec["envDenyPatterns"];
   execShimPlan: SrtCommandSpec["execShimPlan"];
+  trustedCa?: { value: string; path: string };
 }
 
 export interface SrtBackendDeps {
@@ -262,7 +264,11 @@ async function buildHelperInputAsync(
   command: string,
 ): Promise<SrtHelperInput> {
   const buildSpec = deps.buildSrtCommandSpecAsync ?? deps.buildSrtCommandSpec;
-  return helperInputFromSpec(deps, await buildSpec(buildSpecInput(input, command)));
+  const helperInput = helperInputFromSpec(deps, await buildSpec(buildSpecInput(input, command)));
+  if (input.trustCaBundle) {
+    helperInput.trustedCa = trustedCaFile(process.env.SSL_CERT_FILE, input.preResolvedProfile?.maskedPaths ?? []);
+  }
+  return helperInput;
 }
 
 function reportSpawnE2Big(

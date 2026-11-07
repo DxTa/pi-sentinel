@@ -2149,6 +2149,7 @@ export default function piPermissionSystemExtension(pi: ExtensionAPI): void {
             command,
             sandboxConfig: effectiveConfig,
             forceSrt: forceSrtForProtectedResource,
+            trustCaBundle: runtime.config.mode === "yolo",
             cwd: ctx.cwd,
             repoRoot,
             unmaskedPaths: grants,
@@ -2585,6 +2586,7 @@ export default function piPermissionSystemExtension(pi: ExtensionAPI): void {
         operations: getSandboxBackend(event.cwd).createBashOperations({
           sandboxConfig: effectiveConfig,
           forceSrt: forceSrtForProtectedResource,
+          trustCaBundle: runtime.config.mode === "yolo",
           cwd: event.cwd,
           repoRoot: resolveRepoRoot(event.cwd),
           unmaskedPaths,

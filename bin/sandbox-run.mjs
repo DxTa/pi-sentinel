@@ -3,7 +3,7 @@ import { execFileSync, spawn } from 'node:child_process'
 import { chmod, lstat, mkdtemp, readFile, realpath, rm, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { basename, dirname, join, resolve } from 'node:path'
-import { setDockerHostEnvironment } from './sandbox-run-env.mjs'
+import { readTrustedCaBundle, setDockerHostEnvironment } from './sandbox-run-env.mjs'
 
 const ENV_KEY = 'PI_SRT_HELPER_INPUT_B64'
 const INPUT_FILE_ENV = 'PI_SRT_HELPER_INPUT_FILE'
@@ -181,13 +181,23 @@ async function prepareShims(helperInput) {
     : []
   const needsMaskedShims = filteredMaskedFilePaths.length > 0
   const needsExecShims = Object.keys(execShimPlan).length > 0
-  if (!needsMaskedShims && !needsExecShims) {
+  const trustedCa = helperInput.trustedCa && helperInput.trustedCa.value === process.env.SSL_CERT_FILE
+    ? await readTrustedCaBundle(helperInput.trustedCa.path)
+    : null
+  if (!needsMaskedShims && !needsExecShims && !trustedCa) {
     return { env: {}, cleanup: async () => {} }
   }
 
   const rootPath = await mkdtemp(join(tmpdir(), 'pi-srt-shim-'))
   try {
     const root = await realpath(rootPath)
+    let caPath
+    if (trustedCa) {
+      caPath = join(root, 'ca-bundle.crt')
+      await writeFile(caPath, trustedCa, { encoding: 'utf8', mode: 0o600 })
+      helperInput.runtimeConfig.filesystem.allowRead.push(caPath)
+      helperInput.runtimeConfig.filesystem.denyWrite.push(root)
+    }
     const actualPlaceholderDir = await realpath(await mkdtemp(join(root, 'placeholder-files-')))
   const actualShimDir = await realpath(await mkdtemp(join(root, 'shim-bin-')))
   const maskMap = {}
@@ -284,6 +294,7 @@ ${prelude}exec ${shellSingleQuote(realCommand)} "$@"
     return {
       env: {
         PATH: `${actualShimDir}:${process.env.PATH || ''}`,
+        ...(caPath ? { SSL_CERT_FILE: caPath } : {}),
         [MASK_MAP_ENV]: Buffer.from(JSON.stringify(maskMap), 'utf8').toString('base64'),
       },
       cleanup: async () => {
@@ -362,6 +373,7 @@ async function main() {
     await SandboxManager.initialize(runtimeConfig, createUnmatchedHostCallback(helperInput))
     const wrapped = await SandboxManager.wrapWithSandboxArgv(helperInput.command)
     const wrappedEnv = wrapped.env ?? {}
+    if (wrappedEnv.SSL_CERT_FILE && wrappedEnv.SSL_CERT_FILE !== helperInput.trustedCa?.value) delete shim.env.SSL_CERT_FILE
     const env = filterChildEnvironment(
       helperInput,
       stripHelperInputEnvironment({ ...process.env, ...wrappedEnv, ...shim.env }),
