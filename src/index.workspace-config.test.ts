@@ -61,8 +61,8 @@ describe("piPermissionSystemExtension workspace config", () => {
     const projectDir = await makeTempDir("pi-project-");
     process.env.PI_CODING_AGENT_DIR = agentDir;
 
-    const globalConfigPath = path.join(agentDir, "permissions.json");
-    const workspaceConfigPath = path.join(projectDir, ".pi", "permissions.json");
+    const globalConfigPath = path.join(agentDir, "sentinel.json");
+    const workspaceConfigPath = path.join(projectDir, ".pi", "sentinel.json");
     await mkdir(path.dirname(globalConfigPath), { recursive: true });
     await mkdir(path.dirname(workspaceConfigPath), { recursive: true });
 
@@ -111,8 +111,8 @@ describe("piPermissionSystemExtension workspace config", () => {
     delete process.env.PI_SENTINEL_MODE;
     process.env.PI_CODING_AGENT_DIR = agentDir;
 
-    const globalConfigPath = path.join(agentDir, "permissions.json");
-    const workspaceConfigPath = path.join(projectDir, ".pi", "permissions.json");
+    const globalConfigPath = path.join(agentDir, "sentinel.json");
+    const workspaceConfigPath = path.join(projectDir, ".pi", "sentinel.json");
     await mkdir(path.dirname(workspaceConfigPath), { recursive: true });
     await writeFile(globalConfigPath, JSON.stringify({ mode: "manual" }), "utf8");
     await writeFile(workspaceConfigPath, JSON.stringify({ mode: "manual" }), "utf8");
@@ -154,7 +154,7 @@ describe("piPermissionSystemExtension workspace config", () => {
     const legacyGrantPath = path.join(projectDir, ".pi", "pi-permission-system", "project-grants.json");
     process.env.PI_CODING_AGENT_DIR = agentDir;
 
-    const globalConfigPath = path.join(agentDir, "permissions.json");
+    const globalConfigPath = path.join(agentDir, "sentinel.json");
     await mkdir(path.dirname(globalConfigPath), { recursive: true });
     await mkdir(path.dirname(legacyGrantPath), { recursive: true });
     await writeFile(
@@ -201,7 +201,7 @@ describe("piPermissionSystemExtension session mode", () => {
     const agentDir = await makeTempDir("pi-agent-");
     const projectDir = await makeTempDir("pi-project-");
     process.env.PI_CODING_AGENT_DIR = agentDir;
-    await writeFile(path.join(agentDir, "permissions.json"), JSON.stringify({ mode: "manual" }), "utf8");
+    await writeFile(path.join(agentDir, "sentinel.json"), JSON.stringify({ mode: "manual" }), "utf8");
 
     const pi = createFakePi();
     piPermissionSystemExtension(pi as never);

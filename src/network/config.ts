@@ -1,12 +1,12 @@
 /**
  * Network domain gate configuration loader.
- * Loads from layered permission config network section with backward-compatible domain-gate.json support.
+ * Loads from the layered permission config network section.
  */
 
-import { existsSync, readFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
 import type { DomainGateConfig, ResolvedDomainPolicy } from "./types.js";
+import { getSessionDomainGrants } from "./session-domains.js";
 
 export type { DomainGateConfig, ResolvedDomainPolicy };
 
@@ -19,28 +19,6 @@ const DEFAULT_DOMAIN_POLICY: ResolvedDomainPolicy = {
 
 function getAgentDir(): string {
   return process.env.PI_CODING_AGENT_DIR || join(homedir(), ".pi", "agent");
-}
-
-/**
- * Load the legacy domain-gate.json config (backward compatibility).
- */
-export function readLegacyConfig(
-  globalPath: string,
-  projectPath: string,
-): DomainGateConfig {
-  const global = readJsonFile(globalPath);
-  const project = readJsonFile(projectPath);
-  return { ...global, ...project };
-}
-
-function readJsonFile(path: string): DomainGateConfig {
-  if (!existsSync(path)) return {};
-  try {
-    const parsed = JSON.parse(readFileSync(path, "utf-8")) as DomainGateConfig;
-    return parsed && typeof parsed === "object" ? parsed : {};
-  } catch {
-    return {};
-  }
 }
 
 /**
@@ -71,36 +49,21 @@ export function normalizeUnknownDomains(
 }
 
 /**
- * Resolve domain gate policy from the unified config.
- * Falls back to legacy domain-gate.json if network section is absent.
+ * Resolve domain gate policy from the unified config's network section,
+ * with session grants layered on top (deny wins at match time).
  */
 export function loadDomainPolicy(
   config: { network?: DomainGateConfig } | undefined,
-  cwd: string,
 ): ResolvedDomainPolicy {
-  // If unified config has network section, use it
-  if (config?.network && Object.keys(config.network).length > 0) {
-    return mergeDomainConfigs(DEFAULT_DOMAIN_POLICY, config.network);
-  }
-
-  // Fall back to legacy domain-gate.json
-  const globalPath = join(getAgentDir(), "domain-gate.json");
-  const projectPath = join(cwd, ".pi", "domain-gate.json");
-  const legacyConfig = readLegacyConfig(globalPath, projectPath);
-
-  if (Object.keys(legacyConfig).length > 0) {
-    // Legacy domain-gate.json remains supported silently for local compatibility.
-    // Map legacy boolean to new enum
-    const mapped: DomainGateConfig = {
-      enabled: legacyConfig.enabled,
-      unknownDomains: legacyConfig.unknownDomains ?? ((legacyConfig as Record<string, unknown>).allowUnknownDomains === false ? "deny" : "allow"),
-      allowedDomains: legacyConfig.allowedDomains,
-      deniedDomains: legacyConfig.deniedDomains,
-    };
-    return mergeDomainConfigs(DEFAULT_DOMAIN_POLICY, mapped);
-  }
-
-  return { ...DEFAULT_DOMAIN_POLICY };
+  const base = config?.network && Object.keys(config.network).length > 0
+    ? mergeDomainConfigs(DEFAULT_DOMAIN_POLICY, config.network)
+    : { ...DEFAULT_DOMAIN_POLICY };
+  const session = getSessionDomainGrants();
+  return {
+    ...base,
+    allowedDomains: [...base.allowedDomains, ...session.allowed],
+    deniedDomains: [...base.deniedDomains, ...session.denied],
+  };
 }
 
 export { DEFAULT_DOMAIN_POLICY, getAgentDir };

@@ -29,7 +29,7 @@ Rules, stored approvals, `yolo` ask patterns, the `auto` history key, the worksp
 Approvals saved by earlier versions can contain keyword or wrapper patterns such as `for *`, `do *`, `done`, or `bash *`. They no longer match. List and remove them:
 
 ```sh
-grep -noE '"(for|while|until|if|then|elif|else|do|done|fi|select|case|esac|bash|sh|zsh|dash|eval|source|xargs|env|timeout|sudo|nohup|time|command|exec|nice)( [^"]*)?"[[:space:]]*:[[:space:]]*"[a-z]+"' ~/.pi/agent/permissions.json .pi/permissions.json
+grep -noE '"(for|while|until|if|then|elif|else|do|done|fi|select|case|esac|bash|sh|zsh|dash|eval|source|xargs|env|timeout|sudo|nohup|time|command|exec|nice)( [^"]*)?"[[:space:]]*:[[:space:]]*"[a-z]+"' ~/.pi/agent/sentinel.json .pi/permissions.json
 ```
 
 ## `yolo` mode: hard rules
@@ -110,11 +110,11 @@ Run `node scripts/calibration-report.mjs [calibration.jsonl] [review.jsonl]` to 
 
 ## Configuration precedence
 
-Bundled defaults live in [`config.json`](../config.json); the full schema is [`schemas/permissions.schema.json`](../schemas/permissions.schema.json). Lowest to highest:
+Bundled defaults live in [`config.json`](../config.json); the full schema is [`schemas/sentinel.schema.json`](../schemas/sentinel.schema.json). Lowest to highest:
 
 1. bundled defaults;
-2. global `~/.pi/agent/permissions.json`;
-3. trusted project `<project>/.pi/permissions.json`;
+2. global `~/.pi/agent/sentinel.json`;
+3. trusted project `<project>/.pi/sentinel.json`;
 4. per-agent configuration (agent frontmatter);
 5. security profile overlay.
 
@@ -130,12 +130,12 @@ In `/sentinel`, every row shows its effective value and the scope it comes from,
 | --- | --- |
 | session | session (memory, until the session ends) |
 | `PI_SENTINEL_MODE` | session, the only layer above it |
-| project or legacy project file | `<project>/.pi/permissions.json` (or the legacy file in use) |
-| global, legacy global, or default | `~/.pi/agent/permissions.json` |
+| project | `<project>/.pi/sentinel.json` |
+| global or default | `~/.pi/agent/sentinel.json` |
 
 To store the mode somewhere else, press Enter on the Mode row: the picker lists every mode for the scope where it is set now, plus session and project overrides. It only offers scopes where the change takes effect, so for example it hides global while a project sets the mode. The same is available as `/sentinel mode <manual|yolo|auto> [session|project|global]`, with autocomplete for the mode and scope; the command can also save to a scope that a higher layer hides, and warns when it does. A committed project file changes the mode for everyone who uses the repository. Saving to `project` or `global` replaces an active session mode.
 
-The header shows the mode chain on one line (session, `PI_SENTINEL_MODE`, project, legacy project files, global, legacy global, default) with `▶` on the layer in effect. Logs and sandbox settings always write to the global file; when a project file overrides one of them, its row says so and saving warns that the project value still applies.
+The header shows the mode chain on one line (session, `PI_SENTINEL_MODE`, project, global, default) with `▶` on the layer in effect. Logs and sandbox settings always write to the global file; when a project file overrides one of them, its row says so and saving warns that the project value still applies.
 
 ## Logs
 

@@ -3,11 +3,9 @@ import { isPermissionState, toRecord } from "./common";
 import {
   getBundledConfigPath,
   getGlobalConfigPath,
-  getLegacyGlobalPolicyPath,
-  getLegacyProjectConfigPath,
-  getLegacyProjectExtensionConfigPath,
-  getLegacyProjectPolicyPath,
   getProjectConfigPath,
+  getRetiredGlobalConfigPath,
+  getRetiredProjectConfigPath,
 } from "./config-paths";
 import { mergeFlatPermissions } from "./permission-merge";
 import { parsePermissionMode, type PermissionMode } from "./extension-config";
@@ -35,15 +33,9 @@ export interface UnifiedPermissionConfig {
   permission?: FlatPermissionConfig;
 }
 
-export interface LegacyModeFlags {
-  yoloMode?: boolean;
-  yoloAutoMode?: boolean;
-}
-
 export interface UnifiedConfigLoadResult {
   config: UnifiedPermissionConfig;
   issues: string[];
-  legacyMode?: LegacyModeFlags;
 }
 
 export function stripJsonComments(input: string): string {
@@ -204,21 +196,7 @@ export function normalizeUnifiedConfig(raw: unknown): UnifiedConfigLoadResult {
   if (record.mode !== undefined && !explicitMode) {
     issues.push(`Ignoring invalid mode ${JSON.stringify(record.mode)}; expected 'manual', 'yolo', or 'auto'.`);
   }
-  const legacyMode: LegacyModeFlags = {};
-  const yoloMode = normalizeOptionalBoolean(record.yoloMode);
-  const yoloAutoMode = normalizeOptionalBoolean(record.yoloAutoMode);
-  if (!explicitMode && yoloMode !== undefined) legacyMode.yoloMode = yoloMode;
-  if (!explicitMode && yoloAutoMode !== undefined) legacyMode.yoloAutoMode = yoloAutoMode;
-
-  if (explicitMode) {
-    config.mode = parsedMode;
-  } else if (yoloAutoMode === true) {
-    config.mode = "auto";
-  } else if (yoloMode === true) {
-    config.mode = "yolo";
-  } else if (yoloAutoMode !== undefined || yoloMode !== undefined) {
-    config.mode = "manual";
-  }
+  if (explicitMode) config.mode = parsedMode;
 
   const yoloAskBashPatterns = normalizeOptionalStringArray(
     record.yoloAskBashPatterns,
@@ -231,39 +209,7 @@ export function normalizeUnifiedConfig(raw: unknown): UnifiedConfigLoadResult {
   const permission = normalizeFlatPermissionValue(record.permission);
   if (permission !== undefined) config.permission = permission;
 
-  return {
-    config,
-    issues,
-    ...(Object.keys(legacyMode).length > 0 ? { legacyMode } : {}),
-  };
-}
-
-function legacyFlagsForMode(mode: PermissionMode | undefined): LegacyModeFlags {
-  if (mode === "auto") return { yoloMode: true, yoloAutoMode: true };
-  if (mode === "yolo") return { yoloMode: true, yoloAutoMode: false };
-  if (mode === "manual") return { yoloMode: false, yoloAutoMode: false };
-  return {};
-}
-
-function mergeLoadedConfig(
-  base: UnifiedPermissionConfig,
-  override: UnifiedConfigLoadResult,
-): UnifiedPermissionConfig {
-  const merged = mergeUnifiedConfigs(base, override.config);
-  if (!override.legacyMode) return merged;
-
-  const effective = {
-    ...legacyFlagsForMode(base.mode),
-    ...override.legacyMode,
-  };
-  if (effective.yoloAutoMode === true) {
-    merged.mode = "auto";
-  } else if (effective.yoloMode === true) {
-    merged.mode = "yolo";
-  } else {
-    merged.mode = "manual";
-  }
-  return merged;
+  return { config, issues };
 }
 
 /**
@@ -314,22 +260,12 @@ export function mergeUnifiedConfigs(
   return merged;
 }
 
-export type ModeLayerId =
-  | "session"
-  | "environment"
-  | "project"
-  | "project-policy-legacy"
-  | "project-extension-legacy"
-  | "project-config-legacy"
-  | "global"
-  | "global-policy-legacy"
-  | "bundled";
+export type ModeLayerId = "session" | "environment" | "project" | "global" | "bundled";
 
 export interface ConfigModeLayer {
   id: ModeLayerId;
   name: string;
   mode?: PermissionMode;
-  legacyMode?: LegacyModeFlags;
   path: string;
   error?: "unreadable";
 }
@@ -346,20 +282,14 @@ export interface MergedConfigResult {
 }
 
 /**
- * Load global and project configs from the new layout, detect legacy files,
- * merge everything, and collect issues.
+ * Load bundled, global, and project configs, merge them, and collect issues.
  *
- * Merge order:
- * 1. Bundled extension defaults — lowest precedence
- * 2. Legacy global policy (if present)
- * 3. New global permissions.json
- * 4. Legacy project policy and extension config (if present)
- * 5. Legacy project `.pi/agent/permissions.json` compatibility layer
- * 6. Project `.pi/permissions.json` — highest precedence
+ * Merge order (lowest → highest precedence):
+ * 1. Bundled extension defaults
+ * 2. Global `sentinel.json`
+ * 3. Project `.pi/sentinel.json`
  *
- * Bundled config is never treated as a legacy file. Legacy-format keys
- * (defaultPolicy, tools, bash, etc.) are not translated and contribute no
- * permission rules; warnings do not suggest a destructive blind move.
+ * Retired `permissions.json` files are never read. A warning names the rename.
  */
 export function loadAndMergeConfigs(
   agentDir: string,
@@ -369,13 +299,9 @@ export function loadAndMergeConfigs(
   const allIssues: string[] = [];
 
   const bundledPath = getBundledConfigPath(extensionRoot);
-  const newGlobalPath = getGlobalConfigPath(agentDir);
+  const globalPath = getGlobalConfigPath(agentDir);
   const projectRoot = cwd || null;
-  const newProjectPath = getProjectConfigPath(projectRoot ?? "");
-  const legacyProjectConfigPath = getLegacyProjectConfigPath(projectRoot ?? "");
-  const legacyGlobalPolicyPath = getLegacyGlobalPolicyPath(agentDir);
-  const legacyProjectPolicyPath = getLegacyProjectPolicyPath(projectRoot ?? "");
-  const legacyProjectExtensionPath = getLegacyProjectExtensionConfigPath(projectRoot ?? "");
+  const projectPath = getProjectConfigPath(projectRoot ?? "");
 
   let merged: UnifiedPermissionConfig = {};
   let modeSource: ModeLayerId = "bundled";
@@ -385,41 +311,21 @@ export function loadAndMergeConfigs(
     name: string,
     filePath: string,
     result: UnifiedConfigLoadResult,
-    includeWhenUnset = true,
   ): void => {
     const unreadable = result.issues.some((issue) =>
       issue.startsWith("Failed to read config at '" + filePath + "'")
     );
-    const hasCompleteLegacyFlags =
-      result.legacyMode?.yoloMode !== undefined &&
-      result.legacyMode.yoloAutoMode !== undefined;
-    const hasConfiguredMode = result.config.mode !== undefined || result.legacyMode !== undefined;
-    if (includeWhenUnset || hasConfiguredMode || unreadable) {
-      modeLayers.push({
-        id,
-        name,
-        mode: result.legacyMode && !hasCompleteLegacyFlags ? undefined : result.config.mode,
-        ...(result.legacyMode ? { legacyMode: result.legacyMode } : {}),
-        path: filePath,
-        ...(unreadable ? { error: "unreadable" } : {}),
-      });
-    }
-
-    const modeBeforeLayer = merged.mode;
-    merged = mergeLoadedConfig(merged, result);
-    const legacyModeIsDecisive =
-      result.legacyMode?.yoloAutoMode === true || hasCompleteLegacyFlags;
-    const legacyModeChangedValue = merged.mode !== modeBeforeLayer;
-    if (
-      result.legacyMode
-        ? legacyModeIsDecisive || legacyModeChangedValue
-        : result.config.mode !== undefined
-    ) {
-      modeSource = id;
-    }
+    modeLayers.push({
+      id,
+      name,
+      mode: result.config.mode,
+      path: filePath,
+      ...(unreadable ? { error: "unreadable" as const } : {}),
+    });
+    merged = mergeUnifiedConfigs(merged, result.config);
+    if (result.config.mode !== undefined) modeSource = id;
   };
 
-  // Bundled defaults are a real config layer, not a legacy user file.
   if (existsSync(bundledPath)) {
     const bundled = loadUnifiedConfig(bundledPath);
     allIssues.push(...bundled.issues);
@@ -428,53 +334,24 @@ export function loadAndMergeConfigs(
     allIssues.push(`Bundled permission config missing at '${bundledPath}'.`);
   }
 
-  if (existsSync(legacyGlobalPolicyPath)) {
-    const legacy = loadUnifiedConfig(legacyGlobalPolicyPath);
-    allIssues.push(
-      `Legacy global policy found at '${legacyGlobalPolicyPath}'. ` +
-        `Legacy-format keys are not translated; leave this file unchanged and migrate supported unified keys manually to '${newGlobalPath}'.`,
-    );
-    allIssues.push(...legacy.issues);
-    mergeLayer("global-policy-legacy", "global (legacy)", legacyGlobalPolicyPath, legacy, false);
+  const retiredGlobalPath = getRetiredGlobalConfigPath(agentDir);
+  if (!existsSync(globalPath) && existsSync(retiredGlobalPath)) {
+    allIssues.push(`Retired config '${retiredGlobalPath}' is ignored; rename it to '${globalPath}'.`);
   }
-
-  const globalResult = loadUnifiedConfig(newGlobalPath);
+  const globalResult = loadUnifiedConfig(globalPath);
   allIssues.push(...globalResult.issues);
-  const globalConfig = globalResult.config;
-  mergeLayer("global", "global", newGlobalPath, globalResult);
+  mergeLayer("global", "global", globalPath, globalResult);
 
-  if (projectRoot && existsSync(legacyProjectPolicyPath)) {
-    const legacy = loadUnifiedConfig(legacyProjectPolicyPath);
-    allIssues.push(
-      `Legacy project policy found at '${legacyProjectPolicyPath}'. ` +
-        `Legacy-format keys are not translated; leave this file unchanged and migrate supported unified keys manually to '${newProjectPath}'.`,
-    );
-    allIssues.push(...legacy.issues);
-    mergeLayer("project-policy-legacy", "project (legacy)", legacyProjectPolicyPath, legacy, false);
-  }
-
-  if (projectRoot && existsSync(legacyProjectExtensionPath)) {
-    const legacy = loadUnifiedConfig(legacyProjectExtensionPath);
-    allIssues.push(
-      `Legacy project extension config found at '${legacyProjectExtensionPath}'. ` +
-        `Move supported unified settings to '${newProjectPath}' without modifying bundled defaults.`,
-    );
-    allIssues.push(...legacy.issues);
-    mergeLayer("project-extension-legacy", "project (legacy)", legacyProjectExtensionPath, legacy, false);
-  }
-
-  let legacyProjectResult: UnifiedConfigLoadResult = { config: {}, issues: [] };
   let projectResult: UnifiedConfigLoadResult = { config: {}, issues: [] };
   if (projectRoot) {
-    legacyProjectResult = loadUnifiedConfig(legacyProjectConfigPath);
-    allIssues.push(...legacyProjectResult.issues);
-    mergeLayer("project-config-legacy", "project (legacy)", legacyProjectConfigPath, legacyProjectResult, false);
-
-    projectResult = loadUnifiedConfig(newProjectPath);
+    const retiredProjectPath = getRetiredProjectConfigPath(projectRoot);
+    if (!existsSync(projectPath) && existsSync(retiredProjectPath)) {
+      allIssues.push(`Retired config '${retiredProjectPath}' is ignored; rename it to '${projectPath}'.`);
+    }
+    projectResult = loadUnifiedConfig(projectPath);
     allIssues.push(...projectResult.issues);
-    mergeLayer("project", "project", newProjectPath, projectResult);
+    mergeLayer("project", "project", projectPath, projectResult);
   }
-  const projectConfig = mergeLoadedConfig(legacyProjectResult.config, projectResult);
   const configuredMode = merged.mode;
 
   const modeOverride = normalizeUnifiedConfig({
@@ -489,8 +366,8 @@ export function loadAndMergeConfigs(
   }
 
   return {
-    global: globalConfig,
-    project: projectConfig,
+    global: globalResult.config,
+    project: projectResult.config,
     merged,
     configuredMode,
     modeSource,

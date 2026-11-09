@@ -4,7 +4,7 @@
  * Manages sandbox profiles with runtime grants:
  * - Session grants (in-memory, expire at session end)
  * - Temporary grants (in-memory, expire after TTL)
- * - Persistent grants (saved to the selected permissions.json override)
+ * - Persistent grants (saved to the selected sentinel.json override)
  *
  * Uses the same ask/allow/deny UX pattern as the upstream permission system.
  */
@@ -334,7 +334,7 @@ export class SandboxPolicyManager {
 
   /**
    * Save a grant to persistent config (for "always" choices).
-   * This writes to the selected permissions.json override.
+   * This writes to the selected sentinel.json override.
    */
   saveNetworkGrantToConfig(domain: string): void {
     // This will be implemented with actual config file writing

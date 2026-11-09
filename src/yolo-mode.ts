@@ -5,6 +5,7 @@ import {
   isPathWithinCanonicalWorkingDirectory,
 } from "./path-utils";
 import type { RuleOrigin } from "./rule";
+import { getSessionYoloAskPatterns } from "./session-lists";
 import type { PermissionCheckResult, PermissionState } from "./types";
 import { wildcardMatch } from "./wildcard-matcher";
 
@@ -93,8 +94,13 @@ function isBuiltInAskCommand(words: string[]): boolean {
  * True when rm is the only reason a yolo command is forced: no ssh, publish, kubectl write, non-plain push or
  * configured pattern. A removal is bounded by its path operands, which the caller checks against the workspace.
  */
+/** Configured yolo ask patterns plus session patterns. */
+export function yoloAskPatternsFor(config: { yoloAskBashPatterns?: readonly string[] }): string[] {
+  return [...(config.yoloAskBashPatterns ?? []), ...getSessionYoloAskPatterns()];
+}
+
 export function isRemovalOnlyAsk(command: string, config: PermissionSystemExtensionConfig): boolean {
-  if (matchesBashAskPattern(config.yoloAskBashPatterns ?? [], command)) return false;
+  if (matchesBashAskPattern(yoloAskPatternsFor(config), command)) return false;
   const parts = [...(bashInnerCommands(command)?.commands ?? [command]), ...(splitBashSegments(command) ?? [])];
   const asking = parts.map((part) => bashWords(part)).filter((words): words is string[] => words !== null && isBuiltInAskCommand(words));
   return asking.length > 0 && asking.every((words) => words[0]?.slice(words[0].lastIndexOf("/") + 1) === "rm");
@@ -153,7 +159,7 @@ export function matchesYoloAskBashPattern(
     return false;
   }
 
-  return matchesBuiltInAsk(command) || matchesBashAskPattern(config.yoloAskBashPatterns ?? [], command);
+  return matchesBuiltInAsk(command) || matchesBashAskPattern(yoloAskPatternsFor(config), command);
 }
 
 /**

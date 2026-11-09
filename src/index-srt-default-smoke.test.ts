@@ -163,7 +163,7 @@ async function writeExtensionConfig(agentDir: string, overrides: Record<string, 
     ? { ...baseConfig.sandbox, ...(sandboxOverride as Record<string, unknown>) }
     : baseConfig.sandbox;
   await writeFile(
-    path.join(agentDir, "permissions.json"),
+    path.join(agentDir, "sentinel.json"),
     JSON.stringify({ ...baseConfig, ...overrides, sandbox }),
     "utf8",
   );
@@ -331,7 +331,7 @@ describe("piPermissionSystemExtension SRT default smoke", () => {
     await writeExtensionConfig(agentDir, {
       permission: { "*": "allow", bash: { "*": "allow" }, external_directory: { "*": "allow" } },
     });
-    const configBefore = await readFile(path.join(agentDir, "permissions.json"), "utf8");
+    const configBefore = await readFile(path.join(agentDir, "sentinel.json"), "utf8");
     const pi = createFakePi();
     piPermissionSystemExtension(pi as never);
     const command = "git -C . push https://example.test/repo.git main";
@@ -364,7 +364,7 @@ describe("piPermissionSystemExtension SRT default smoke", () => {
     for (const index of [0, 1, 3]) {
       expect(context.ui.select.mock.calls[index][1]).toEqual(["Yes", "No", "No, provide reason"]);
     }
-    expect(await readFile(path.join(agentDir, "permissions.json"), "utf8")).toBe(configBefore);
+    expect(await readFile(path.join(agentDir, "sentinel.json"), "utf8")).toBe(configBefore);
   });
 
   it("offers one-time host execution for a failed plain SSH Git push despite the implicit-auth SRT requirement", async () => {
@@ -2891,7 +2891,7 @@ describe("piPermissionSystemExtension SRT default smoke", () => {
     await grantCommand.handler("network --domain example.com --ttl always", context);
     await listCommand.handler("", context);
     expect((context.ui.notify as ReturnType<typeof vi.fn>).mock.calls[1]?.[0]).toContain("network");
-    expect(JSON.parse(await readFile(path.join(agentDir, "permissions.json"), "utf8"))).toMatchObject({
+    expect(JSON.parse(await readFile(path.join(agentDir, "sentinel.json"), "utf8"))).toMatchObject({
       network: { allowedDomains: [] },
       sandbox: { network: true },
     });
@@ -2901,7 +2901,7 @@ describe("piPermissionSystemExtension SRT default smoke", () => {
     const liveStatus = (context.ui.notify as ReturnType<typeof vi.fn>).mock.calls[3]?.[0] as string;
     expect(liveStatus).toContain("Active grants: 0");
     expect(liveStatus).toContain("Profile: offline-dev (network: off)");
-    expect(JSON.parse(await readFile(path.join(agentDir, "permissions.json"), "utf8")).sandbox.network).toBeUndefined();
+    expect(JSON.parse(await readFile(path.join(agentDir, "sentinel.json"), "utf8")).sandbox.network).toBeUndefined();
 
     await grantCommand.handler("network --domain example.com --ttl always", context);
     await pi.handlers.get("session_shutdown")?.({}, context);
@@ -2910,13 +2910,13 @@ describe("piPermissionSystemExtension SRT default smoke", () => {
     const grantId = listMessage.match(/^\s+(sandbox-network-\S+):/m)?.[1];
     expect(grantId).toBe("sandbox-network-global");
     expect(listMessage).toContain("Profile: offline-dev (network: on)");
-    expect(JSON.parse(await readFile(path.join(agentDir, "permissions.json"), "utf8"))).toMatchObject({
+    expect(JSON.parse(await readFile(path.join(agentDir, "sentinel.json"), "utf8"))).toMatchObject({
       network: { allowedDomains: [] },
       sandbox: { network: true },
     });
 
     await revokeCommand.handler(grantId!, context);
-    expect(JSON.parse(await readFile(path.join(agentDir, "permissions.json"), "utf8")).sandbox.network).toBeUndefined();
+    expect(JSON.parse(await readFile(path.join(agentDir, "sentinel.json"), "utf8")).sandbox.network).toBeUndefined();
   });
 
   it("revokes an always sandbox grant from persisted config", async () => {
@@ -2939,11 +2939,11 @@ describe("piPermissionSystemExtension SRT default smoke", () => {
     const grantMessage = (context.ui.notify as ReturnType<typeof vi.fn>).mock.calls[0]?.[0] as string;
     const grantId = grantMessage.match(/\(([^)]+)\)$/)?.[1];
     expect(grantId).toBeTruthy();
-    expect(JSON.parse(await readFile(path.join(agentDir, "permissions.json"), "utf8")).sandbox.roBinds)
+    expect(JSON.parse(await readFile(path.join(agentDir, "sentinel.json"), "utf8")).sandbox.roBinds)
       .toContain(await realpath(projectDir));
 
     await revokeCommand.handler(grantId!, context);
-    expect(JSON.parse(await readFile(path.join(agentDir, "permissions.json"), "utf8")).sandbox?.roBinds ?? [])
+    expect(JSON.parse(await readFile(path.join(agentDir, "sentinel.json"), "utf8")).sandbox?.roBinds ?? [])
       .not.toContain(await realpath(projectDir));
   });
 
@@ -2971,7 +2971,7 @@ describe("piPermissionSystemExtension SRT default smoke", () => {
     const grantId = grantMessage.match(/\(([^)]+)\)$/)?.[1];
     expect(grantId).toBeTruthy();
 
-    const permissionsPath = path.join(agentDir, "permissions.json");
+    const permissionsPath = path.join(agentDir, "sentinel.json");
     const replacementPath = path.join(agentDir, "replacement.json");
     await writeFile(replacementPath, JSON.stringify({
       sandbox: { enabled: true, backend: "srt", defaultProfile: "online-dev" },
@@ -2991,23 +2991,13 @@ describe("piPermissionSystemExtension SRT default smoke", () => {
     }
   });
 
-  it.skipIf(!canSimulateReadOnlyDirectory)("rolls back sandbox capability revoke when a later layer cannot be saved", async () => {
+  it.skipIf(!canSimulateReadOnlyDirectory)("rolls back sandbox capability revoke when the global config cannot be saved", async () => {
     const agentDir = await makeTempDir("pi-permission-agent-");
     const projectDir = await makeTempDir("pi-permission-project-");
-    const legacyTarget = await makeTempDir("pi-permission-legacy-");
     process.env.PI_CODING_AGENT_DIR = agentDir;
     await writeExtensionConfig(agentDir, {
       sandbox: { enabled: true, backend: "srt", defaultProfile: "online-dev", network: true },
     });
-    await writeFile(
-      path.join(legacyTarget, "permissions.jsonc"),
-      JSON.stringify({ sandbox: { network: true } }),
-      "utf8",
-    );
-    await symlink(
-      path.join(legacyTarget, "permissions.jsonc"),
-      path.join(agentDir, "pi-permissions.jsonc"),
-    );
 
     const pi = createFakePi();
     piPermissionSystemExtension(pi as never);
@@ -3015,12 +3005,12 @@ describe("piPermissionSystemExtension SRT default smoke", () => {
     const revokeCommand = pi.commands.get("sandbox-revoke") as {
       handler: (args: string, ctx: unknown) => Promise<void>;
     };
-    await chmod(legacyTarget, 0o500);
+    await chmod(agentDir, 0o500);
     try {
       await expect(revokeCommand.handler("sandbox-network-global", context)).rejects.toThrow();
-      expect(JSON.parse(await readFile(path.join(agentDir, "permissions.json"), "utf8")).sandbox.network).toBe(true);
+      expect(JSON.parse(await readFile(path.join(agentDir, "sentinel.json"), "utf8")).sandbox.network).toBe(true);
     } finally {
-      await chmod(legacyTarget, 0o700);
+      await chmod(agentDir, 0o700);
     }
   });
 
@@ -3140,7 +3130,7 @@ describe("piPermissionSystemExtension SRT default smoke", () => {
 
     const sandboxOptions = (context.ui.select as ReturnType<typeof vi.fn>).mock.calls[0]?.[1] as string[];
     expect(sandboxOptions).toContain("Allow globally");
-    expect(JSON.parse(await readFile(path.join(agentDir, "permissions.json"), "utf8"))).toMatchObject({
+    expect(JSON.parse(await readFile(path.join(agentDir, "sentinel.json"), "utf8"))).toMatchObject({
       network: { allowedDomains: [] },
       sandbox: { network: true },
     });
@@ -3360,7 +3350,7 @@ describe("piPermissionSystemExtension SRT default smoke", () => {
       );
     });
     expect(inputIsReadable).toBe(true);
-    expect(await readFile(path.join(agentDir, "permissions.json"), "utf8")).not.toContain(outputFile);
+    expect(await readFile(path.join(agentDir, "sentinel.json"), "utf8")).not.toContain(outputFile);
   });
 
   it("grants one-shot write access after a policy deny override without a second dialog", async () => {
@@ -3404,7 +3394,7 @@ describe("piPermissionSystemExtension SRT default smoke", () => {
     expect(context.ui.select.mock.calls[0]?.[0]).toContain("BLOCKED BY POLICY");
     const helper = extractHelperInput(event.input.command);
     expect(helper.runtimeConfig.filesystem.allowWrite).toContain(outputFile);
-    expect(await readFile(path.join(agentDir, "permissions.json"), "utf8")).not.toContain(outputFile);
+    expect(await readFile(path.join(agentDir, "sentinel.json"), "utf8")).not.toContain(outputFile);
   });
 
   it("grants parent read-write access for a missing external output target", async () => {
@@ -3654,8 +3644,8 @@ describe("piPermissionSystemExtension SRT default smoke", () => {
         },
       },
     });
-    const permissionsPath = path.join(agentDir, "permissions.json");
-    const realConfigPath = path.join(agentDir, "real-permissions.json");
+    const permissionsPath = path.join(agentDir, "sentinel.json");
+    const realConfigPath = path.join(agentDir, "real-sentinel.json");
     await rename(permissionsPath, realConfigPath);
     await symlink(realConfigPath, permissionsPath);
 

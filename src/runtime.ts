@@ -18,10 +18,6 @@ import {
   DEBUG_LOG_FILENAME,
   getBundledConfigPath,
   getGlobalConfigPath,
-  getLegacyGlobalPolicyPath,
-  getLegacyProjectConfigPath,
-  getLegacyProjectExtensionConfigPath,
-  getLegacyProjectPolicyPath,
   getProjectConfigPath,
   REVIEW_LOG_FILENAME,
 } from "./config-paths";
@@ -112,9 +108,6 @@ export interface ExtensionRuntime extends ExtensionPaths, SessionState {
  */
 export function derivePiProjectPaths(cwd: string | undefined | null): {
   projectGlobalConfigPath: string;
-  legacyProjectGlobalConfigPath: string;
-  legacyProjectConfigPath: string;
-  legacyProjectPolicyPath: string;
   projectAgentsDir: string;
 } | null {
   if (!cwd) {
@@ -122,9 +115,6 @@ export function derivePiProjectPaths(cwd: string | undefined | null): {
   }
   return {
     projectGlobalConfigPath: getProjectConfigPath(cwd),
-    legacyProjectGlobalConfigPath: getLegacyProjectConfigPath(cwd),
-    legacyProjectConfigPath: getLegacyProjectExtensionConfigPath(cwd),
-    legacyProjectPolicyPath: getLegacyProjectPolicyPath(cwd),
     projectAgentsDir: join(cwd, ".pi", "agent", "agents"),
   };
 }
@@ -142,9 +132,6 @@ export function createPermissionManagerForCwd(
     bundledConfigPath: getBundledConfigPath(EXTENSION_ROOT),
     globalConfigPath: getGlobalConfigPath(agentDir),
     projectGlobalConfigPath: projectPaths?.projectGlobalConfigPath,
-    legacyProjectGlobalConfigPath: projectPaths?.legacyProjectGlobalConfigPath,
-    legacyProjectConfigPath: projectPaths?.legacyProjectConfigPath,
-    legacyProjectPolicyPath: projectPaths?.legacyProjectPolicyPath,
     projectAgentsDir: projectPaths?.projectAgentsDir,
   });
 }
@@ -276,8 +263,6 @@ function saveProjectMode(
   const projectPath = getScopedConfigPath(runtime.agentDir, cwd, "workspace");
   try {
     const next: Record<string, unknown> = { ...readConfigFile(projectPath), mode };
-    delete next.yoloMode;
-    delete next.yoloAutoMode;
     if (writeConfigFile(projectPath, next, cwd)) {
       return true;
     }
@@ -291,7 +276,7 @@ function saveProjectMode(
 }
 
 export interface ModeLayer extends ConfigModeLayer {
-  /** Actual project save target; it may reuse the legacy project config file. */
+  /** Actual project save target. */
   savePath?: string;
 }
 
@@ -358,13 +343,7 @@ function saveGlobalSettings(
   // Write only what the user changed: copying effective values here would
   // persist project-scoped settings (mode, ask patterns) into the global file.
   const merged: Record<string, unknown> = { ...existing, ...changes };
-  const persistMode = changes.mode !== undefined;
-
   stripLegacyAutoModeMaxLevel(merged);
-  if (persistMode) {
-    delete merged.yoloMode;
-    delete merged.yoloAutoMode;
-  }
 
   if (!writeConfigFile(globalPath, merged)) {
     ctx.ui.notify(
@@ -468,8 +447,6 @@ export function resetExtensionConfig(
   delete next.debugLog;
   delete next.permissionReviewLog;
   delete next.mode;
-  delete next.yoloMode;
-  delete next.yoloAutoMode;
   stripLegacyAutoModeMaxLevel(next);
   delete next.yoloAskBashPatterns;
 
@@ -518,25 +495,12 @@ export function persistPermissionRule(
 }
 
 /**
- * Write the resolved config path set (bundled, global, project, and legacy) to
+ * Write the resolved config path set (bundled, global, and project) to
  * the review and debug logs.
  */
 export function logResolvedConfigPaths(runtime: ExtensionRuntime): void {
   const policyPaths = runtime.permissionManager.getResolvedPolicyPaths();
-  const cwd = runtime.runtimeContext?.cwd ?? null;
-  const { agentDir } = runtime;
-  const legacyGlobalPolicyDetected = existsSync(
-    getLegacyGlobalPolicyPath(agentDir),
-  );
-  const legacyProjectPolicyDetected = cwd
-    ? existsSync(getLegacyProjectPolicyPath(cwd))
-    : false;
-  const entry = buildResolvedConfigLogEntry({
-    policyPaths,
-    legacyGlobalPolicyDetected,
-    legacyProjectPolicyDetected,
-    legacyExtensionConfigDetected: false,
-  });
+  const entry = buildResolvedConfigLogEntry({ policyPaths });
   runtime.writeReviewLog(
     "config.resolved",
     entry as unknown as Record<string, unknown>,

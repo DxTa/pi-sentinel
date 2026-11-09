@@ -23,6 +23,8 @@ import {
   type PermissionMode,
   type PermissionSystemExtensionConfig,
 } from "./extension-config";
+import type { ConfigListEntry, ConfigListKind, ConfigListScope } from "./config-lists";
+import { ConfigListView, type ListViewController, type ListViewDialogs } from "./config-list-view";
 import type { Ruleset } from "./rule";
 import type { ModeLayer, ModeLayers } from "./runtime";
 import type { SettingSource, SettingSources } from "./scoped-config";
@@ -47,6 +49,18 @@ interface PermissionSystemConfigController {
   /** Optional: which config scope supplies each toggle, for per-row provenance. */
   getSettingSources?(cwd?: string | null): SettingSources | undefined;
   setSandboxEnabled?(enabled: boolean, ctx: ExtensionCommandContext): void;
+  /** Optional: entries of one list kind in one scope (session, project, or global). */
+  getConfigEntries?(kind: ConfigListKind, scope: ConfigListScope, cwd?: string | null): ConfigListEntry[];
+  /** Optional: set one entry's state in one scope; "remove" drops it. */
+  editConfigEntry?(edit: {
+    kind: ConfigListKind;
+    scope: ConfigListScope;
+    value: string;
+    state: string;
+    /** Permission surface; required for permission rules. */
+    surface?: string;
+    cwd?: string | null;
+  }): void;
 }
 
 const ON_OFF = ["on", "off"];
@@ -132,9 +146,7 @@ function layerLabel(layer: Pick<ModeLayer, "id" | "name">): string {
 
 function describeLayerMode(layer: ModeLayer): string {
   if (layer.error) return "unreadable";
-  const legacyFlags = formatLegacyModeFlags(layer);
-  if (layer.mode !== undefined) return legacyFlags ? layer.mode + " (" + legacyFlags + ")" : layer.mode;
-  return legacyFlags ? "legacy flags: " + legacyFlags : "unset";
+  return layer.mode ?? "unset";
 }
 
 /** Put the value after `current` first, so the first press moves to the next value. */
@@ -233,6 +245,42 @@ function toggleItem(
   };
 }
 
+interface ListMenuRow {
+  id: string;
+  kind: ConfigListKind;
+  label: string;
+  description: string;
+}
+
+const LIST_MENU_ROWS: ListMenuRow[] = [
+  { id: "list-network-domains", kind: "networkDomain", label: "Network domains ›", description: "Allowed and denied domains per scope. Enter opens the list." },
+  { id: "list-permission-rules", kind: "permissionRule", label: "Permission rules ›", description: "Tool permission rules per scope. Enter opens the list." },
+  { id: "list-sandbox-paths", kind: "sandboxPath", label: "Sandbox paths ›", description: "Read-only and writable sandbox paths per scope. Enter opens the list." },
+  { id: "list-yolo-ask-patterns", kind: "yoloAskPattern", label: "Yolo ask patterns ›", description: "Commands that always ask in yolo mode. Enter opens the list." },
+  { id: "list-host-fallback", kind: "hostFallback", label: "Host fallback ›", description: "Command prefixes that run on the host instead of the sandbox. Enter opens the list." },
+];
+
+export interface ListMenuDeps {
+  controller: ListViewController;
+  dialogs: ListViewDialogs;
+}
+
+/** One menu row per list kind; Enter opens its list view as a submenu. */
+export function buildListSettingItems(deps: ListMenuDeps): SettingItem[] {
+  return LIST_MENU_ROWS.map((row) => {
+    const project = deps.controller.list(row.kind, "project").length;
+    const global = deps.controller.list(row.kind, "global").length;
+    return {
+      id: row.id,
+      label: row.label,
+      description: row.description,
+      currentValue: `${project} project · ${global} global`,
+      submenu: (_current: string, done: (selectedValue?: string) => void) =>
+        new ConfigListView(row.kind, row.label.replace(" ›", ""), deps.controller, deps.dialogs, () => done()),
+    };
+  });
+}
+
 export function buildSettingItems(
   config: PermissionSystemExtensionConfig,
   sandboxEnabled?: boolean,
@@ -277,13 +325,6 @@ export function buildSettingItems(
   ];
 }
 
-
-function formatLegacyModeFlags(layer: ModeLayer): string | undefined {
-  if (!layer.legacyMode) return undefined;
-  return Object.entries(layer.legacyMode)
-    .map(([name, value]) => name + "=" + value)
-    .join(", ");
-}
 
 function getSelectedModeLayer(
   modeLayers: ModeLayers,
@@ -426,8 +467,8 @@ const MODE_DESCRIPTIONS: Readonly<Record<PermissionMode, string>> = {
 
 const SCOPE_DESCRIPTIONS: Readonly<Record<ModeScope, string>> = {
   session: "This session only, in memory",
-  project: "This project's .pi/permissions.json",
-  global: "All projects: ~/.pi/agent/permissions.json",
+  project: "This project's .pi/sentinel.json",
+  global: "All projects: ~/.pi/agent/sentinel.json",
 };
 
 /**
@@ -490,6 +531,16 @@ async function openSettingsModal(
         picker.onCancel = () => choose();
         return picker;
       };
+      const listDeps: ListMenuDeps = {
+        controller: {
+          list: (kind, scope) => controller.getConfigEntries?.(kind, scope, ctx.cwd) ?? [],
+          edit: (edit) => controller.editConfigEntry?.({ ...edit, cwd: ctx.cwd }),
+        },
+        dialogs: {
+          input: (title, placeholder) => ctx.ui.input(title, placeholder),
+          confirm: async (title) => (await ctx.ui.select(title, ["Remove", "Cancel"])) === "Remove",
+        },
+      };
       const buildItems = (): SettingItem[] => buildSettingItems(
         current,
         controller.getSandboxEnabled?.(),
@@ -497,7 +548,7 @@ async function openSettingsModal(
         sources,
       ).map((item) => item.id === "mode" && modeLayers
         ? { ...item, values: undefined, submenu: modePicker }
-        : item);
+        : item).concat(buildListSettingItems(listDeps));
       const settingItems = buildItems();
       const warnIfProjectOverrides = (id: "permissionReviewLog" | "debugLog", label: string): void => {
         if (sources?.[id] !== "project") return;

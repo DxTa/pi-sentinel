@@ -109,7 +109,7 @@ async function setup(
     workers.push(worker);
   }
   await writeFile(
-    path.join(agentDir, "permissions.json"),
+    path.join(agentDir, "sentinel.json"),
     JSON.stringify({
       mode,
       yoloAskBashPatterns: [],

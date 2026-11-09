@@ -29,20 +29,8 @@ describe("mode chain formatting", () => {
         layers: [
           { id: "session", name: "session", mode: "auto", path: "memory" },
           { id: "environment", name: "env", path: "PI_SENTINEL_MODE" },
-          { id: "project", name: "project", path: "/workspace/.pi/permissions.json" },
-          {
-            id: "project-config-legacy",
-            name: "project (legacy)",
-            path: "/workspace/.pi/agent/permissions.json",
-            error: "unreadable",
-          },
-          { id: "global", name: "global", mode: "manual", path: "/home/tester/.pi/agent/permissions.json" },
-          {
-            id: "global-policy-legacy",
-            name: "global (legacy)",
-            legacyMode: { yoloMode: false },
-            path: "/home/tester/.pi/agent/pi-permissions.jsonc",
-          },
+          { id: "project", name: "project", path: "/workspace/.pi/sentinel.json", error: "unreadable" },
+          { id: "global", name: "global", mode: "manual", path: "/home/tester/.pi/agent/sentinel.json" },
           { id: "bundled", name: "bundled", mode: "manual", path: "/extension/config.json" },
         ],
         effective: "auto",
@@ -51,56 +39,25 @@ describe("mode chain formatting", () => {
     );
 
     expect(formatted.split("\n")).toEqual([
-      "Mode chain (top wins): ▶ session auto · env – · project – · project (legacy) unreadable · " +
-        "global manual · global (legacy) legacy flags: yoloMode=false · default manual",
+      "Mode chain (top wins): ▶ session auto · env – · project unreadable · global manual · default manual",
       "Mode saves to session: memory only (lost on exit)",
-      "Other settings save to global: /home/tester/.pi/agent/permissions.json",
+      "Other settings save to global: /home/tester/.pi/agent/sentinel.json",
     ]);
-  });
-
-  it("saves to the project's legacy fallback file when that layer supplies the mode", async () => {
-    const { formatModeChain, formatModeSaveNotice } = await import("./config-modal");
-    const legacyPath = "/workspace/.pi/agent/permissions.json";
-    const modeLayers = {
-      layers: [
-        { id: "session", name: "session", path: "memory" },
-        { id: "environment", name: "env", path: "PI_SENTINEL_MODE" },
-        { id: "project", name: "project", path: "/workspace/.pi/permissions.json", savePath: legacyPath },
-        { id: "project-config-legacy", name: "project (legacy)", mode: "yolo", path: legacyPath },
-        { id: "global", name: "global", mode: "manual", path: "/home/tester/.pi/agent/permissions.json" },
-      ],
-      effective: "yolo",
-      source: "project-config-legacy",
-    } as const;
-
-    const formatted = formatModeChain(modeLayers);
-    expect(formatted).toContain("project – · ▶ project (legacy) yolo");
-    expect(formatted).toContain("Mode saves to project: " + legacyPath);
-    expect(formatModeSaveNotice("manual", "project", modeLayers)).toContain(
-      "project (" + legacyPath + ")",
-    );
   });
 
   it("wraps within narrow widths and shortens project paths", async () => {
     const { formatModeChain } = await import("./config-modal");
-    const globalPath = "/Users/bob/.pi/agent/permissions.json";
+    const globalPath = "/Users/bob/.pi/agent/sentinel.json";
     const formatted = formatModeChain({
       layers: [
-        {
-          id: "project-extension-legacy",
-          name: "project extension (legacy)",
-          legacyMode: { yoloAutoMode: true },
-          path: "/workspace/.pi/agent/pi-sentinel.json",
-        },
-        { id: "project", name: "project", path: "/workspace/.pi/permissions.json" },
+        { id: "project", name: "project", mode: "auto", path: "/workspace/.pi/sentinel.json" },
         { id: "global", name: "global", mode: "manual", path: globalPath },
       ],
       effective: "auto",
-      source: "project-extension-legacy",
+      source: "project",
     }, 50, "/workspace");
 
-    expect(formatted).toContain("yoloAutoMode=true");
-    expect(formatted).toContain("Mode saves to project: ./.pi/permissions.json");
+    expect(formatted).toContain("Mode saves to project: ./.pi/sentinel.json");
     expect(formatted.replace(/\s/g, "")).toContain(globalPath);
     expect(formatted.split("\n").every((line) => visibleWidth(line) <= 50)).toBe(true);
   });
@@ -113,10 +70,7 @@ describe("mode save scope", () => {
     const { modeSaveScope } = await import("./config-modal");
     expect(modeSaveScope(layers("session"))).toBe("session");
     expect(modeSaveScope(layers("project"))).toBe("project");
-    expect(modeSaveScope(layers("project-config-legacy"))).toBe("project");
-    expect(modeSaveScope(layers("project-policy-legacy"))).toBe("project");
     expect(modeSaveScope(layers("global"))).toBe("global");
-    expect(modeSaveScope(layers("global-policy-legacy"))).toBe("global");
   });
 
   it("uses the session above PI_SENTINEL_MODE and global for bundled defaults", async () => {
@@ -143,15 +97,15 @@ describe("mode save notice", () => {
       layers: [
         { id: "session", name: "session", path: "memory" },
         { id: "environment", name: "env", path: "PI_SENTINEL_MODE" },
-        { id: "project", name: "project", mode: "manual", path: "/workspace/.pi/permissions.json" },
-        { id: "global", name: "global", mode: "manual", path: "/home/tester/.pi/agent/permissions.json" },
+        { id: "project", name: "project", mode: "manual", path: "/workspace/.pi/sentinel.json" },
+        { id: "global", name: "global", mode: "manual", path: "/home/tester/.pi/agent/sentinel.json" },
       ],
       effective: "manual",
       source: "project",
     };
 
     expect(modal.formatModeSaveNotice("yolo", "global", layers)).toBe(
-      "Saved mode 'yolo' → global (/home/tester/.pi/agent/permissions.json). " +
+      "Saved mode 'yolo' → global (/home/tester/.pi/agent/sentinel.json). " +
         "Effective: manual (from project, which overrides the saved global value).",
     );
     expect(modal.formatModeSaveNotice("yolo", "session", {
@@ -189,11 +143,9 @@ describe("permission mode settings", () => {
         { id: "environment", name: "env", mode: "manual", path: "PI_SENTINEL_MODE" },
         {
           id: "project", name: "project",
-          path: "/workspace/.pi/permissions.json",
-          savePath: "/workspace/.pi/agent/permissions.json",
+          path: "/workspace/.pi/sentinel.json",
         },
-        { id: "project-config-legacy", name: "project (legacy)", mode: "yolo", path: "/workspace/.pi/agent/permissions.json" },
-        { id: "global", name: "global", mode: "manual", path: "/home/tester/.pi/agent/permissions.json" },
+        { id: "global", name: "global", mode: "manual", path: "/home/tester/.pi/agent/sentinel.json" },
       ],
       effective: "manual",
       source: "environment",
@@ -249,8 +201,8 @@ describe("per-row provenance", () => {
       layers: [
         { id: "session", name: "session", path: "memory" },
         { id: "environment", name: "env", path: "PI_SENTINEL_MODE" },
-        { id: "project", name: "project", mode: "yolo", path: "/workspace/.pi/permissions.json" },
-        { id: "global", name: "global", mode: "manual", path: "/home/tester/.pi/agent/permissions.json" },
+        { id: "project", name: "project", mode: "yolo", path: "/workspace/.pi/sentinel.json" },
+        { id: "global", name: "global", mode: "manual", path: "/home/tester/.pi/agent/sentinel.json" },
       ],
       effective: "yolo",
       source: "project",
@@ -313,8 +265,8 @@ describe("mode picker targets", () => {
     layers: [
       { id: "session", name: "session", path: "memory", mode: set.session },
       { id: "environment", name: "env", path: "PI_SENTINEL_MODE", mode: set.environment },
-      { id: "project", name: "project", path: "/workspace/.pi/permissions.json", mode: set.project },
-      { id: "global", name: "global", path: "/home/tester/.pi/agent/permissions.json", mode: set.global },
+      { id: "project", name: "project", path: "/workspace/.pi/sentinel.json", mode: set.project },
+      { id: "global", name: "global", path: "/home/tester/.pi/agent/sentinel.json", mode: set.global },
       { id: "bundled", name: "bundled", path: "/extension/config.json", mode: "auto" },
     ],
     effective: (set[source] ?? "auto") as "auto",
@@ -338,7 +290,7 @@ describe("mode picker targets", () => {
     expect(modeTargetScopes({
       layers: [
         { id: "session", name: "session", path: "memory" },
-        { id: "global", name: "global", mode: "manual", path: "/home/tester/.pi/agent/permissions.json" },
+        { id: "global", name: "global", mode: "manual", path: "/home/tester/.pi/agent/sentinel.json" },
       ],
       effective: "manual",
       source: "global",
@@ -367,8 +319,8 @@ describe("mode changes in the settings modal", () => {
     layers: [
       { id: "session", name: "session", path: "memory" },
       { id: "environment", name: "env", ...(source === "environment" ? { mode: "manual" } : {}), path: "PI_SENTINEL_MODE" },
-      { id: "project", name: "project", ...(source === "project" ? { mode: "manual" } : {}), path: "/workspace/.pi/permissions.json" },
-      { id: "global", name: "global", mode: "manual", path: "/home/tester/.pi/agent/permissions.json" },
+      { id: "project", name: "project", ...(source === "project" ? { mode: "manual" } : {}), path: "/workspace/.pi/sentinel.json" },
+      { id: "global", name: "global", mode: "manual", path: "/home/tester/.pi/agent/sentinel.json" },
     ],
     effective: "manual",
     source,
@@ -406,8 +358,8 @@ describe("mode changes in the settings modal", () => {
   });
 
   it.each([
-    ["project", "project", "Mode saves to project: ./.pi/permissions.json"],
-    ["global", "global", "Mode saves to global: /home/tester/.pi/agent/permissions.json"],
+    ["project", "project", "Mode saves to project: ./.pi/sentinel.json"],
+    ["global", "global", "Mode saves to global: /home/tester/.pi/agent/sentinel.json"],
     ["environment", "session", "Mode saves to session: memory only, above PI_SENTINEL_MODE (lost on exit)"],
   ] as const)("saves a mode change from %s to the %s scope", async (source, scope, header) => {
     const setConfig = vi.fn(() => true);
@@ -471,8 +423,8 @@ describe("/sentinel mode", () => {
     const modeLayers = {
       layers: [
         { id: "session", name: "session", path: "memory" },
-        { id: "project", name: "project", ...(source === "project" ? { mode: "manual" } : {}), path: "/workspace/.pi/permissions.json" },
-        { id: "global", name: "global", mode: "manual", path: "/home/tester/.pi/agent/permissions.json" },
+        { id: "project", name: "project", ...(source === "project" ? { mode: "manual" } : {}), path: "/workspace/.pi/sentinel.json" },
+        { id: "global", name: "global", mode: "manual", path: "/home/tester/.pi/agent/sentinel.json" },
       ],
       effective: "manual",
       source,
@@ -526,12 +478,8 @@ describe("long mode chain", () => {
       layers: [
         { id: "session", name: "session", path: "memory" },
         { id: "environment", name: "env", path: "PI_SENTINEL_MODE" },
-        { id: "project", name: "project", path: longRoot + "/permissions.json" },
-        { id: "project-policy-legacy", name: "project policy (legacy)", mode: "manual", path: longRoot + "/agent/pi-permissions.jsonc" },
-        { id: "project-extension-legacy", name: "project extension (legacy)", mode: "yolo", path: longRoot + "/agent/pi-sentinel.json" },
-        { id: "project-config-legacy", name: "project config (legacy)", mode: "auto", path: longRoot + "/agent/permissions.json" },
-        { id: "global", name: "global", mode: "manual", path: "/Users/bob/.pi/agent/permissions.json" },
-        { id: "global-policy-legacy", name: "global (legacy)", path: "/Users/bob/.pi/agent/pi-permissions.jsonc" },
+        { id: "project", name: "project", path: longRoot + "/sentinel.json" },
+        { id: "global", name: "global", mode: "manual", path: "/Users/bob/.pi/agent/sentinel.json" },
         { id: "bundled", name: "bundled", mode: "auto", path: "/Users/bob/dev/pi-sentinel/config.json" },
       ],
       effective: "manual",
@@ -590,7 +538,8 @@ describe("long mode chain", () => {
     expect(initial).toContain("on (global)");
 
     // Moving the cursor shows longer descriptions; they must not clip controls.
-    for (let row = 0; row < 4; row++) {
+    // Three presses reach "Debug logging", the last toggle; list rows follow it.
+    for (let row = 0; row < 3; row++) {
       modal?.handleInput(DOWN);
       expectUsable(18);
     }

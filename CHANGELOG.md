@@ -4,6 +4,7 @@
 
 Standalone Git distribution prepared for `DxTa/pi-sentinel`.
 
+- **Breaking:** config is read only from `~/.pi/agent/sentinel.json` and `<project>/.pi/sentinel.json`. `permissions.json`, the legacy config files, `domain-gate.json`, and the `yoloMode`/`yoloAutoMode` flags are no longer read. Rename `permissions.json` to `sentinel.json`; a warning names the old file when only it exists.
 - Renamed the `yolo-auto` mode to `auto`, with no compatibility alias: set `"mode": "auto"`. Environment variables are `PI_SENTINEL_AUTO_MODEL_DIR` and `PI_SENTINEL_AUTO_SOCKET`; the model cache is `runtime/pi-sentinel/auto-mode/models`; calibration logs are `auto-mode-calibration.jsonl`; debug events use the `auto_mode.` prefix.
 - `/sentinel` shows each row's effective value and source scope (`manual (project)`, `on (default)`, `off (project, overrides global)`), with a compact one-line mode chain instead of the paged chain.
 - Removed the "Mode saves to" row: a mode change saves to the scope that currently sets the mode (session above `PI_SENTINEL_MODE`; global for bundled defaults). Added `/sentinel mode <manual|yolo|auto> [session|project|global]`, with autocomplete for the mode and scope, to store the mode in a specific scope. In the panel, Enter on Mode opens a picker with the current scope plus session and project overrides, limited to scopes where the change takes effect.

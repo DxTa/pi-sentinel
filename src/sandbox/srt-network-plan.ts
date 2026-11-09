@@ -79,7 +79,7 @@ function resolveDeniedDomains(
 export function buildSrtNetworkPlanFromConfig(
   input: SrtNetworkPlanFromConfigInput,
 ): SrtNetworkPlan {
-  const domainPolicy = loadDomainPolicy(input.config, input.cwd);
+  const domainPolicy = loadDomainPolicy(input.config);
   return buildSrtNetworkPlan({
     sandboxNetworkEnabled: input.sandboxNetworkEnabled,
     domainPolicy,

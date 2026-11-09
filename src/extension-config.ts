@@ -79,13 +79,7 @@ export function normalizePermissionSystemConfig(
   const result: PermissionSystemExtensionConfig = {
     debugLog: record.debugLog === true,
     permissionReviewLog: record.permissionReviewLog !== false,
-    mode:
-      parsePermissionMode(record.mode)
-        ?? (record.yoloAutoMode === true
-          ? "auto"
-          : record.yoloMode === true
-            ? "yolo"
-            : "manual"),
+    mode: parsePermissionMode(record.mode) ?? "manual",
     yoloAskBashPatterns,
   };
   if (piInfrastructureReadPaths !== undefined) {

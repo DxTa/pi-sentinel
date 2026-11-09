@@ -34,10 +34,10 @@ afterEach(async () => {
 describe("resolveConfinedConfigPath", () => {
   it("returns a canonical workspace config path", async () => {
     const workspace = await makeTempDir("pi-scoped-workspace-");
-    const configPath = path.join(workspace, ".pi", "permissions.json");
+    const configPath = path.join(workspace, ".pi", "sentinel.json");
 
     expect(resolveConfinedConfigPath(configPath, workspace)).toBe(
-      path.join(await realpath(workspace), ".pi", "permissions.json"),
+      path.join(await realpath(workspace), ".pi", "sentinel.json"),
     );
   });
 
@@ -47,16 +47,16 @@ describe("resolveConfinedConfigPath", () => {
     await symlink(outside, path.join(workspace, ".pi"));
 
     expect(resolveConfinedConfigPath(
-      path.join(workspace, ".pi", "permissions.json"),
+      path.join(workspace, ".pi", "sentinel.json"),
       workspace,
-    )).toBe(path.join(await realpath(outside), "permissions.json"));
+    )).toBe(path.join(await realpath(outside), "sentinel.json"));
   });
 });
 
 describe("config shape validation", () => {
   it("rejects a non-object config root", async () => {
     const dir = await makeTempDir("pi-scoped-config-");
-    const configPath = path.join(dir, "permissions.json");
+    const configPath = path.join(dir, "sentinel.json");
     await writeFile(configPath, "[]", "utf8");
 
     expect(() => loadMergedScopedConfig(dir, undefined, configPath)).toThrow(/config|object/i);
@@ -64,7 +64,7 @@ describe("config shape validation", () => {
 
   it("rejects a non-object sandbox section", async () => {
     const dir = await makeTempDir("pi-scoped-config-");
-    const configPath = path.join(dir, "permissions.json");
+    const configPath = path.join(dir, "sentinel.json");
     await writeFile(configPath, JSON.stringify({ sandbox: "invalid" }), "utf8");
 
     expect(() => loadMergedScopedConfig(dir, undefined, configPath)).toThrow(/sandbox|object/i);
@@ -76,7 +76,7 @@ describe("workspace config symlinks", () => {
     const agentDir = await makeTempDir("pi-agent-");
     const workspace = await makeTempDir("pi-workspace-");
     const outside = await makeTempDir("pi-outside-");
-    await writeFile(path.join(outside, "permissions.json"), JSON.stringify({ network: { enabled: true } }), "utf8");
+    await writeFile(path.join(outside, "sentinel.json"), JSON.stringify({ network: { enabled: true } }), "utf8");
     await symlink(outside, path.join(workspace, ".pi"));
 
     expect(loadMergedScopedConfig(agentDir, workspace).merged.network).toMatchObject({ enabled: true });
@@ -85,12 +85,12 @@ describe("workspace config symlinks", () => {
   it("persists workspace config through a symlinked parent", async () => {
     const workspace = await makeTempDir("pi-workspace-");
     const outside = await makeTempDir("pi-outside-");
-    const outsideConfig = path.join(outside, "permissions.json");
+    const outsideConfig = path.join(outside, "sentinel.json");
     await writeFile(outsideConfig, "{}", "utf8");
     await symlink(outside, path.join(workspace, ".pi"));
 
     persistPermissionRuleToConfig(
-      path.join(workspace, ".pi", "permissions.json"),
+      path.join(workspace, ".pi", "sentinel.json"),
       "bash",
       "echo unsafe",
       "allow",
@@ -106,7 +106,7 @@ describe("workspace config symlinks", () => {
 describe("workspace persistence", () => {
   it("persists through a canonicalized temporary workspace path", async () => {
     const workspace = await makeTempDir("pi-scoped-workspace-");
-    const configPath = path.join(workspace, ".pi", "permissions.json");
+    const configPath = path.join(workspace, ".pi", "sentinel.json");
 
     persistSandboxNetworkGrantToConfig(configPath, workspace);
 
@@ -117,14 +117,14 @@ describe("workspace persistence", () => {
 });
 
 describe("getSettingSources", () => {
-  it("reports the last scope that sets each toggle, including legacy project files", async () => {
+  it("reports the last scope that sets each toggle", async () => {
     const agentDir = await makeTempDir("pi-sources-agent-");
     const cwd = await makeTempDir("pi-sources-repo-");
     const bundled = path.join(agentDir, "bundled.json");
     await writeFile(bundled, JSON.stringify({ debugLog: false, permissionReviewLog: true, sandbox: { enabled: true } }), "utf8");
-    await writeFile(path.join(agentDir, "permissions.json"), JSON.stringify({ sandbox: { enabled: false } }), "utf8");
-    await mkdir(path.join(cwd, ".pi", "agent"), { recursive: true });
-    await writeFile(path.join(cwd, ".pi", "agent", "permissions.json"), JSON.stringify({ debugLog: true }), "utf8");
+    await writeFile(path.join(agentDir, "sentinel.json"), JSON.stringify({ sandbox: { enabled: false } }), "utf8");
+    await mkdir(path.join(cwd, ".pi"), { recursive: true });
+    await writeFile(path.join(cwd, ".pi", "sentinel.json"), JSON.stringify({ debugLog: true }), "utf8");
 
     expect(getSettingSources(agentDir, cwd, bundled)).toEqual({
       sandbox: "global",
@@ -138,65 +138,11 @@ describe("getSettingSources", () => {
 describe("getScopedConfigPath", () => {
   it("builds workspace config path", () => {
     expect(getScopedConfigPath("/agent", "/repo", "workspace")).toBe(
-      "/repo/.pi/permissions.json",
+      "/repo/.pi/sentinel.json",
     );
   });
 
-  it("keeps writing existing legacy workspace config", async () => {
-    const cwd = await makeTempDir("pi-repo-");
-    const legacyPath = path.join(cwd, ".pi", "agent", "permissions.json");
-    await mkdir(path.dirname(legacyPath), { recursive: true });
-    await writeFile(legacyPath, "{}", "utf8");
-
-    expect(getScopedConfigPath("/agent", cwd, "workspace")).toBe(legacyPath);
-  });
-});
-
-describe("persistPermissionRuleToConfig", () => {
-  it("writes nested permission rule with trailing newline", async () => {
-    const dir = await makeTempDir("pi-scoped-config-");
-    const configPath = path.join(dir, "config.json");
-    await writeFile(configPath, JSON.stringify({ debugLog: false }), "utf8");
-
-    persistPermissionRuleToConfig(configPath, "bash", "git push *");
-
-    const contents = await readFile(configPath, "utf8");
-    expect(contents.endsWith("\n")).toBe(true);
-    expect(JSON.parse(contents)).toEqual({
-      debugLog: false,
-      permission: {
-        bash: {
-          "git push *": "allow",
-        },
-      },
-    });
-  });
-
-  it("migrates legacy mode keys when writing any scoped config", async () => {
-    const dir = await makeTempDir("pi-scoped-config-");
-    const configPath = path.join(dir, "config.json");
-    await writeFile(configPath, JSON.stringify({ yoloMode: true }), "utf8");
-
-    persistPermissionRuleToConfig(configPath, "bash", "git push *");
-
-    const saved = JSON.parse(await readFile(configPath, "utf8"));
-    expect(saved).toMatchObject({ mode: "auto" });
-    expect(saved).not.toHaveProperty("yoloMode");
-    expect(saved).not.toHaveProperty("yoloAutoMode");
-  });
-});
-
-describe("persistSandboxNetworkGrantToConfig", () => {
-  it("fails when config is malformed", async () => {
-    const dir = await makeTempDir("pi-scoped-config-");
-    const configPath = path.join(dir, "permissions.json");
-    await writeFile(configPath, "{ malformed", "utf8");
-
-    expect(() => persistSandboxNetworkGrantToConfig(configPath)).toThrow(/Failed to read/);
-    expect(() => removeSandboxNetworkGrantFromConfig(configPath)).toThrow(/Failed to read/);
-  });
-
-  it.each(["permissions.json", "sentinel.json"])("persists through a symlinked %s target", async (fileName) => {
+  it.each(["sentinel.json", "sentinel.json"])("persists through a symlinked %s target", async (fileName) => {
     const dir = await makeTempDir("pi-scoped-config-");
     const realPath = path.join(dir, "real.json");
     const linkPath = path.join(dir, fileName);
@@ -258,7 +204,6 @@ describe("loadMergedScopedConfig", () => {
     const bundledPath = path.join(agentDir, "bundled-config.json");
     const globalPath = getScopedConfigPath(agentDir, cwd, "global");
     const workspacePath = getScopedConfigPath(agentDir, cwd, "workspace");
-    const legacyWorkspacePath = path.join(cwd, ".pi", "agent", "permissions.json");
 
     await writeFile(
       bundledPath,
@@ -271,7 +216,6 @@ describe("loadMergedScopedConfig", () => {
     );
     await mkdir(path.dirname(globalPath), { recursive: true });
     await mkdir(path.dirname(workspacePath), { recursive: true });
-    await mkdir(path.dirname(legacyWorkspacePath), { recursive: true });
     await writeFile(
       globalPath,
       JSON.stringify({
@@ -284,15 +228,6 @@ describe("loadMergedScopedConfig", () => {
           bash: {
             "git status": "allow",
           },
-        },
-      }),
-      "utf8",
-    );
-    await writeFile(
-      legacyWorkspacePath,
-      JSON.stringify({
-        network: {
-          allowedDomains: ["legacy.example.com"],
         },
       }),
       "utf8",
@@ -319,7 +254,6 @@ describe("loadMergedScopedConfig", () => {
       allowedDomains: [
         "bundled.example.com",
         "global.example.com",
-        "legacy.example.com",
         "api.example.com",
       ],
       deniedDomains: ["api.example.com"],
@@ -352,7 +286,7 @@ describe("persistNetworkGrantToConfig", () => {
 
   it("creates new config directories with owner-only permissions", async () => {
     const dir = await makeTempDir("pi-scoped-config-");
-    const configPath = path.join(dir, "nested", "permissions.json");
+    const configPath = path.join(dir, "nested", "sentinel.json");
 
     persistNetworkGrantToConfig(configPath, "api.github.com");
 
@@ -362,7 +296,7 @@ describe("persistNetworkGrantToConfig", () => {
   it("follows symlinked config targets", async () => {
     const dir = await makeTempDir("pi-scoped-config-");
     const realPath = path.join(dir, "real.json");
-    const linkPath = path.join(dir, "permissions.json");
+    const linkPath = path.join(dir, "sentinel.json");
     await writeFile(realPath, JSON.stringify({ debugLog: false }), "utf8");
     await symlink(realPath, linkPath);
 

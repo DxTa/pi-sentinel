@@ -4,7 +4,7 @@
 
 **Trusted components:** the approving user; global configuration; reviewed project policy; Pi; pi-sentinel and its dependencies; the host account and OS; SRT for commands promised to be wrapped; and the configured `auto`-mode classifier worker and model cache.
 
-**Untrusted inputs:** model-generated tool calls, repository contents, paths and symlinks, MCP and skill responses, command output, network data, and worker responses. Project `.pi/permissions.json` and agent frontmatter are security policy, not ordinary repository data; review them before trusting the repository.
+**Untrusted inputs:** model-generated tool calls, repository contents, paths and symlinks, MCP and skill responses, command output, network data, and worker responses. Project `.pi/sentinel.json` and agent frontmatter are security policy, not ordinary repository data; review them before trusting the repository.
 
 **In scope:** fail-open permission, path, network, sandbox, masked-path, or destructive-action checks; precedence errors; path traversal or symlink escape; secret or audit-log disclosure; unexpected host bypass; SRT escape; `auto`-mode authorization outside eligible workspace-local reads, listings, writes, edits, and already-sandboxed Bash; clipboard provenance or temp-root escape; worker socket impersonation or protocol confusion; and cache tampering that changes authorization.
 

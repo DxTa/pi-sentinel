@@ -56,11 +56,11 @@ An npm install runs a best-effort model prefetch (`postinstall`; `pi install git
 
 ## Configuration
 
-Global: `~/.pi/agent/permissions.json`. Per project: `<project>/.pi/permissions.json`. Include only the keys you change:
+Global: `~/.pi/agent/sentinel.json`. Per project: `<project>/.pi/sentinel.json`. Include only the keys you change:
 
 ```json
 {
-  "$schema": "https://raw.githubusercontent.com/DxTa/pi-sentinel/main/schemas/permissions.schema.json",
+  "$schema": "https://raw.githubusercontent.com/DxTa/pi-sentinel/main/schemas/sentinel.schema.json",
   "mode": "auto",
   "network": { "allowedDomains": ["github.com", "*.npmjs.org", "pypi.org"] },
   "permission": {

@@ -26,10 +26,10 @@ describe("loadDomainPolicy", () => {
     const projectDir = await makeTempDir("pi-permission-project-");
     process.env.PI_CODING_AGENT_DIR = agentDir;
 
-    expect(loadDomainPolicy(undefined, projectDir).unknownDomains).toBe("ask");
+    expect(loadDomainPolicy(undefined).unknownDomains).toBe("ask");
   });
 
-  it("loads legacy domain-gate.json without warning", async () => {
+  it("ignores retired domain-gate.json files", async () => {
     const agentDir = await makeTempDir("pi-permission-agent-");
     const projectDir = await makeTempDir("pi-permission-project-");
     const projectConfigDir = path.join(projectDir, ".pi");
@@ -43,10 +43,10 @@ describe("loadDomainPolicy", () => {
     );
 
     const warnSpy = vi.spyOn(console, "warn").mockImplementation(() => {});
-    const policy = loadDomainPolicy(undefined, projectDir);
+    const policy = loadDomainPolicy(undefined);
 
-    expect(policy.enabled).toBe(false);
-    expect(policy.allowedDomains).toEqual(["example.com"]);
+    expect(policy.enabled).toBe(true);
+    expect(policy.allowedDomains).toEqual([]);
     expect(warnSpy).not.toHaveBeenCalled();
   });
 });

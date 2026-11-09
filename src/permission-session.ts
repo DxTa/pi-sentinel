@@ -143,6 +143,14 @@ export class PermissionSession {
     this.sessionRules.approve(surface, pattern);
   }
 
+  denySessionRule(surface: string, pattern: string): void {
+    this.sessionRules.deny(surface, pattern);
+  }
+
+  removeSessionRule(surface: string, pattern: string): void {
+    this.sessionRules.remove(surface, pattern);
+  }
+
   // ── Session lifecycle ────────────────────────────────────────────────────
 
   /**

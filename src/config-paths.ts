@@ -14,7 +14,7 @@ export function getBundledConfigPath(extensionRoot: string): string {
 }
 
 export function getGlobalConfigPath(agentDir: string): string {
-  return join(agentDir, "permissions.json");
+  return join(agentDir, "sentinel.json");
 }
 
 export function getGlobalLogsDir(agentDir: string): string {
@@ -22,22 +22,15 @@ export function getGlobalLogsDir(agentDir: string): string {
 }
 
 export function getProjectConfigPath(cwd: string): string {
+  return join(cwd, ".pi", "sentinel.json");
+}
+
+/** Retired file detected only to warn the user; never read. */
+export function getRetiredGlobalConfigPath(agentDir: string): string {
+  return join(agentDir, "permissions.json");
+}
+
+/** Retired file detected only to warn the user; never read. */
+export function getRetiredProjectConfigPath(cwd: string): string {
   return join(cwd, ".pi", "permissions.json");
-}
-
-/** Compatibility path used by older workspaces. */
-export function getLegacyProjectConfigPath(cwd: string): string {
-  return join(cwd, ".pi", "agent", "permissions.json");
-}
-
-export function getLegacyProjectExtensionConfigPath(cwd: string): string {
-  return join(cwd, ".pi", "extensions", EXTENSION_ID, "config.json");
-}
-
-export function getLegacyGlobalPolicyPath(agentDir: string): string {
-  return join(agentDir, "pi-permissions.jsonc");
-}
-
-export function getLegacyProjectPolicyPath(cwd: string): string {
-  return join(cwd, ".pi", "agent", "pi-permissions.jsonc");
 }

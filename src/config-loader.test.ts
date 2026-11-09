@@ -40,29 +40,6 @@ describe("permission mode config", () => {
     expect(normalizePermissionSystemConfig({ mode: "yolo-auto" }).mode).toBe("manual");
   });
 
-  it("migrates legacy boolean modes without exposing them", () => {
-    expect(normalizeUnifiedConfig({ yoloAutoMode: true }).config).toEqual({ mode: "auto" });
-    expect(normalizeUnifiedConfig({ yoloMode: true }).config).toEqual({ mode: "yolo" });
-    expect(normalizeUnifiedConfig({ yoloMode: true, yoloAutoMode: true }).config).toEqual({ mode: "auto" });
-    expect(normalizeUnifiedConfig({ yoloAutoMode: false }).config).toEqual({ mode: "manual" });
-  });
-
-  it("keeps inherited auto behavior when legacy yoloMode is partial", async () => {
-    const root = await mkdtemp(path.join(tmpdir(), "pi-legacy-mode-"));
-    tempPaths.push(root);
-    const agentDir = path.join(root, "agent");
-    const projectDir = path.join(root, "project");
-    const extensionRoot = path.join(root, "extension");
-    await Promise.all([agentDir, projectDir, extensionRoot].map((dir) => mkdir(dir, { recursive: true })));
-    await writeFile(path.join(extensionRoot, "config.json"), JSON.stringify({ mode: "auto" }), "utf8");
-    await mkdir(path.dirname(getGlobalConfigPath(agentDir)), { recursive: true });
-    await writeFile(getGlobalConfigPath(agentDir), JSON.stringify({ yoloMode: true }), "utf8");
-
-    expect(loadAndMergeConfigs(agentDir, projectDir, extensionRoot).merged).toMatchObject({
-      mode: "auto",
-    });
-  });
-
   it("lets project mode replace global mode", () => {
     expect(mergeUnifiedConfigs(
       { mode: "auto" },
@@ -197,7 +174,7 @@ afterEach(async () => {
 });
 
 describe("layered permission config paths", () => {
-  it("uses permissions.json paths and applies bundled, global, then project precedence", async () => {
+  it("uses sentinel.json paths and applies bundled, global, then project precedence", async () => {
     const root = await mkdtemp(path.join(tmpdir(), "pi-layered-config-"));
     tempPaths.push(root);
     const agentDir = path.join(root, "agent");
@@ -242,8 +219,8 @@ describe("layered permission config paths", () => {
 
     const result = loadAndMergeConfigs(agentDir, projectDir, extensionRoot);
 
-    expect(getGlobalConfigPath("/agent")).toBe("/agent/permissions.json");
-    expect(getProjectConfigPath("/repo")).toBe("/repo/.pi/permissions.json");
+    expect(getGlobalConfigPath("/agent")).toBe("/agent/sentinel.json");
+    expect(getProjectConfigPath("/repo")).toBe("/repo/.pi/sentinel.json");
     expect(result.issues).toEqual([]);
     expect(result.merged).toMatchObject({
       mode: "manual",
@@ -254,5 +231,88 @@ describe("layered permission config paths", () => {
         },
       },
     });
+  });
+});
+
+describe("retired config files", () => {
+  async function setupLayout(files: Record<string, unknown>): Promise<{
+    agentDir: string;
+    projectDir: string;
+    extensionRoot: string;
+  }> {
+    const root = await mkdtemp(path.join(tmpdir(), "pi-retired-config-"));
+    tempPaths.push(root);
+    const agentDir = path.join(root, "agent");
+    const projectDir = path.join(root, "project");
+    const extensionRoot = path.join(root, "extension");
+    await Promise.all([agentDir, projectDir, extensionRoot].map((dir) => mkdir(dir, { recursive: true })));
+    await writeFile(path.join(extensionRoot, "config.json"), JSON.stringify({ mode: "manual" }), "utf8");
+    for (const [relativePath, content] of Object.entries(files)) {
+      const absolute = path.join(root, relativePath);
+      await mkdir(path.dirname(absolute), { recursive: true });
+      await writeFile(absolute, JSON.stringify(content), "utf8");
+    }
+    return {
+      agentDir,
+      projectDir,
+      extensionRoot,
+    };
+  }
+
+  it("ignores every retired config file location", async () => {
+    const { agentDir, projectDir, extensionRoot } = await setupLayout({
+      "agent/pi-permissions.jsonc": { mode: "yolo" },
+      "project/.pi/agent/permissions.json": { mode: "yolo" },
+      "project/.pi/extensions/pi-sentinel/config.json": { mode: "yolo" },
+      "project/.pi/agent/pi-permissions.jsonc": { mode: "yolo" },
+    });
+
+    const result = loadAndMergeConfigs(agentDir, projectDir, extensionRoot);
+
+    expect(result.merged.mode).toBe("manual");
+    expect(result.modeLayers.map((layer) => layer.id)).toEqual([
+      "environment",
+      "project",
+      "global",
+      "bundled",
+    ]);
+  });
+
+  it("ignores legacy yoloMode and yoloAutoMode flags", async () => {
+    const { agentDir, projectDir, extensionRoot } = await setupLayout({
+      "agent/sentinel.json": { yoloMode: true, yoloAutoMode: true },
+    });
+
+    const result = loadAndMergeConfigs(agentDir, projectDir, extensionRoot);
+
+    expect(result.merged.mode).toBe("manual");
+  });
+
+  it("warns once per scope when permissions.json has no sentinel.json replacement", async () => {
+    const { agentDir, projectDir, extensionRoot } = await setupLayout({
+      "agent/permissions.json": { mode: "yolo" },
+      "project/.pi/permissions.json": { mode: "yolo" },
+    });
+
+    const result = loadAndMergeConfigs(agentDir, projectDir, extensionRoot);
+
+    expect(result.merged.mode).toBe("manual");
+    expect(result.issues).toEqual([
+      expect.stringContaining(`'${path.join(agentDir, "permissions.json")}'`),
+      expect.stringContaining(`'${path.join(projectDir, ".pi", "permissions.json")}'`),
+    ]);
+    expect(result.issues.every((issue) => issue.includes("sentinel.json"))).toBe(true);
+  });
+
+  it("does not warn when sentinel.json exists beside permissions.json", async () => {
+    const { agentDir, projectDir, extensionRoot } = await setupLayout({
+      "agent/permissions.json": { mode: "yolo" },
+      "agent/sentinel.json": { mode: "auto" },
+    });
+
+    const result = loadAndMergeConfigs(agentDir, projectDir, extensionRoot);
+
+    expect(result.issues).toEqual([]);
+    expect(result.merged.mode).toBe("auto");
   });
 });

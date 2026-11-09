@@ -34,7 +34,7 @@ export function checkBashNetworkPolicy(
   cwd: string,
   approvedDomains: readonly string[] = [],
 ): DomainCheckResult {
-  const basePolicy = loadDomainPolicy({ network: networkConfig }, cwd);
+  const basePolicy = loadDomainPolicy({ network: networkConfig });
   const policy = {
     ...basePolicy,
     allowedDomains: [...basePolicy.allowedDomains, ...approvedDomains],
@@ -58,7 +58,7 @@ export function registerDomainGateCommand(
   pi.registerCommand("domain-gate", {
     description: "Show domain-gate network allow/deny policy",
     handler: async (_args: string, ctx: ExtensionContext) => {
-      const config = loadDomainPolicy({ network: getNetworkConfig(ctx.cwd) }, ctx.cwd);
+      const config = loadDomainPolicy({ network: getNetworkConfig(ctx.cwd) });
       ctx.ui.notify(
         `Domain gate ${config.enabled ? "enabled" : "disabled"}\n` +
           `Default: ${config.unknownDomains === "allow" ? "allow unknown domains" : config.unknownDomains === "deny" ? "block unknown domains" : "ask for unknown domains"}\n` +

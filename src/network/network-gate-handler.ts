@@ -19,6 +19,7 @@ import { scanEgress } from "./egress-scan.js";
 import type { PersistentApprovalScope } from "../scoped-config";
 import type { PromptWaitTracker } from "../prompt-state";
 import type { DomainGateConfig } from "../network/types.js";
+import { approveSessionDomains, clearSessionDomains, getSessionDomainGrants } from "./session-domains.js";
 
 export interface NetworkGateDeps {
   getNetworkConfig: (cwd?: string) => DomainGateConfig | undefined;
@@ -65,7 +66,6 @@ type DomainApprovalDecision =
   | "deny-global"
   | "deny";
 
-const sessionApprovedDomains = new Set<string>();
 
 function formatDomains(domains: readonly string[]): string {
   return domains.map((domain) => `"${domain}"`).join(", ");
@@ -225,14 +225,14 @@ async function resolveAskVerdict(
     }
   }
   if (decision !== "once") {
-    for (const domain of domains) sessionApprovedDomains.add(domain);
+    approveSessionDomains(domains);
   }
 
   return { approvedDomains: [...domains] };
 }
 
 export function getSessionNetworkApprovals(): string[] {
-  return [...sessionApprovedDomains];
+  return getSessionDomainGrants().allowed;
 }
 
 /** Text a network-capable tool call sends out: the bash command, or the JSON of a fetch or MCP input. */
@@ -246,10 +246,10 @@ function egressText(toolName: string, input: unknown): string | undefined {
 
 /** Runs the egress scan on a call's URLs, headers and data. Applies in every mode, whatever the domain policy says. */
 function egressBlockReason(text: string, cwd: string, deps: NetworkGateDeps): string | undefined {
-  const policy = loadDomainPolicy({ network: deps.getNetworkConfig(cwd) }, cwd);
+  const policy = loadDomainPolicy({ network: deps.getNetworkConfig(cwd) });
   return scanEgress({
     text,
-    allowedDomains: [...policy.allowedDomains, ...sessionApprovedDomains],
+    allowedDomains: policy.allowedDomains,
     deniedDomains: policy.deniedDomains,
     feed: deps.getThreatFeed?.(),
   });
@@ -279,7 +279,7 @@ export async function handleNetworkToolCall(
     command,
     deps.getNetworkConfig(ctx.cwd),
     ctx.cwd,
-    [...sessionApprovedDomains],
+    getSessionDomainGrants().allowed,
   );
 
   if (result.verdict === "denied" && result.blockedDomains.length > 0) {
@@ -314,7 +314,7 @@ export async function handleNetworkUserBash(
     event.command,
     deps.getNetworkConfig(event.cwd),
     event.cwd,
-    [...sessionApprovedDomains],
+    getSessionDomainGrants().allowed,
   );
 
   if (result.verdict === "denied" && result.blockedDomains.length > 0) {
@@ -347,5 +347,5 @@ export async function handleNetworkUserBash(
 }
 
 export function clearSessionNetworkApprovals(): void {
-  sessionApprovedDomains.clear();
+  clearSessionDomains();
 }

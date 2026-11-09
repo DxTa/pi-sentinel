@@ -15,10 +15,28 @@ export class SessionRules {
 
   /** Record a wildcard pattern as approved for the given surface. */
   approve(surface: string, pattern: string): void {
+    this.set(surface, pattern, "allow");
+  }
+
+  /** Record a wildcard pattern as denied for the given surface; overrides config allows. */
+  deny(surface: string, pattern: string): void {
+    this.set(surface, pattern, "deny");
+  }
+
+  /** Forget the session decision for a surface and pattern. */
+  remove(surface: string, pattern: string): void {
+    this.rules = this.rules.filter(
+      (rule) => !(rule.surface === surface && rule.pattern === pattern),
+    );
+  }
+
+  /** One session decision per surface and pattern: a new decision replaces the old. */
+  private set(surface: string, pattern: string, action: "allow" | "deny"): void {
+    this.remove(surface, pattern);
     this.rules.push({
       surface,
       pattern,
-      action: "allow",
+      action,
       layer: "session",
       origin: "session",
     });

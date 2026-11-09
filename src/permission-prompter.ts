@@ -26,6 +26,7 @@ import {
   isRemovalOnlyAsk,
   matchesYoloAskBashPattern,
   shouldAutoApprovePermissionState,
+  yoloAskPatternsFor,
 } from "./yolo-mode";
 
 export type PermissionReviewSource = "tool_call" | "skill_input" | "skill_read";
@@ -198,7 +199,7 @@ export class PermissionPrompter implements PermissionPrompterApi {
       details.forcePromptInYolo === true
       || (config.mode === "auto"
         && typeof details.command === "string"
-        && matchesBashAskPattern(config.yoloAskBashPatterns ?? [], details.command));
+        && matchesBashAskPattern(yoloAskPatternsFor(config), details.command));
     if (
       details.toolName === "bash"
       && details.autoModeWorkspaceLocal === true

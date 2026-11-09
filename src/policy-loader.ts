@@ -11,9 +11,6 @@ import {
 import {
   getBundledConfigPath,
   getGlobalConfigPath,
-  getLegacyGlobalPolicyPath,
-  getLegacyProjectExtensionConfigPath,
-  getLegacyProjectPolicyPath,
 } from "./config-paths";
 import { EXTENSION_ROOT } from "./extension-config";
 import { mergeFlatPermissions } from "./permission-merge";
@@ -146,12 +143,8 @@ type FileCacheEntry<TValue> = {
 export interface PolicyLoaderOptions {
   bundledConfigPath?: string;
   globalConfigPath?: string;
-  legacyGlobalPolicyPath?: string;
   agentsDir?: string;
   projectGlobalConfigPath?: string;
-  legacyProjectGlobalConfigPath?: string;
-  legacyProjectConfigPath?: string;
-  legacyProjectPolicyPath?: string;
   projectAgentsDir?: string;
   globalMcpConfigPath?: string;
   mcpServerNames?: readonly string[];
@@ -168,12 +161,8 @@ export interface PolicyLoaderOptions {
 export class FilePolicyLoader implements PolicyLoader {
   private readonly bundledConfigPath: string;
   private readonly globalConfigPath: string;
-  private readonly legacyGlobalPolicyPath: string;
   private readonly agentsDir: string;
   private readonly projectGlobalConfigPath: string | null;
-  private readonly legacyProjectGlobalConfigPath: string | null;
-  private readonly legacyProjectConfigPath: string | null;
-  private readonly legacyProjectPolicyPath: string | null;
   private readonly projectAgentsDir: string | null;
   private readonly globalMcpConfigPath: string;
   private readonly configuredMcpServerNamesOverride: readonly string[] | null;
@@ -199,13 +188,8 @@ export class FilePolicyLoader implements PolicyLoader {
       options.bundledConfigPath ?? getBundledConfigPath(EXTENSION_ROOT);
     this.globalConfigPath =
       options.globalConfigPath ?? defaultGlobalConfigPath();
-    this.legacyGlobalPolicyPath =
-      options.legacyGlobalPolicyPath ?? getLegacyGlobalPolicyPath(dirname(this.globalConfigPath));
     this.agentsDir = options.agentsDir ?? defaultAgentsDir();
     this.projectGlobalConfigPath = options.projectGlobalConfigPath ?? null;
-    this.legacyProjectGlobalConfigPath = options.legacyProjectGlobalConfigPath ?? null;
-    this.legacyProjectConfigPath = options.legacyProjectConfigPath ?? null;
-    this.legacyProjectPolicyPath = options.legacyProjectPolicyPath ?? null;
     this.projectAgentsDir = options.projectAgentsDir ?? null;
     this.globalMcpConfigPath =
       options.globalMcpConfigPath ?? defaultGlobalMcpConfigPath();
@@ -236,16 +220,13 @@ export class FilePolicyLoader implements PolicyLoader {
 
   // ── Scope loaders ────────────────────────────────────────────────────
 
-  private loadPermissionConfigPaths(
-    paths: ReadonlyArray<{ path: string | null; warning?: string }>,
-  ): ScopeConfig {
+  private loadPermissionConfigPaths(paths: ReadonlyArray<string | null>): ScopeConfig {
     let permission: ScopeConfig["permission"];
 
-    for (const entry of paths) {
-      if (!entry.path || !existsSync(entry.path)) continue;
-      const { config, issues } = loadUnifiedConfig(entry.path);
+    for (const path of paths) {
+      if (!path || !existsSync(path)) continue;
+      const { config, issues } = loadUnifiedConfig(path);
       this.accumulateConfigIssues(issues);
-      if (entry.warning) this.accumulateConfigIssues([entry.warning]);
       if (config.permission) {
         permission = permission
           ? mergeFlatPermissions(permission, config.permission)
@@ -262,53 +243,30 @@ export class FilePolicyLoader implements PolicyLoader {
       return this.bundledConfigCache.value;
     }
 
-    const value = this.loadPermissionConfigPaths([
-      { path: this.bundledConfigPath },
-    ]);
+    const value = this.loadPermissionConfigPaths([this.bundledConfigPath]);
     this.bundledConfigCache = { stamp, value };
     return value;
   }
 
   loadGlobalConfig(): ScopeConfig {
-    const stamp = `${getFileStamp(this.legacyGlobalPolicyPath)}|${getFileStamp(this.globalConfigPath)}`;
+    const stamp = getFileStamp(this.globalConfigPath);
     if (this.globalConfigCache?.stamp === stamp) {
       return this.globalConfigCache.value;
     }
 
-    const value = this.loadPermissionConfigPaths([
-      {
-        path: this.legacyGlobalPolicyPath,
-        warning: `Legacy global policy found at '${this.legacyGlobalPolicyPath}'. Legacy-format keys are not translated; leave this file unchanged.`,
-      },
-      { path: this.globalConfigPath },
-    ]);
+    const value = this.loadPermissionConfigPaths([this.globalConfigPath]);
 
     this.globalConfigCache = { stamp, value };
     return value;
   }
 
   loadProjectConfig(): ScopeConfig {
-    const stamp = `${getFileStamp(this.legacyProjectPolicyPath ?? "")}|${getFileStamp(this.legacyProjectConfigPath ?? "")}|${getFileStamp(this.legacyProjectGlobalConfigPath ?? "")}|${getFileStamp(this.projectGlobalConfigPath ?? "")}`;
+    const stamp = getFileStamp(this.projectGlobalConfigPath ?? "");
     if (this.projectGlobalConfigCache?.stamp === stamp) {
       return this.projectGlobalConfigCache.value;
     }
 
-    const value = this.loadPermissionConfigPaths([
-      {
-        path: this.legacyProjectPolicyPath,
-        warning: this.legacyProjectPolicyPath
-          ? `Legacy project policy found at '${this.legacyProjectPolicyPath}'. Legacy-format keys are not translated; leave this file unchanged.`
-          : undefined,
-      },
-      {
-        path: this.legacyProjectConfigPath,
-        warning: this.legacyProjectConfigPath
-          ? `Legacy project extension config found at '${this.legacyProjectConfigPath}'. Move supported unified settings to the new project permissions file.`
-          : undefined,
-      },
-      { path: this.legacyProjectGlobalConfigPath },
-      { path: this.projectGlobalConfigPath },
-    ]);
+    const value = this.loadPermissionConfigPaths([this.projectGlobalConfigPath]);
 
     this.projectGlobalConfigCache = { stamp, value };
     return value;
@@ -401,18 +359,12 @@ export class FilePolicyLoader implements PolicyLoader {
     const projectStamp = this.projectGlobalConfigPath
       ? getFileStamp(this.projectGlobalConfigPath)
       : "none";
-    const legacyProjectGlobalStamp = this.legacyProjectGlobalConfigPath
-      ? getFileStamp(this.legacyProjectGlobalConfigPath)
-      : "none";
     const projectAgentStamp =
       this.projectAgentsDir && agentName
         ? getFileStamp(join(this.projectAgentsDir, `${agentName}.md`))
         : "none";
 
-    const legacyGlobalStamp = getFileStamp(this.legacyGlobalPolicyPath);
-    const legacyProjectConfigStamp = getFileStamp(this.legacyProjectConfigPath ?? "");
-    const legacyProjectPolicyStamp = getFileStamp(this.legacyProjectPolicyPath ?? "");
-    return `${getFileStamp(this.bundledConfigPath)}|${legacyGlobalStamp}|${getFileStamp(this.globalConfigPath)}|${getSecurityProfileStamp(this.bundledConfigPath)}|${legacyProjectPolicyStamp}|${legacyProjectConfigStamp}|${legacyProjectGlobalStamp}|${projectStamp}|${agentStamp}|${projectAgentStamp}`;
+    return `${getFileStamp(this.bundledConfigPath)}|${getFileStamp(this.globalConfigPath)}|${getSecurityProfileStamp(this.bundledConfigPath)}|${projectStamp}|${agentStamp}|${projectAgentStamp}`;
   }
 
   // ── Resolved paths ────────────────────────────────────────────────────

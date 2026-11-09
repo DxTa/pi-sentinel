@@ -1,5 +1,5 @@
 {
-  "$schema": "https://raw.githubusercontent.com/DxTa/pi-sentinel/main/schemas/permissions.schema.json",
+  "$schema": "https://raw.githubusercontent.com/DxTa/pi-sentinel/main/schemas/sentinel.schema.json",
 
   "debugLog": false,
   "permissionReviewLog": true,

@@ -23,10 +23,6 @@ import {
   getBundledConfigPath,
   getGlobalConfigDir,
   getGlobalConfigPath,
-  getLegacyGlobalPolicyPath,
-  getLegacyProjectConfigPath,
-  getLegacyProjectExtensionConfigPath,
-  getLegacyProjectPolicyPath,
   getProjectConfigPath,
 } from "./config-paths";
 import { EXTENSION_ROOT } from "./extension-config";
@@ -69,6 +65,7 @@ import {
   isWorkspaceLocalFileOperation,
   resolveReadPathForComparison,
 } from "./path-utils";
+import { editConfigList, listConfigList } from "./config-lists";
 import { PermissionSession } from "./permission-session";
 import { matchTrustedPiRequest } from "./handlers/gates/trusted-pi-dirs";
 import {
@@ -96,6 +93,7 @@ import {
   matchesGitPushCommand,
   shouldAutoApproveForwardedPermissionRequest,
 } from "./yolo-mode";
+import { clearSessionLists, getSessionHostFallbacks } from "./session-lists";
 
 // ── Our modules ──────────────────────────────────────────────────────────
 import { loadDomainPolicy, type DomainGateConfig } from "./network/config.js";
@@ -716,7 +714,7 @@ async function resolveBashSandboxAccess(
   const fileAuthRequiresSrt = config.enabled
     && (implicitAuth?.candidatePaths.length ?? 0) > 0
     && !implicitAuth?.needsSocketFallback;
-  const hostFallbackGranted = isHostFallbackGranted(command, config.hostFallbackCommands ?? []);
+  const hostFallbackGranted = isHostFallbackGranted(command, [...(config.hostFallbackCommands ?? []), ...getSessionHostFallbacks()]);
   const forceSrt = !hostFallbackGranted && (hasProtectedRead || dockerRequiresSrt || fileAuthRequiresSrt);
   const sandboxed = config.enabled
     && config.backend === "srt"
@@ -1092,8 +1090,46 @@ export default function piPermissionSystemExtension(pi: ExtensionAPI): void {
     },
   );
 
+  const sandboxGrantStore = {
+    listPathGrants: () =>
+      getPolicyManager()
+        .listGrants()
+        .filter((grant) => grant.type === "path")
+        .map((grant) => ({ value: grant.value, mode: grant.mode ?? "ro" })),
+    grantPath: (value: string, mode: "ro" | "rw") => {
+      getPolicyManager().grantPath(value, mode, { duration: "session" });
+    },
+    revokePath: (value: string) => {
+      for (const grant of getPolicyManager().listGrants()) {
+        if (grant.type === "path" && grant.value === value) getPolicyManager().revokeGrant(grant.id);
+      }
+    },
+  };
+
+  const sessionRuleStore = {
+    getRuleset: () => session.getSessionRuleset(),
+    approve: (surface: string, pattern: string) => session.approveSessionRule(surface, pattern),
+    deny: (surface: string, pattern: string) => session.denySessionRule(surface, pattern),
+    remove: (surface: string, pattern: string) => session.removeSessionRule(surface, pattern),
+  };
+
   registerPermissionSystemCommand(pi, {
     getConfig: () => runtime.config,
+    getConfigEntries: (kind, scope, cwd) =>
+      listConfigList(
+        { agentDir: runtime.agentDir, cwd: cwd ?? runtime.runtimeContext?.cwd ?? null, sessionRules: sessionRuleStore, sandboxGrants: sandboxGrantStore },
+        kind,
+        scope,
+      ),
+    editConfigEntry: ({ kind, scope, value, state, surface, cwd }) =>
+      editConfigList(
+        { agentDir: runtime.agentDir, cwd: cwd ?? runtime.runtimeContext?.cwd ?? null, sessionRules: sessionRuleStore, sandboxGrants: sandboxGrantStore },
+        kind,
+        scope,
+        value,
+        state,
+        surface,
+      ),
     setConfig: (next, ctx, modeWasExplicitlySelected, modeScope) =>
       saveExtensionConfig(runtime, next, ctx, modeWasExplicitlySelected, modeScope),
     resetConfig: (ctx) => resetExtensionConfig(runtime, ctx),
@@ -1103,8 +1139,6 @@ export default function piPermissionSystemExtension(pi: ExtensionAPI): void {
         `bundled: ${getBundledConfigPath(EXTENSION_ROOT)}`,
         `global: ${getGlobalConfigPath(runtime.agentDir)}`,
         `project: ${cwd ? getProjectConfigPath(cwd) : "(none)"}`,
-        `legacy project: ${cwd ? getLegacyProjectExtensionConfigPath(cwd) : "(none)"}`,
-        `legacy policy: ${cwd ? getLegacyProjectPolicyPath(cwd) : "(none)"}`,
       ].join("\n"),
     getComposedRules: () =>
       runtime.permissionManager.getComposedConfigRules(
@@ -1171,6 +1205,7 @@ export default function piPermissionSystemExtension(pi: ExtensionAPI): void {
 
   pi.events.on("pi-sentinel:set-session-mode", (data) => {
     applySessionModeEvent(runtime, data);
+    (data as { ack?: () => void } | null)?.ack?.();
   });
 
   const toolRegistry = {
@@ -1280,6 +1315,7 @@ export default function piPermissionSystemExtension(pi: ExtensionAPI): void {
     failedSrtCommands.clear();
     pushFallbackSession++;
     clearSessionNetworkApprovals();
+    clearSessionLists();
     clearMaskedAuthSessionGrants();
     sessionScanApprovedRoots.clear();
     sandboxRuntime.clearGrants();
@@ -1300,6 +1336,7 @@ export default function piPermissionSystemExtension(pi: ExtensionAPI): void {
     failedSrtCommands.clear();
     pushFallbackSession++;
     clearSessionNetworkApprovals();
+    clearSessionLists();
     clearMaskedAuthSessionGrants();
     sandboxRuntime.dispose();
     return lifecycle.handleSessionShutdown();
@@ -1382,10 +1419,7 @@ export default function piPermissionSystemExtension(pi: ExtensionAPI): void {
       }
     };
     const records: PersistentSandboxNetworkRecord[] = [];
-    const globalPaths = [
-      scoped.globalPath,
-      getLegacyGlobalPolicyPath(getAgentDir()),
-    ].filter((configPath, index, paths) => paths.indexOf(configPath) === index && hasCapabilityAt(configPath));
+    const globalPaths = [scoped.globalPath].filter((configPath) => hasCapabilityAt(configPath));
     if (globalPaths.length > 0) {
       records.push({
         id: "sandbox-network-global",
@@ -1393,13 +1427,7 @@ export default function piPermissionSystemExtension(pi: ExtensionAPI): void {
         configPaths: globalPaths,
       });
     }
-    const workspacePaths = [
-      getProjectConfigPath(cwd),
-      getLegacyProjectConfigPath(cwd),
-      getLegacyProjectExtensionConfigPath(cwd),
-      getLegacyProjectPolicyPath(cwd),
-    ]
-      .filter((configPath, index, paths) => paths.indexOf(configPath) === index)
+    const workspacePaths = [getProjectConfigPath(cwd)]
       .filter((configPath) => {
         resolveConfinedConfigPath(configPath, cwd);
         return hasCapabilityAt(configPath);

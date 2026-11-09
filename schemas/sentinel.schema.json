@@ -1,9 +1,9 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "$id": "https://raw.githubusercontent.com/DxTa/pi-sentinel/main/schemas/permissions.schema.json",
+  "$id": "https://raw.githubusercontent.com/DxTa/pi-sentinel/main/schemas/sentinel.schema.json",
   "title": "PI Sentinel Configuration",
   "description": "Unified config file combining runtime knobs and flat permission policy for pi-sentinel.",
-  "markdownDescription": "Unified config file combining runtime knobs and flat permission policy for [pi-sentinel](https://github.com/DxTa/pi-sentinel).\n\nBundled defaults live at `~/.pi/agent/extensions/pi-sentinel/config.json`. Put global overrides at `~/.pi/agent/permissions.json` and trusted project overrides at `<project>/.pi/permissions.json`; project values override global values.",
+  "markdownDescription": "Unified config file combining runtime knobs and flat permission policy for [pi-sentinel](https://github.com/DxTa/pi-sentinel).\n\nBundled defaults live at `~/.pi/agent/extensions/pi-sentinel/config.json`. Put global overrides at `~/.pi/agent/sentinel.json` and trusted project overrides at `<project>/.pi/sentinel.json`; project values override global values.",
   "type": "object",
   "additionalProperties": false,
   "properties": {

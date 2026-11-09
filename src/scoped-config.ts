@@ -21,10 +21,6 @@ import { loadAndMergeConfigs, stripJsonComments } from "./config-loader";
 import {
   getBundledConfigPath,
   getGlobalConfigPath,
-  getLegacyGlobalPolicyPath,
-  getLegacyProjectConfigPath,
-  getLegacyProjectExtensionConfigPath,
-  getLegacyProjectPolicyPath,
   getProjectConfigPath,
 } from "./config-paths";
 import { EXTENSION_ROOT } from "./extension-config";
@@ -125,13 +121,7 @@ export function writeConfigFile(
       0o600,
     );
     try {
-      const hasLegacyMode =
-        typeof config.yoloMode === "boolean" || typeof config.yoloAutoMode === "boolean";
-      const canonicalConfig = canonicalizePersistedMode(
-        config,
-        hasLegacyMode ? resolveEffectiveModeForWrite(path, workspaceRoot) : undefined,
-      );
-      writeFileSync(tempFd, `${JSON.stringify(canonicalConfig, null, 2)}\n`, "utf-8");
+      writeFileSync(tempFd, `${JSON.stringify(config, null, 2)}\n`, "utf-8");
     } finally {
       closeSync(tempFd);
     }
@@ -149,57 +139,6 @@ export function writeConfigFile(
     }
     return false;
   }
-}
-
-function legacyFlagsForMode(mode: unknown): { yoloMode?: boolean; yoloAutoMode?: boolean } {
-  if (mode === "auto") return { yoloMode: true, yoloAutoMode: true };
-  if (mode === "yolo") return { yoloMode: true, yoloAutoMode: false };
-  if (mode === "manual") return { yoloMode: false, yoloAutoMode: false };
-  return {};
-}
-
-function resolveEffectiveModeForWrite(
-  configPath: string,
-  workspaceRoot?: string,
-): unknown {
-  const agentDir = workspaceRoot
-    ? process.env.PI_CODING_AGENT_DIR || join(homedir(), ".pi", "agent")
-    : dirname(configPath);
-  try {
-    return loadAndMergeConfigs(
-      agentDir,
-      workspaceRoot ?? null,
-      EXTENSION_ROOT,
-    ).configuredMode;
-  } catch {
-    return undefined;
-  }
-}
-
-function canonicalizePersistedMode(
-  config: JsonObject,
-  inheritedMode: unknown,
-): JsonObject {
-  const next = { ...config };
-  const mode = next.mode;
-  const hasLegacyMode =
-    typeof next.yoloMode === "boolean" || typeof next.yoloAutoMode === "boolean";
-  if (mode !== "manual" && mode !== "yolo" && mode !== "auto" && hasLegacyMode) {
-    const inherited = legacyFlagsForMode(inheritedMode);
-    const effective = {
-      ...inherited,
-      ...(typeof next.yoloMode === "boolean" ? { yoloMode: next.yoloMode } : {}),
-      ...(typeof next.yoloAutoMode === "boolean" ? { yoloAutoMode: next.yoloAutoMode } : {}),
-    };
-    if (effective.yoloAutoMode === true) next.mode = "auto";
-    else if (effective.yoloMode === true) next.mode = "yolo";
-    else if (effective.yoloAutoMode !== undefined || effective.yoloMode !== undefined) {
-      next.mode = "manual";
-    }
-  }
-  delete next.yoloMode;
-  delete next.yoloAutoMode;
-  return next;
 }
 
 function readConfigForWrite(path: string): JsonObject | null {
@@ -378,10 +317,7 @@ export function getScopedConfigPath(
     if (!cwd) {
       return getGlobalConfigPath(agentDir);
     }
-    const projectPath = getProjectConfigPath(cwd);
-    if (existsSync(projectPath)) return projectPath;
-    const legacyProjectPath = getLegacyProjectConfigPath(cwd);
-    return existsSync(legacyProjectPath) ? legacyProjectPath : projectPath;
+    return getProjectConfigPath(cwd);
   }
   return getGlobalConfigPath(agentDir);
 }
@@ -403,32 +339,12 @@ export function loadMergedScopedConfig(
   const workspacePath = cwd
     ? resolveConfinedConfigPath(getProjectConfigPath(cwd), cwd)
     : null;
-  const legacyWorkspacePath = cwd
-    ? resolveConfinedConfigPath(getLegacyProjectConfigPath(cwd), cwd)
-    : null;
-  const legacyProjectPolicyPath = cwd
-    ? resolveConfinedConfigPath(getLegacyProjectPolicyPath(cwd), cwd)
-    : null;
-  const legacyProjectExtensionConfigPath = cwd
-    ? resolveConfinedConfigPath(getLegacyProjectExtensionConfigPath(cwd), cwd)
-    : null;
   const global = readConfigLayer(globalPath);
-  const workspace = mergeObject(
-    legacyWorkspacePath ? readConfigLayer(legacyWorkspacePath) : {},
-    workspacePath ? readConfigLayer(workspacePath) : {},
-  );
+  const workspace = workspacePath ? readConfigLayer(workspacePath) : {};
   const scopedLayers: ScopedConfigLayer[] = [
     { scope: "default", config: readConfigLayer(bundledConfigPath) },
-    { scope: "global", config: readConfigLayer(getLegacyGlobalPolicyPath(agentDir)) },
     { scope: "global", config: global },
-    ...(cwd
-      ? [
-          legacyProjectPolicyPath ? readConfigLayer(legacyProjectPolicyPath) : {},
-          legacyProjectExtensionConfigPath ? readConfigLayer(legacyProjectExtensionConfigPath) : {},
-          legacyWorkspacePath ? readConfigLayer(legacyWorkspacePath) : {},
-        ].map((config): ScopedConfigLayer => ({ scope: "project", config }))
-      : []),
-    { scope: "project", config: workspacePath ? readConfigLayer(workspacePath) : {} },
+    { scope: "project", config: workspace },
   ];
 
   let merged: JsonObject = {};
@@ -631,6 +547,179 @@ export function removeNetworkGrantFromConfig(
     throw new Error(`Failed to revoke network grant at '${configPath}'.`);
   }
   return nextConfig;
+}
+
+export type NetworkDomainState = "allow" | "deny" | "remove";
+
+export function listNetworkDomains(
+  configPath: string,
+  workspaceRoot?: string,
+): { allowed: string[]; denied: string[] } {
+  const targetPath = workspaceRoot
+    ? resolveConfinedConfigPath(configPath, workspaceRoot)
+    : configPath;
+  const network = requireConfigObject(readConfigLayer(targetPath).network, "network");
+  return {
+    allowed: toStringArray(network.allowedDomains),
+    denied: toStringArray(network.deniedDomains),
+  };
+}
+
+/** Put a domain in exactly one list (or none): allow, deny, or remove. */
+export function setNetworkDomainState(
+  configPath: string,
+  domain: string,
+  state: NetworkDomainState,
+  workspaceRoot?: string,
+): void {
+  const targetPath = workspaceRoot
+    ? resolveConfinedConfigPath(configPath, workspaceRoot)
+    : configPath;
+  const current = readConfigForWrite(targetPath);
+  if (!current) throw new Error(`Failed to read network config at '${configPath}'.`);
+  const network = requireConfigObject(current.network, "network");
+  const value = domain.trim();
+  if (!value) return;
+
+  const allowed = toStringArray(network.allowedDomains).filter((entry) => entry !== value);
+  const denied = toStringArray(network.deniedDomains).filter((entry) => entry !== value);
+  if (state === "allow") allowed.push(value);
+  if (state === "deny") denied.push(value);
+
+  const nextConfig = {
+    ...current,
+    network: {
+      ...network,
+      allowedDomains: dedupeStrings(allowed),
+      deniedDomains: dedupeStrings(denied),
+    },
+  };
+  if (!writeConfigFile(configPath, nextConfig, workspaceRoot)) {
+    throw new Error(`Failed to save network config at '${configPath}'.`);
+  }
+}
+
+export function listSandboxPaths(
+  configPath: string,
+  workspaceRoot?: string,
+): { ro: string[]; rw: string[] } {
+  const targetPath = workspaceRoot
+    ? resolveConfinedConfigPath(configPath, workspaceRoot)
+    : configPath;
+  const sandbox = requireConfigObject(readConfigLayer(targetPath).sandbox, "sandbox");
+  return { ro: toStringArray(sandbox.roBinds), rw: toStringArray(sandbox.rwBinds) };
+}
+
+export function listHostFallbackCommands(configPath: string, workspaceRoot?: string): string[] {
+  const targetPath = workspaceRoot
+    ? resolveConfinedConfigPath(configPath, workspaceRoot)
+    : configPath;
+  const sandbox = requireConfigObject(readConfigLayer(targetPath).sandbox, "sandbox");
+  return toStringArray(sandbox.hostFallbackCommands);
+}
+
+export function setHostFallbackCommand(
+  configPath: string,
+  prefix: string,
+  present: boolean,
+  workspaceRoot?: string,
+): void {
+  if (present) {
+    persistSandboxHostFallbackToConfig(configPath, prefix, workspaceRoot);
+    return;
+  }
+  const targetPath = workspaceRoot
+    ? resolveConfinedConfigPath(configPath, workspaceRoot)
+    : configPath;
+  const current = readConfigForWrite(targetPath);
+  if (!current) throw new Error(`Failed to read sandbox config at '${configPath}'.`);
+  const sandbox = requireConfigObject(current.sandbox, "sandbox");
+  const value = prefix.trim();
+  const nextConfig = {
+    ...current,
+    sandbox: {
+      ...sandbox,
+      hostFallbackCommands: toStringArray(sandbox.hostFallbackCommands).filter((entry) => entry !== value),
+    },
+  };
+  if (!writeConfigFile(configPath, nextConfig, workspaceRoot)) {
+    throw new Error(`Failed to save sandbox config at '${configPath}'.`);
+  }
+}
+
+export function listYoloAskPatterns(configPath: string, workspaceRoot?: string): string[] {
+  const targetPath = workspaceRoot
+    ? resolveConfinedConfigPath(configPath, workspaceRoot)
+    : configPath;
+  return toStringArray(readConfigLayer(targetPath).yoloAskBashPatterns);
+}
+
+export function setYoloAskPattern(
+  configPath: string,
+  pattern: string,
+  present: boolean,
+  workspaceRoot?: string,
+): void {
+  const targetPath = workspaceRoot
+    ? resolveConfinedConfigPath(configPath, workspaceRoot)
+    : configPath;
+  const current = readConfigForWrite(targetPath);
+  if (!current) throw new Error(`Failed to read config at '${configPath}'.`);
+  const value = pattern.trim();
+  if (!value) return;
+  const others = toStringArray(current.yoloAskBashPatterns).filter((entry) => entry !== value);
+  const nextConfig = {
+    ...current,
+    yoloAskBashPatterns: present ? dedupeStrings([...others, value]) : others,
+  };
+  if (!writeConfigFile(configPath, nextConfig, workspaceRoot)) {
+    throw new Error(`Failed to save config at '${configPath}'.`);
+  }
+}
+
+export function listPermissionRules(
+  configPath: string,
+  workspaceRoot?: string,
+): Array<{ surface: string; pattern: string; action: PermissionState }> {
+  const targetPath = workspaceRoot
+    ? resolveConfinedConfigPath(configPath, workspaceRoot)
+    : configPath;
+  const permission = requireConfigObject(readConfigLayer(targetPath).permission, "permission");
+  return Object.entries(permission).flatMap(([surface, value]) =>
+    typeof value === "string"
+      ? [{ surface, pattern: "*", action: value as PermissionState }]
+      : Object.entries(requireConfigObject(value, surface)).map(([pattern, action]) => ({
+          surface,
+          pattern,
+          action: action as PermissionState,
+        })),
+  );
+}
+
+export function removePermissionRule(
+  configPath: string,
+  surface: string,
+  pattern: string,
+  workspaceRoot?: string,
+): void {
+  const targetPath = workspaceRoot
+    ? resolveConfinedConfigPath(configPath, workspaceRoot)
+    : configPath;
+  const current = readConfigForWrite(targetPath);
+  if (!current) throw new Error(`Failed to read permission config at '${configPath}'.`);
+  const permission = { ...requireConfigObject(current.permission, "permission") } as Record<string, unknown>;
+  const existing = permission[surface];
+  if (typeof existing === "string") {
+    if (pattern === "*") delete permission[surface];
+  } else if (existing && typeof existing === "object") {
+    const rest = Object.fromEntries(Object.entries(existing).filter(([entry]) => entry !== pattern));
+    if (Object.keys(rest).length > 0) permission[surface] = rest;
+    else delete permission[surface];
+  }
+  const nextConfig = { ...current, permission: permission as JsonObject };
+  if (!writeConfigFile(configPath, nextConfig, workspaceRoot)) {
+    throw new Error(`Failed to save permission config at '${configPath}'.`);
+  }
 }
 
 export function persistSandboxHostFallbackToConfig(
