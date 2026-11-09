@@ -78,7 +78,7 @@ afterEach(async () => {
   originalSshAuthSock = undefined;
   fakeSrtBin = "";
   mockDockerSocketPaths.mockReturnValue([]);
-  await Promise.all(tempPaths.splice(0).map((dir) => rm(dir, { recursive: true, force: true })));
+  await Promise.all(tempPaths.splice(0).map((dir) => rm(dir, { recursive: true, force: true, maxRetries: 3, retryDelay: 100 })));
 });
 
 interface FakePi {
@@ -234,6 +234,94 @@ function extractHelperInput(command: string) {
 }
 
 describe("piPermissionSystemExtension SRT default smoke", () => {
+  it.each(["manual", "auto", "yolo"] as const)("allows read-only home commands only in %s mode", async (mode) => {
+    const agentDir = await makeTempDir("pi-srt-home-mode-agent-");
+    const projectDir = await makeTempDir("pi-srt-home-mode-project-");
+    const home = await makeSyntheticHome();
+    process.env.PI_CODING_AGENT_DIR = agentDir;
+    await writeExtensionConfig(agentDir, {
+      mode, permission: { "*": "allow", bash: { "*": "allow" }, external_directory: { "*": "allow" } },
+    });
+    const pi = createFakePi();
+    piPermissionSystemExtension(pi as never);
+    const context = createContext(projectDir, { hasUI: true });
+    const command = `git -C ${home} rev-parse --show-toplevel`;
+    const event = { toolName: "bash", toolCallId: "home-read", input: { command } };
+    const result = await pi.handlers.get("tool_call")?.(event, context as never);
+    const userResult = await pi.handlers.get("user_bash")?.({ command, cwd: projectDir }, context as never);
+    if (mode === "yolo" && process.platform === "darwin") {
+      expect(result).toBeUndefined();
+      const fs = extractHelperInput(event.input.command).runtimeConfig.filesystem;
+      expect(fs.allowRead).toContain(home);
+      expect(fs.allowWrite).not.toContain(home);
+      expect(userResult).toHaveProperty("operations");
+      expect(context.ui.select).not.toHaveBeenCalled();
+    } else {
+      expect(result).toMatchObject({ block: true });
+      // Synthetic homes are below macOS's temp scope, already visible to user_bash.
+      expect(userResult).toHaveProperty("operations");
+    }
+  });
+  it("keeps home hidden when a custom mask has unsupported brackets", async () => {
+    if (process.platform !== "darwin") return;
+    const agentDir = await makeTempDir("pi-srt-unsupported-agent-");
+    const projectDir = await makeTempDir("pi-srt-unsupported-project-");
+    const home = await makeSyntheticHome();
+    process.env.PI_CODING_AGENT_DIR = agentDir;
+    await writeExtensionConfig(agentDir, {
+      mode: "yolo", permission: { "*": "allow", bash: { "*": "allow" }, external_directory: { "*": "allow" } },
+      sandbox: { enabled: true, backend: "srt", defaultProfile: "online-dev", profiles: {
+        "online-dev": { network: true, env: { allow: [], deny: [] }, maskedPaths: ["~/keys[prod]/api.txt"] },
+      } },
+    });
+    const pi = createFakePi();
+    piPermissionSystemExtension(pi as never);
+    const event = { toolName: "bash", toolCallId: "home-unsupported", input: { command: "printf x" } };
+    await expect(pi.handlers.get("tool_call")?.(event, createContext(projectDir) as never)).resolves.toBeUndefined();
+    expect(extractHelperInput(event.input.command).runtimeConfig.filesystem.allowRead).not.toContain(home);
+  });
+
+  it("passes home path denies into the macOS sandbox for indirect reads", async () => {
+    if (process.platform !== "darwin") return;
+    const agentDir = await makeTempDir("pi-srt-policy-agent-");
+    const projectDir = await makeTempDir("pi-srt-policy-project-");
+    const home = await makeSyntheticHome();
+    const privatePath = path.join(home, "private-secret");
+    await writeFile(privatePath, "SYNTHETIC");
+    process.env.PI_CODING_AGENT_DIR = agentDir;
+    await writeExtensionConfig(agentDir, {
+      mode: "yolo", permission: { "*": "allow", bash: { "*": "allow" }, external_directory: { "*": "allow" }, path: { "*": "allow", [privatePath]: "deny" } },
+    });
+    const pi = createFakePi();
+    piPermissionSystemExtension(pi as never);
+    const event = { toolName: "bash", toolCallId: "home-indirect", input: { command: "printf x" } };
+    await expect(pi.handlers.get("tool_call")?.(event, createContext(projectDir) as never)).resolves.toBeUndefined();
+    const fs = extractHelperInput(event.input.command).runtimeConfig.filesystem;
+    expect(fs.allowRead).toContain(home);
+    expect(fs.denyRead).toContain(`${privatePath.slice(0, -1)}[t]`);
+  });
+
+  it.each(["tool_call", "user_bash"] as const)("keeps explicit home denies and broad home writes blocked in yolo on %s", async (surface) => {
+    const agentDir = await makeTempDir("pi-srt-home-deny-agent-");
+    const projectDir = await makeTempDir("pi-srt-home-deny-project-");
+    const home = await makeSyntheticHome();
+    process.env.PI_CODING_AGENT_DIR = agentDir;
+    await writeExtensionConfig(agentDir, {
+      mode: "yolo", permission: { "*": "allow", bash: { "*": "allow" }, external_directory: { [home]: "deny", "*": "allow" } },
+    });
+    const pi = createFakePi();
+    piPermissionSystemExtension(pi as never);
+    const context = createContext(projectDir, { hasUI: true });
+    for (const command of [`git -C ${home} rev-parse --show-toplevel`, `echo changed > ${home}`]) {
+      const result = surface === "tool_call"
+        ? await pi.handlers.get(surface)?.({ toolName: "bash", toolCallId: "home-deny", input: { command } }, context as never)
+        : await pi.handlers.get(surface)?.({ command, cwd: projectDir }, context as never);
+      if (surface === "tool_call") expect(result).toMatchObject({ block: true });
+      else expect(result).toMatchObject({ result: { exitCode: 1 } });
+    }
+    expect(context.ui.select).not.toHaveBeenCalled();
+  });
+
   it("offers one-time host execution only on the next identical push after SRT egress failure", async () => {
     const agentDir = await makeTempDir("pi-push-fallback-agent-");
     const projectDir = await makeTempDir("pi-push-fallback-project-");

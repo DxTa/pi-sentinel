@@ -1,4 +1,6 @@
 import { existsSync } from "node:fs";
+import { buildHomeReadOnlyAccess, type HomeReadOnlyAccess } from "./home-read-policy.js";
+import { DEFAULT_MASKED_PATTERNS } from "./masked-file-gate.js";
 import type { DomainGateConfig } from "#src/network/config.js";
 
 import { commandContainsUvExecutable } from "../handlers/gates/bash-path-extractor.js";
@@ -25,6 +27,8 @@ import { buildSrtNetworkPlanFromConfig, type SrtNetworkPlan } from "./srt-networ
 import type { UnmaskedPath, ResolvedSandboxProfile, SandboxConfig, SandboxResourceLimits } from "./types.js";
 
 export interface SrtCommandSpecInput {
+  homeReadOnly?: boolean;
+  homeDenyPaths?: string[];
   /** Roots the user approved after a failed masked-file scan; they are read-only and not scanned again. */
   scanApprovedRoots?: string[];
   command: string;
@@ -41,6 +45,7 @@ export interface SrtCommandSpecInput {
 }
 
 export interface SrtCommandSpec {
+  homeReadOnly?: HomeReadOnlyAccess;
   command: string;
   cwd: string;
   repoRoot: string;
@@ -152,6 +157,8 @@ function withHomeSymlinkNodes(
 }
 
 export function buildSrtCommandSpec(input: SrtCommandSpecInput): SrtCommandSpec {
+  const homeReadOnly = input.homeReadOnly ? buildHomeReadOnlyAccess(input.profile, input.homeDenyPaths) : undefined;
+  const scanProfile = homeReadOnly ? { ...input.profile, maskedPaths: [...new Set([...DEFAULT_MASKED_PATTERNS, ...(input.profile.maskedPaths ?? [])])] } : input.profile;
   const cwd = canonicalPath(input.cwd);
   const repoRoot = canonicalPath(input.repoRoot);
   const roBinds = resolveSandboxBindPaths(
@@ -186,7 +193,7 @@ export function buildSrtCommandSpec(input: SrtCommandSpecInput): SrtCommandSpec 
     path: canonicalPath(entry.path),
   }));
   const maskedShimPlan = filterMaskedShimPlan(
-    buildMaskedCommandShimPlan(input.command, input.profile, cwd, {
+    buildMaskedCommandShimPlan(input.command, scanProfile, cwd, {
       scanRoots: withoutApprovedScanRoots(
         filterMaskedScanRoots(readAllowPaths, input.sandboxConfig.infrastructureReadPaths ?? []),
         input.scanApprovedRoots ?? [],
@@ -197,6 +204,7 @@ export function buildSrtCommandSpec(input: SrtCommandSpecInput): SrtCommandSpec 
   assertMaskedScanComplete(maskedShimPlan);
 
   return {
+    ...(homeReadOnly ? { homeReadOnly } : {}),
     command: input.command,
     cwd,
     repoRoot,
@@ -228,6 +236,8 @@ export async function buildSrtCommandSpecAsync(
   input: SrtCommandSpecInput,
   maxScanDurationMs = DEFAULT_SCAN_DURATION_MS,
 ): Promise<SrtCommandSpec> {
+  const homeReadOnly = input.homeReadOnly ? buildHomeReadOnlyAccess(input.profile, input.homeDenyPaths) : undefined;
+  const scanProfile = homeReadOnly ? { ...input.profile, maskedPaths: [...new Set([...DEFAULT_MASKED_PATTERNS, ...(input.profile.maskedPaths ?? [])])] } : input.profile;
   const deadline = Date.now() + maxScanDurationMs;
   const cwd = await canonicalPathWithinScanBudget(input.cwd, deadline, maxScanDurationMs);
   const repoRoot = await canonicalPathWithinScanBudget(input.repoRoot, deadline, maxScanDurationMs);
@@ -269,7 +279,7 @@ export async function buildSrtCommandSpecAsync(
     ),
   );
   // Unscannable roots reach the user before the post-scan path checks run.
-  const scannedPlan = await buildMaskedCommandShimPlanAsync(input.command, input.profile, cwd, {
+  const scannedPlan = await buildMaskedCommandShimPlanAsync(input.command, scanProfile, cwd, {
     scanRoots: withoutApprovedScanRoots(filterMaskedScanRoots(visibleReadPaths, infrastructureRoots), input.scanApprovedRoots ?? []),
     deadline,
     maxScanDurationMs,
@@ -285,6 +295,7 @@ export async function buildSrtCommandSpecAsync(
   assertMaskedScanComplete(maskedShimPlan);
 
   return {
+    ...(homeReadOnly ? { homeReadOnly } : {}),
     command: input.command,
     cwd,
     repoRoot,

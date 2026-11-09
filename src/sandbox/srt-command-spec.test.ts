@@ -72,6 +72,27 @@ const privateScriptPath = path.join(
 );
 
 describe("buildSrtCommandSpec", () => {
+  it.skipIf(process.platform !== "darwin")("adds read-only home visibility with native macOS masks and no credential alias allows", async () => {
+    const repoRoot = await makeTempDir("pi-srt-home-read-");
+    const home = canonicalPath(process.env.HOME!);
+    const credentialRoot = await makeTempDir("pi-srt-credential-alias-");
+    await symlink(credentialRoot, path.join(home, ".ssh"));
+    const input = {
+      command: `git -C ${home} rev-parse --show-toplevel`, cwd: repoRoot, repoRoot,
+      sandboxConfig: makeConfig({ infrastructureReadPaths: [credentialRoot] }),
+      profile: makeProfile({ maskedPaths: ["**/*.custom-secret"] }), homeReadOnly: true,
+    };
+    for (const spec of [buildSrtCommandSpec(input), await buildSrtCommandSpecAsync(input)]) {
+      const fs = buildSrtRuntimeConfig(spec).filesystem;
+      expect(fs.allowRead).toContain(home);
+      expect(fs.allowRead).not.toContain(canonicalPath(credentialRoot));
+      expect(fs.allowWrite).not.toContain(home);
+      expect(fs.denyRead).toContain(`${home}/**/*.pem`);
+      expect(fs.denyRead).toContain(`${home}/**/*.custom-secret`);
+      expect(fs.denyRead).toContain(`${canonicalPath(credentialRoot)}/**`);
+      expect(fs.denyWrite).toContain(`${home}/**/*.key`);
+    }
+  });
   it("keeps UV cache roots readable without masked-scanning their package trees", async () => {
     const repoRoot = await makeTempDir("pi-srt-spec-uv-scan-");
     const cachedPem = path.join(process.env.HOME!, ".cache", "uv", "wheels", "certifi", "cacert.pem");

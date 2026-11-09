@@ -219,6 +219,8 @@ function buildSpecInput(
 ): Parameters<typeof buildSrtCommandSpec>[0] {
   return {
     command,
+    homeReadOnly: input.homeReadOnly,
+    homeDenyPaths: input.homeDenyPaths,
     cwd: input.cwd,
     repoRoot: input.repoRoot ?? input.cwd,
     sandboxConfig: input.sandboxConfig,

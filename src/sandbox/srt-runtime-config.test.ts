@@ -82,6 +82,18 @@ describe("buildSrtRuntimeConfig", () => {
     expect(filesystem.denyWrite).toEqual(["/repo/.env"]);
   });
 
+  it("keeps rejected yolo credential allowances denied under a live home read", () => {
+    const fs = buildSrtRuntimeConfig(makeSpec({
+      homeReadOnly: { path: "/repo", denyPaths: [], protectedPaths: [] },
+      unmaskedPaths: [{ path: "/repo/private.key", writable: true }],
+      maskedShimPlan: { maskedFilePaths: [], maskedDenyPaths: [], shimCommands: [] },
+    })).filesystem;
+    expect(fs.allowRead).not.toContain("/repo/private.key");
+    expect(fs.allowWrite).not.toContain("/repo/private.key");
+    expect(fs.denyRead).toContain("/repo/private.key");
+    expect(fs.denyWrite).toContain("/repo/private.key");
+  });
+
   it("includes approved paths in SRT read and write allowances", () => {
     const filesystem = buildSrtRuntimeConfig(
       makeSpec({

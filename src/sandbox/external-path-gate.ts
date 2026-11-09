@@ -95,6 +95,7 @@ export async function detectExternalPaths(
   config?: SandboxConfig,
   repoRootResolver: (cwd: string) => string = resolveRepoRoot,
   ignoredPaths: readonly string[] = [],
+  options: { homeReadOnly?: boolean } = {},
 ): Promise<ExternalPathInfo[]> {
   const repoRoot = repoRootResolver(cwd);
   const isVisible = createSandboxVisibilityMatcher({ repoRoot, cwd, profile, config });
@@ -103,6 +104,7 @@ export async function detectExternalPaths(
     .replace(/\$\{HOME\}/g, homedir());
   const tokens = await extractTokensForPathRules(expandedCommand);
   const ignored = new Set(ignoredPaths.map(canonicalPath));
+  const home = options.homeReadOnly ? canonicalPath(homedir()) : "";
   const externals: ExternalPathInfo[] = [];
 
   for (const raw of tokens) {
@@ -113,6 +115,8 @@ export async function detectExternalPaths(
 
     if (!existsSync(absPath)) continue;
     const canonical = canonicalPath(absPath);
+    // Home visibility is an invocation capability, never a generic grant or a symlink-target allow.
+    if (home && isPathWithinDirectory(canonical, home)) continue;
     if (isVisible(canonical) || ignored.has(canonical)) continue;
     if (externals.some((e) => e.path === canonical)) continue;
 

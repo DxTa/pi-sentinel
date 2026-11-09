@@ -59,6 +59,7 @@ import { buildAutoModeBashContext } from "./auto-mode-bash-context.js";
 import { extractTokensForPathRules } from "./handlers/gates/bash-path-extractor.js";
 import { extractAllWriteTargetsFromBashCommand, extractExternalPathsFromBashCommand, extractExternalWritePathsFromBashCommand } from "./handlers/gates/bash-path-extractor.js";
 import { canonicalPath } from "./sandbox/sandbox-visible-paths.js";
+import { resolveHomeReadPolicy } from "./sandbox/home-read-policy.js";
 import { isReadOnlyBashChain, isReadOnlyBashDiagnostic } from "./bash-command-safety";
 import {
   getPathBearingToolPath,
@@ -776,6 +777,17 @@ async function resolveBashSandboxAccess(
 export default function piPermissionSystemExtension(pi: ExtensionAPI): void {
   // ── Upstream setup (identical to original index.ts) ───────────────────
   const runtime = createExtensionRuntime();
+  const homeReadPolicy = () => {
+    if (runtime.config.mode !== "yolo" || process.platform !== "darwin") return { enabled: false, denyPaths: [] };
+    try {
+      return resolveHomeReadPolicy(runtime.config.mode, [
+        ...runtime.permissionManager.getComposedConfigRules(runtime.lastKnownActiveAgentName ?? undefined),
+        ...runtime.sessionRules.getRuleset(),
+      ]);
+    } catch {
+      return { enabled: false, denyPaths: [] };
+    }
+  };
   // Yolo resolves sandbox requests without a dialog; every decision is logged.
   setSandboxYoloHooks({
     isYolo: () => runtime.config.mode === "yolo",
@@ -1816,9 +1828,11 @@ export default function piPermissionSystemExtension(pi: ExtensionAPI): void {
         typeof command === "string"
         && sandboxedBash
       ) {
+        const homeRead = homeReadPolicy();
         let effectiveConfig = getEffectiveSandboxConfig(ctx.cwd);
         policyManager.updateConfig(effectiveConfig);
         let resolved = policyManager.resolveProfile(command, ctx.cwd, resolveRepoRoot(ctx.cwd));
+        if (resolved.profile.maskedPaths.some((pattern) => /[\[\]]/.test(pattern))) homeRead.enabled = false;
         let networkApprovedForInvocation = false;
         const invocationPathGrants: { path: string; mode: "ro" | "rw" }[] = [];
 
@@ -1985,6 +1999,7 @@ export default function piPermissionSystemExtension(pi: ExtensionAPI): void {
               effectiveConfig,
               undefined,
               [...unmaskedPaths.map((entry) => entry.path), ...protectedReadPaths],
+              { homeReadOnly: homeRead.enabled },
             );
             externalWritePaths = await detectExternalWritePaths(
               command, ctx.cwd, activeProfile, effectiveConfig,
@@ -2150,6 +2165,8 @@ export default function piPermissionSystemExtension(pi: ExtensionAPI): void {
             sandboxConfig: effectiveConfig,
             forceSrt: forceSrtForProtectedResource,
             trustCaBundle: runtime.config.mode === "yolo",
+            homeReadOnly: homeRead.enabled,
+            homeDenyPaths: homeRead.denyPaths,
             cwd: ctx.cwd,
             repoRoot,
             unmaskedPaths: grants,
@@ -2268,6 +2285,17 @@ export default function piPermissionSystemExtension(pi: ExtensionAPI): void {
         event.command,
         event.cwd,
       );
+      if (runtime.config.mode === "yolo" && process.platform === "darwin" && sc.enabled && sandboxedUserBash) {
+        const home = canonicalPath(homedir());
+        for (const path of externalPaths) {
+          const canonical = canonicalPath(path);
+          if (canonical !== home && !isPathWithinDirectory(canonical, home)) continue;
+          for (const surface of ["external_directory", "path"]) {
+            const check = runtime.permissionManager.checkPermission(surface, { path: canonical }, undefined, runtime.sessionRules.getRuleset());
+            if (check.state === "deny") return blockedUserBash(`Policy denied ${surface} home read: ${canonical}`);
+          }
+        }
+      }
       hardBlockedMutationPaths = getHardBlockedBashMutationPaths(
         event.command,
         event.cwd,
@@ -2307,6 +2335,7 @@ export default function piPermissionSystemExtension(pi: ExtensionAPI): void {
     // Sandbox wrapping for user bash (same gate path as tool_call)
     if (sc.enabled) {
       if (!sandboxedUserBash) return undefined;
+      const homeRead = homeReadPolicy();
 
       // Same masked-file gate for user_bash
       // (masked files show "(masked)" content; block if user hasn't granted access)
@@ -2421,6 +2450,7 @@ export default function piPermissionSystemExtension(pi: ExtensionAPI): void {
       }
 
       let activeProfile = resolvedProfile.profile;
+      if (activeProfile.maskedPaths.some((pattern) => /[\[\]]/.test(pattern))) homeRead.enabled = false;
 
       // Collect active grants to avoid double-prompting
       const activeGrantPaths = new Set(
@@ -2458,16 +2488,14 @@ export default function piPermissionSystemExtension(pi: ExtensionAPI): void {
       const unmaskedPaths: UnmaskedPath[] = maskedResolution.unmaskedPaths;
 
       // External path gate for user_bash
-      const externalPaths = await detectExternalPaths(
-        event.command,
-        event.cwd,
-        activeProfile,
-        effectiveConfig,
-        undefined,
-        unmaskedPaths.map((entry) => entry.path),
-      );
+      let externalPaths: Awaited<ReturnType<typeof detectExternalPaths>>;
       let externalWritePaths: Awaited<ReturnType<typeof detectExternalWritePaths>>;
       try {
+        externalPaths = await detectExternalPaths(
+          event.command, event.cwd, activeProfile, effectiveConfig, undefined,
+          unmaskedPaths.map((entry) => entry.path),
+          { homeReadOnly: homeRead.enabled },
+        );
         externalWritePaths = await detectExternalWritePaths(
           event.command, event.cwd, activeProfile, effectiveConfig,
         );
@@ -2587,6 +2615,8 @@ export default function piPermissionSystemExtension(pi: ExtensionAPI): void {
           sandboxConfig: effectiveConfig,
           forceSrt: forceSrtForProtectedResource,
           trustCaBundle: runtime.config.mode === "yolo",
+          homeReadOnly: homeRead.enabled,
+          homeDenyPaths: homeRead.denyPaths,
           cwd: event.cwd,
           repoRoot: resolveRepoRoot(event.cwd),
           unmaskedPaths,

@@ -84,6 +84,20 @@ describe("detectExternalPaths", () => {
     )).rejects.toThrow(/broad|sensitive/i);
   });
 
+  it("allows ephemeral yolo home reads without changing broad grant validation", async () => {
+    const workspace = await mkdtemp(path.join(tmpdir(), "pi-external-workspace-"));
+    tempPaths.push(workspace);
+    const profile = { name: "online-dev", network: true, roBinds: [], rwBinds: [], maskedPaths: [] };
+    await expect(detectExternalPaths(
+      `git -C ${homedir()} rev-parse --show-toplevel`, workspace, profile,
+      undefined, () => workspace, [], { homeReadOnly: true },
+    )).resolves.toEqual([]);
+    expect(() => validateSandboxGrantPath(homedir())).toThrow(/broad|sensitive/i);
+    await expect(detectExternalWritePaths(
+      `echo changed > ${homedir()}`, workspace, profile, undefined, () => workspace,
+    )).rejects.toThrow(/broad|sensitive/i);
+  });
+
   it("allows granting socket locations", async () => {
     expect(() => validateSandboxGrantPath("/run")).not.toThrow();
   });

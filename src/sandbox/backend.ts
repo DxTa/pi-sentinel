@@ -10,6 +10,8 @@ export interface SandboxWrapInput {
   /** Keep resource-protected commands in SRT even when they match host bypass rules. */
   forceSrt?: boolean;
   trustCaBundle?: boolean;
+  homeReadOnly?: boolean;
+  homeDenyPaths?: string[];
   sandboxConfig: SandboxConfig;
   cwd: string;
   repoRoot?: string;
@@ -26,6 +28,8 @@ export interface SandboxOperationsInput {
   /** Keep resource-protected commands in SRT even when they match host bypass rules. */
   forceSrt?: boolean;
   trustCaBundle?: boolean;
+  homeReadOnly?: boolean;
+  homeDenyPaths?: string[];
   sandboxConfig: SandboxConfig;
   cwd: string;
   repoRoot?: string;
