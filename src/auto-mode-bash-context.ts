@@ -102,6 +102,14 @@ function cdLeavesWorkspace(command: string, cwd: string | undefined, literalCdAl
   return false;
 }
 
+/** A quoted-delimiter heredoc written with `cat >` is file data: bash never runs its body. */
+const DATA_HEREDOC_BODY = /^(\s*cat\s+>[^\n]*<<\s*'(\w+)'[^\n]*\n)[\s\S]*?^\2[ \t]*$/gm;
+
+/** Heredoc bodies that cannot execute are not scanned for network targets. */
+function withoutDataHeredocBodies(command: string): string {
+  return command.replace(DATA_HEREDOC_BODY, "$1");
+}
+
 /** Redact filesystem operands and mark Bash commands safe for classifier use. */
 export function buildAutoModeBashContext(
   command: string,
@@ -162,8 +170,9 @@ export function buildAutoModeBashContext(
       );
 
   // A URL with userinfo (`http://127.0.0.1@host`) is read by curl as host `host`, not loopback.
-  const hasNetworkTarget = LOOPBACK_WITH_USERINFO.test(command)
-    || extractAllNetworkTargets(command).some((target) => !LOOPBACK_TARGET.test(target));
+  const scanned = withoutDataHeredocBodies(command);
+  const hasNetworkTarget = LOOPBACK_WITH_USERINFO.test(scanned)
+    || extractAllNetworkTargets(scanned).some((target) => !LOOPBACK_TARGET.test(target));
   workspaceLocal = workspaceLocal && !hasNetworkTarget && !cdLeavesWorkspace(command, cwd);
   // targetsWorkspace tolerates a literal in-workspace cd before an unsplittable command such as a heredoc.
   const staysLocal = !hasNetworkTarget && !cdLeavesWorkspace(command, cwd, true);

@@ -99,6 +99,24 @@ b"`;
     expect(buildAutoModeBashContext("printf //etc/hosts", [], workspace).workspaceLocal).toBe(false);
   });
 
+  it("ignores URLs in a quoted cat heredoc body", () => {
+    const command = "cat > src/a.ts <<'EOF'\n// see https://github.com/x/y\nexport const a = 1;\nEOF";
+
+    expect(buildAutoModeBashContext(command, [], workspace)).toMatchObject({ workspaceLocal: true, targetsWorkspace: true });
+  });
+
+  it("still counts a network target outside a data heredoc", () => {
+    const command = "cat > src/a.ts <<'EOF'\nhi\nEOF\ncurl https://github.com/x/y";
+
+    expect(buildAutoModeBashContext(command, [], workspace).workspaceLocal).toBe(false);
+  });
+
+  it("still scans an unquoted heredoc body that the shell expands", () => {
+    const command = "cat > src/a.ts <<EOF\n$(curl https://github.com/x/y)\nEOF";
+
+    expect(buildAutoModeBashContext(command, [], workspace).workspaceLocal).toBe(false);
+  });
+
   it("rejects dynamic and external path operands", () => {
     const dynamic = buildAutoModeBashContext("cat $HOME/.ssh/id_rsa", ["$HOME/.ssh/id_rsa"], workspace);
     const external = buildAutoModeBashContext("cat ../outside.txt", ["../outside.txt"], workspace);
