@@ -88,6 +88,17 @@ b"`;
     expect(result).toMatchObject({ command: "printf <sensitive-path>", workspaceLocal: false, hardRuleHit: true });
   });
 
+  it("keeps a heredoc file body with a line comment workspace-local", () => {
+    const command = "cat > src/a.ts <<'EOF'\n// note\nexport const a = 1;\nEOF";
+    const result = buildAutoModeBashContext(command, [], workspace);
+
+    expect(result).toMatchObject({ workspaceLocal: true, hardRuleHit: false });
+  });
+
+  it("still rejects double-slash absolute paths", () => {
+    expect(buildAutoModeBashContext("printf //etc/hosts", [], workspace).workspaceLocal).toBe(false);
+  });
+
   it("rejects dynamic and external path operands", () => {
     const dynamic = buildAutoModeBashContext("cat $HOME/.ssh/id_rsa", ["$HOME/.ssh/id_rsa"], workspace);
     const external = buildAutoModeBashContext("cat ../outside.txt", ["../outside.txt"], workspace);

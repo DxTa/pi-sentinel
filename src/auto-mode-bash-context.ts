@@ -145,7 +145,8 @@ export function buildAutoModeBashContext(
   );
   const unclassifiedPaths = [...unclassifiedCommand.matchAll(ABSOLUTE_PATH_PATTERN)]
     .map((match) => match[2] ?? "")
-    .filter((path) => !DISCARD_DEVICES.has(path) && !isSystemBinOnly(path));
+    // A bare `//` is a comment marker in heredoc content, not a path.
+    .filter((path) => path !== "//" && !DISCARD_DEVICES.has(path) && !isSystemBinOnly(path));
   const operandsInWorkspace = workspaceLocal;
   workspaceLocal = unclassifiedPaths.length === 0 ? workspaceLocal : false;
   for (const path of unclassifiedPaths) {
