@@ -57,11 +57,11 @@ export function buildSrtRuntimeConfig(spec: SrtCommandSpec): SrtRuntimeConfig {
   const access = spec.homeReadOnly;
   const cloudWorkspace = isCloudWorkspace(spec.cwd, spec) || isCloudWorkspace(spec.repoRoot, spec);
   const isProtected = (path: string) => isHomeProtectedPath(path, spec);
-  const approvedRead = dedupe(spec.unmaskedPaths.map((entry) => entry.path).filter((path) => !isProtected(path)));
+  const approvedRead = dedupe(spec.unmaskedPaths.filter((entry) => !entry.writable || !isProtected(entry.path)).map((entry) => entry.path));
   const approvedWrite = dedupe(spec.unmaskedPaths.filter((entry) => entry.writable).map((entry) => entry.path).filter((path) => !isProtected(path)));
   const deniedMaskedPaths = dedupe([
     ...spec.maskedShimPlan.maskedDenyPaths,
-    ...spec.unmaskedPaths.filter((entry) => isProtected(entry.path)).map((entry) => entry.path),
+    ...spec.unmaskedPaths.filter((entry) => entry.writable && isProtected(entry.path)).map((entry) => entry.path),
   ]);
   const deniedWritePaths = dedupe([
     ...deniedMaskedPaths,

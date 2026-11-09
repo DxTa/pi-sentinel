@@ -94,6 +94,17 @@ describe("buildSrtRuntimeConfig", () => {
     expect(fs.denyWrite).toContain("/repo/private.key");
   });
 
+  it("keeps approved read-only credential paths readable under a live home read", () => {
+    const fs = buildSrtRuntimeConfig(makeSpec({
+      homeReadOnly: { path: "/repo", denyPaths: [], protectedPaths: [] },
+      unmaskedPaths: [{ path: "/repo/.config/gh/hosts.yml", writable: false }],
+      maskedShimPlan: { maskedFilePaths: [], maskedDenyPaths: [], shimCommands: [] },
+    })).filesystem;
+    expect(fs.allowRead).toContain("/repo/.config/gh/hosts.yml");
+    expect(fs.denyRead).not.toContain("/repo/.config/gh/hosts.yml");
+    expect(fs.denyWrite).toContain("/repo/.config/gh/hosts.yml");
+  });
+
   it("includes approved paths in SRT read and write allowances", () => {
     const filesystem = buildSrtRuntimeConfig(
       makeSpec({
