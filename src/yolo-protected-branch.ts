@@ -43,15 +43,21 @@ function destinationBranch(refspec: string, currentBranch: string | null): strin
   return name.startsWith("refs/") ? null : name;
 }
 
-/** Reason to block a yolo git push that writes a protected branch, or null when every target is allowed. */
-export function protectedPushReason(command: string, cwd: string): string | null {
+/**
+ * Reason to block a git push that writes the default branch or every branch, or null when it may run.
+ * An unresolvable target blocks only when `blockUnresolved` is set (yolo, which never prompts).
+ */
+export function protectedPushReason(command: string, cwd: string, blockUnresolved: boolean): string | null {
   for (const part of bashInnerCommands(command)?.commands ?? [command]) {
     const words = bashWords(part);
     if (!words || !isGitPushWords(words)) continue;
 
     const { dir, args } = gitPushParts(words);
-    if (args.some((arg) => /[$`]/.test(arg))) return "yolo mode cannot tell which branch this push writes, so it blocks it";
-    if (args.some((arg) => ALL_BRANCH_FLAGS.has(arg))) return "yolo mode never pushes every branch, which includes the default branch";
+    if (args.some((arg) => /[$`]/.test(arg))) {
+      if (blockUnresolved) return "yolo mode cannot tell which branch this push writes, so it blocks it";
+      continue;
+    }
+    if (args.some((arg) => ALL_BRANCH_FLAGS.has(arg))) return "git push blocked: it writes every branch, including the default branch";
 
     const repo = resolve(cwd, dir ?? ".");
     const positionals = pushPositionals(args);
@@ -65,7 +71,7 @@ export function protectedPushReason(command: string, cwd: string): string | null
       ? positionals.slice(1).map((refspec) => destinationBranch(refspec, currentBranch))
       : [currentBranch];
     const hit = targets.find((name) => name !== null && protectedNames.has(name));
-    if (hit) return `yolo mode never pushes to the protected branch "${hit}"`;
+    if (hit) return `git push blocked: it writes the default branch "${hit}"`;
   }
   return null;
 }

@@ -219,12 +219,12 @@ export class PermissionGateHandler {
       }
     }
 
-    // ── yolo hard rule: never push to a protected branch ─────────────────────
-    const protectedPush = session.config.mode === "yolo" && bashCommand !== null && tcc.cwd
-      ? protectedPushReason(bashCommand, tcc.cwd)
+    // ── protected branch hard rule: never push to the default branch, in every mode ──
+    const protectedPush = bashCommand !== null && tcc.cwd
+      ? protectedPushReason(bashCommand, tcc.cwd, session.config.mode === "yolo")
       : null;
     if (protectedPush) {
-      writeReviewLog("permission_request.yolo_protected_push", {
+      writeReviewLog("permission_request.protected_push", {
         source: "tool_call",
         toolCallId: tcc.toolCallId,
         toolName: tcc.toolName,

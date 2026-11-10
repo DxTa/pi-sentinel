@@ -93,6 +93,7 @@ import {
   matchesGitPushCommand,
   shouldAutoApproveForwardedPermissionRequest,
 } from "./yolo-mode";
+import { protectedPushReason } from "./yolo-protected-branch";
 import { clearSessionLists, getSessionHostFallbacks } from "./session-lists";
 
 // ── Our modules ──────────────────────────────────────────────────────────
@@ -2271,6 +2272,8 @@ export default function piPermissionSystemExtension(pi: ExtensionAPI): void {
     ctx: ExtensionContext,
   ) => {
     activeWorkspaceCwd = event.cwd;
+    const protectedPush = protectedPushReason(event.command, event.cwd, runtime.config.mode === "yolo");
+    if (protectedPush) return blockedUserBash(protectedPush);
     let sc: SandboxConfig;
     let policyManager: SandboxPolicyManager;
     try {

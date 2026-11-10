@@ -24,8 +24,8 @@ describe("protectedPushReason", () => {
     rmSync(repo, { recursive: true, force: true });
   });
 
-  const blocked = (command: string) => expect(protectedPushReason(command, repo)).not.toBeNull();
-  const allowed = (command: string) => expect(protectedPushReason(command, repo)).toBeNull();
+  const blocked = (command: string) => expect(protectedPushReason(command, repo, true)).not.toBeNull();
+  const allowed = (command: string) => expect(protectedPushReason(command, repo, true)).toBeNull();
 
   it("allows pushes to a feature branch", () => {
     allowed("git push origin feature");
@@ -55,8 +55,9 @@ describe("protectedPushReason", () => {
     blocked("git push --mirror origin");
   });
 
-  it("blocks a push target it cannot resolve", () => {
+  it("blocks a push target it cannot resolve in yolo, but leaves it to the prompt otherwise", () => {
     blocked("git push origin $BRANCH");
+    expect(protectedPushReason("git push origin $BRANCH", repo, false)).toBeNull();
   });
 
   it("finds pushes inside chains and honours -C", () => {

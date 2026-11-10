@@ -181,7 +181,7 @@ async function setupPushFallback(overrides: Record<string, unknown> = {}) {
   });
   const pi = createFakePi();
   piPermissionSystemExtension(pi as never);
-  const command = "git -C . push https://example.test/repo.git main";
+  const command = "git -C . push https://example.test/repo.git feature";
   let callId = 0;
   const run = async (ctx: ReturnType<typeof createContext>, rawCommand = command) => {
     const event = { toolName: "bash", toolCallId: `push-${++callId}`, input: { command: rawCommand } };
@@ -334,7 +334,7 @@ describe("piPermissionSystemExtension SRT default smoke", () => {
     const configBefore = await readFile(path.join(agentDir, "sentinel.json"), "utf8");
     const pi = createFakePi();
     piPermissionSystemExtension(pi as never);
-    const command = "git -C . push https://example.test/repo.git main";
+    const command = "git -C . push https://example.test/repo.git feature";
     const context = createContext(projectDir, { hasUI: true, choices: ["Yes", "Yes", "Allow once", "Yes"] });
     const call = pi.handlers.get("tool_call")!;
     const first = { toolName: "bash", toolCallId: "push-1", input: { command } };
@@ -374,7 +374,7 @@ describe("piPermissionSystemExtension SRT default smoke", () => {
     await writeFile(path.join(sshDir, "id_ed25519"), "synthetic-key", "utf8");
     await mkdir(path.join(fixture.projectDir, ".git"));
     await writeFile(path.join(fixture.projectDir, ".git", "config"), '[remote "origin"]\nurl = git@example.test:repo.git\n', "utf8");
-    const command = "git push origin main";
+    const command = "git push origin feature";
     const ctx = createContext(fixture.projectDir, { hasUI: true, choices: ["Yes", "Allow once", "Yes", "Allow once", "Allow once"] });
     const first = await fixture.run(ctx, command);
     expect(first.result).toBeUndefined();

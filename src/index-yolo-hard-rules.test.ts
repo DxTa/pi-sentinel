@@ -227,11 +227,27 @@ describe("yolo mode hard rules", () => {
     const { run, context, projectDir } = await setup("manual");
     await writeSshRemote(projectDir);
 
-    const result = await run("bash", { command: "git push origin main" });
+    const result = await run("bash", { command: "git push origin feature" });
 
     expect(result?.block).toBeUndefined();
     expect(context.ui.select).toHaveBeenCalledOnce();
     expect(context.ui.select.mock.calls[0]?.[1]).toEqual(["Yes", "No", "No, provide reason"]);
+  });
+
+  it("blocks a git push to the default branch in manual mode without a dialog", async () => {
+    const { run, context, projectDir } = await setup("manual");
+    await writeSshRemote(projectDir);
+
+    expect(await run("bash", { command: "git push origin main" })).toMatchObject({ block: true });
+    expect(context.ui.select).not.toHaveBeenCalled();
+  });
+
+  it("blocks a git push to the default branch in auto mode without a dialog", async () => {
+    const { run, context, projectDir } = await setup("auto");
+    await writeSshRemote(projectDir);
+
+    expect(await run("bash", { command: "git push origin main" })).toMatchObject({ block: true });
+    expect(context.ui.select).not.toHaveBeenCalled();
   });
 
   it("blocks a git push to an SSH remote when the one-time prompt is denied", async () => {
@@ -239,7 +255,7 @@ describe("yolo mode hard rules", () => {
     await writeSshRemote(projectDir);
     context.ui.select.mockResolvedValueOnce("No");
 
-    expect(await run("bash", { command: "git push origin main" })).toMatchObject({ block: true });
+    expect(await run("bash", { command: "git push origin feature" })).toMatchObject({ block: true });
     expect(context.ui.select).toHaveBeenCalledOnce();
   });
 
@@ -263,7 +279,7 @@ describe("yolo mode hard rules", () => {
     const { run, projectDir } = await setup("manual");
     await writeSshRemote(projectDir);
 
-    expect(await run("bash", { command: "ssh host ls; git push origin main" })).toMatchObject({
+    expect(await run("bash", { command: "ssh host ls; git push origin feature" })).toMatchObject({
       block: true,
       reason: expect.stringContaining("implicit credential access"),
     });
@@ -274,7 +290,7 @@ describe("yolo mode hard rules", () => {
     await writeSshRemote(projectDir);
 
     const result = await pi.handlers.get("user_bash")?.(
-      { command: "ssh host ls; git push origin main", cwd: projectDir },
+      { command: "ssh host ls; git push origin feature", cwd: projectDir },
       context as never,
     );
 
@@ -287,15 +303,15 @@ describe("yolo mode hard rules", () => {
     const otherRepo = await makeTempDir("pi-yolo-other-");
     await writeSshRemote(otherRepo);
 
-    expect(await run("bash", { command: `git push git@example.test:org/repo.git main; git -C ${otherRepo} fetch origin` })).toMatchObject({
+    expect(await run("bash", { command: `git push git@example.test:org/repo.git feature; git -C ${otherRepo} fetch origin` })).toMatchObject({
       block: true,
     });
   });
 
   it.each([
-    "git remote update && git push URL main",
-    "git -C OTHER fe't'ch origin && git push URL main",
-    "git push URL main $(SSHWORD host ls)",
+    "git remote update && git push URL feature",
+    "git -C OTHER fe't'ch origin && git push URL feature",
+    "git push URL feature $(SSHWORD host ls)",
   ])("still blocks a chain that hides a remote or credential segment: %s", async (template) => {
     const { run } = await setup("manual");
     const otherRepo = await makeTempDir("pi-yolo-other-");
@@ -308,14 +324,14 @@ describe("yolo mode hard rules", () => {
   it("keeps local git commands in a push chain on the one-time prompt", async () => {
     const { run, context } = await setup("manual");
 
-    expect((await run("bash", { command: "git add -A && git commit -m x && git push " + SSH_REMOTE + " main" }))?.block).toBeUndefined();
+    expect((await run("bash", { command: "git add -A && git commit -m x && git push " + SSH_REMOTE + " feature" }))?.block).toBeUndefined();
     expect(context.ui.select).toHaveBeenCalledOnce();
   });
 
   it.each([
-    "git -c core.sshCommand=x push @REMOTE@ main",
-    "git commit -S -m x; git push @REMOTE@ main",
-    "git -C . tag -s v1; git push @REMOTE@ main",
+    "git -c core.sshCommand=x push @REMOTE@ feature",
+    "git commit -S -m x; git push @REMOTE@ feature",
+    "git -C . tag -s v1; git push @REMOTE@ feature",
   ])("still blocks a push chain with a non-plain git form or signing flag: %s", async (template) => {
     const { run, projectDir } = await setup("manual");
     await writeSshRemote(projectDir);
@@ -362,7 +378,7 @@ describe("yolo mode hard rules", () => {
     );
     context.ui.select.mockImplementation(async () => "No");
 
-    await expect(run("bash", { command: "git push https://example.com/repo.git main" }))
+    await expect(run("bash", { command: "git push https://example.com/repo.git feature" }))
       .resolves.toMatchObject({ block: true });
     expect(context.ui.select).toHaveBeenCalledOnce();
   });
@@ -370,7 +386,7 @@ describe("yolo mode hard rules", () => {
   it("uses one-time approval for Git pushes through earlier Bash gates", async () => {
     const { run, context } = await setup("manual");
     const outsideDir = await makeTempDir("pi-yolo-outside-");
-    const command = `git -C ${outsideDir} push origin main`;
+    const command = `git -C ${outsideDir} push origin feature`;
 
     await run("bash", { command });
     const firstPromptCount = context.ui.select.mock.calls.length;
