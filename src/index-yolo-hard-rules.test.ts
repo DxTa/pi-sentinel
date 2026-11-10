@@ -247,7 +247,15 @@ describe("yolo mode hard rules", () => {
     const { run, context, projectDir } = await setup("yolo");
     await writeSshRemote(projectDir);
 
-    expect((await run("bash", { command: "git push origin main" }))?.block).toBeUndefined();
+    expect((await run("bash", { command: "git push origin feature" }))?.block).toBeUndefined();
+    expect(context.ui.select).not.toHaveBeenCalled();
+  });
+
+  it("blocks a git push to main in yolo mode without a dialog", async () => {
+    const { run, context, projectDir } = await setup("yolo");
+    await writeSshRemote(projectDir);
+
+    expect(await run("bash", { command: "git push origin main" })).toMatchObject({ block: true });
     expect(context.ui.select).not.toHaveBeenCalled();
   });
 

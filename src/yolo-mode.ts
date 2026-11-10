@@ -45,7 +45,7 @@ function isKubectlWrite(words: string[]): boolean {
 }
 
 /** git push by executable name, so `/usr/bin/git` and tab spacing count. */
-function isGitPushWords(words: readonly string[]): boolean {
+export function isGitPushWords(words: readonly string[]): boolean {
   const normalized = words.map((word) => bashLiteralWord(word) ?? word);
   const subcommand = subcommandIndex(normalized, GIT_VALUE_OPTIONS);
   const executable = bashLiteralWord(words[0]);
@@ -64,6 +64,14 @@ function isGitPushWords(words: readonly string[]): boolean {
 
 export function isGitExecutable(word: string): boolean {
   return word.slice(word.lastIndexOf("/") + 1) === "git";
+}
+
+/** The `-C` directory and the words after the push verb of a git push that isGitPushWords accepted. */
+export function gitPushParts(words: readonly string[]): { dir: string | null; args: string[] } {
+  const normalized = words.map((word) => bashLiteralWord(word) ?? word);
+  const verbAt = subcommandIndex(normalized, GIT_VALUE_OPTIONS);
+  const dirAt = normalized.slice(1, verbAt).indexOf("-C");
+  return { dir: dirAt === -1 ? null : (normalized[dirAt + 2] ?? null), args: normalized.slice(verbAt + 1) };
 }
 
 /** Only `git push` and `git -C <path> push` are plain; other forms that name push need a prompt. */

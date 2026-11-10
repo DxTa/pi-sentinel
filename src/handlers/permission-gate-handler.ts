@@ -36,6 +36,7 @@ import {
 } from "#src/tool-registry";
 import { buildAutoModeBashContext } from "#src/auto-mode-bash-context";
 import { forbiddenWriteTarget } from "#src/yolo-forbidden-writes";
+import { protectedPushReason } from "#src/yolo-protected-branch";
 import { gateNonExplicitAllowForAuto, matchesGitPushCommand, shouldRelaxBundledToolDenyInYolo } from "#src/yolo-mode";
 import { describeBashExternalDirectoryGate } from "./gates/bash-external-directory";
 
@@ -216,6 +217,21 @@ export class PermissionGateHandler {
       if (deniedPushResult.action === "block") {
         return { block: true, reason: deniedPushResult.reason };
       }
+    }
+
+    // ── yolo hard rule: never push to a protected branch ─────────────────────
+    const protectedPush = session.config.mode === "yolo" && bashCommand !== null && tcc.cwd
+      ? protectedPushReason(bashCommand, tcc.cwd)
+      : null;
+    if (protectedPush) {
+      writeReviewLog("permission_request.yolo_protected_push", {
+        source: "tool_call",
+        toolCallId: tcc.toolCallId,
+        toolName: tcc.toolName,
+        agentName: tcc.agentName,
+        reason: protectedPush,
+      });
+      return { block: true, reason: protectedPush };
     }
 
     // ── yolo hard rule: never write system or credential paths ──────────────
