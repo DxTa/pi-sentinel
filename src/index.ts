@@ -131,6 +131,7 @@ import { SandboxPolicyManager, type Grant, type GrantDuration } from "./sandbox/
 import { createSandboxRuntimeLoader } from "./sandbox/runtime-lazy.js";
 import { promptSandboxGrant, setSandboxYoloHooks } from "./sandbox/sandbox-prompt.js";
 import { loadThreatFeed } from "./network/threat-feed.js";
+import { isLocalHost } from "./network/local-hosts.js";
 import {
   DEFAULT_MASKED_PATTERNS,
   classifyMaskedPathKind,
@@ -790,6 +791,8 @@ export default function piPermissionSystemExtension(pi: ExtensionAPI): void {
   // Yolo resolves sandbox requests without a dialog; every decision is logged.
   setSandboxYoloHooks({
     isYolo: () => runtime.config.mode === "yolo",
+    autoAllowsNetwork: (values) =>
+      (runtime.config.mode === "auto" || runtime.config.mode === "yolo") && values.every(isLocalHost),
     log: (event, details) => runtime.writeReviewLog(event, details),
   });
   const hostCapabilityBypassApprovals = new Set<string>();
@@ -1770,6 +1773,7 @@ export default function piPermissionSystemExtension(pi: ExtensionAPI): void {
           getNetworkConfig,
           getAgentDir: getAgentDir,
           autoApproveAsk: () => runtime.config.mode === "yolo",
+          autoAllowLocalHosts: () => runtime.config.mode === "auto" || runtime.config.mode === "yolo",
           getThreatFeed: () => threatFeed,
           writeReviewLog: runtime.writeReviewLog.bind(runtime),
           promptWaitTracker,

@@ -20,12 +20,15 @@ import type { PersistentApprovalScope } from "../scoped-config";
 import type { PromptWaitTracker } from "../prompt-state";
 import type { DomainGateConfig } from "../network/types.js";
 import { approveSessionDomains, clearSessionDomains, getSessionDomainGrants } from "./session-domains.js";
+import { isLocalHost } from "./local-hosts.js";
 
 export interface NetworkGateDeps {
   getNetworkConfig: (cwd?: string) => DomainGateConfig | undefined;
   getAgentDir: () => string;
   /** Classic yolo: approve ask verdicts for this call without a prompt. Explicit denies still block. */
   autoApproveAsk?: () => boolean;
+  /** Auto and yolo: approve ask verdicts for loopback and container/VM hosts without a prompt. */
+  autoAllowLocalHosts?: () => boolean;
   /** Hosts from the cached threat feed, when loaded. */
   getThreatFeed?: () => ReadonlySet<string> | undefined;
   writeReviewLog?: (event: string, details: Record<string, unknown>) => void;
@@ -164,6 +167,7 @@ async function resolveAskVerdict(
 ): Promise<NetworkGateResult | undefined> {
   if (domains.length === 0) return undefined;
   if (deps.autoApproveAsk?.()) return { approvedDomains: [...domains] };
+  if (deps.autoAllowLocalHosts?.() && domains.every(isLocalHost)) return { approvedDomains: [...domains] };
   if (!ctx.hasUI) {
     return { block: true, reason: noUiReason(domains) };
   }

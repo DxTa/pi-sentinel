@@ -177,3 +177,31 @@ describe("promptSandboxGrant in yolo", () => {
   });
 });
 
+
+describe("promptSandboxGrant local network in auto", () => {
+  const log = vi.fn();
+  const ctx = (select = vi.fn(async () => "Deny")) => ({ hasUI: true, cwd: "/repo", ui: { select } }) as never;
+  const network = (values: string[]) => ({ type: "network", description: "d", values }) as never;
+
+  beforeEach(() => setSandboxYoloHooks({
+    isYolo: () => false,
+    autoAllowsNetwork: (values) => values.every((value) => value.endsWith(".localhost")),
+    log,
+  }));
+  afterEach(() => { setSandboxYoloHooks(undefined); log.mockClear(); });
+
+  it("grants local network requests once without a dialog", async () => {
+    const select = vi.fn(async () => "Deny");
+    await expect(promptSandboxGrant(ctx(select), { command: "c", change: network(["mldb.x.localhost"]) }))
+      .resolves.toEqual({ action: "allow", duration: "once" });
+    expect(select).not.toHaveBeenCalled();
+    expect(log).toHaveBeenCalledWith("sandbox_request.local_auto_granted_once", expect.objectContaining({ type: "network" }));
+  });
+
+  it("still prompts for a remote host in the same request", async () => {
+    const select = vi.fn(async () => "Deny");
+    await expect(promptSandboxGrant(ctx(select), { command: "c", change: network(["mldb.x.localhost", "example.com"]) }))
+      .resolves.toEqual({ action: "deny" });
+    expect(select).toHaveBeenCalledOnce();
+  });
+});

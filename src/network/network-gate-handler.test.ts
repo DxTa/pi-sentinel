@@ -287,3 +287,48 @@ describe("egress scan in the network gate", () => {
     expect(result).toMatchObject({ result: { exitCode: 1 } });
   });
 });
+
+describe("handleNetworkToolCall local hosts", () => {
+  const deps = (autoAllowLocalHosts: boolean) => ({
+    getNetworkConfig: () => ({ enabled: true, unknownDomains: "ask" as const, deniedDomains: [] }),
+    getAgentDir: () => "/agent",
+    autoAllowLocalHosts: () => autoAllowLocalHosts,
+  });
+
+  it("approves a loopback ask verdict without a prompt when local hosts are auto-allowed", async () => {
+    clearSessionNetworkApprovals();
+    const select = vi.fn();
+    const result = await handleNetworkToolCall(
+      { toolName: "bash", input: { command: "curl http://mldb.x.localhost/api" } } as never,
+      { hasUI: true, cwd: "/repo", ui: { select } } as never,
+      deps(true),
+    );
+
+    expect(result).toEqual({ approvedDomains: ["mldb.x.localhost"] });
+    expect(select).not.toHaveBeenCalled();
+  });
+
+  it("still prompts for a remote host when local hosts are auto-allowed", async () => {
+    clearSessionNetworkApprovals();
+    const select = vi.fn(async () => "Deny");
+    await handleNetworkToolCall(
+      { toolName: "bash", input: { command: "curl https://example.com/" } } as never,
+      { hasUI: true, cwd: "/repo", ui: { select } } as never,
+      deps(true),
+    );
+
+    expect(select).toHaveBeenCalledOnce();
+  });
+
+  it("prompts for a loopback host when local hosts are not auto-allowed", async () => {
+    clearSessionNetworkApprovals();
+    const select = vi.fn(async () => "Deny");
+    await handleNetworkToolCall(
+      { toolName: "bash", input: { command: "curl http://mldb.x.localhost/api" } } as never,
+      { hasUI: true, cwd: "/repo", ui: { select } } as never,
+      deps(false),
+    );
+
+    expect(select).toHaveBeenCalledOnce();
+  });
+});

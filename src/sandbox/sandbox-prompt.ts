@@ -42,6 +42,8 @@ const CHOICE_DENY = "Deny";
 /** Registered by the extension so yolo can resolve every sandbox request without a dialog. */
 export interface SandboxYoloHooks {
   isYolo(): boolean;
+  /** Auto and yolo: network requests for loopback and container/VM hosts are granted once without a prompt. */
+  autoAllowsNetwork?(values: readonly string[]): boolean;
   log(event: string, details: Record<string, unknown>): void;
 }
 
@@ -81,6 +83,10 @@ export async function promptSandboxGrant(
   details: SandboxPromptDetails,
 ): Promise<SandboxPromptResult> {
   if (yoloHooks?.isYolo()) return resolveYolo(details);
+  if (details.change.type === "network" && yoloHooks?.autoAllowsNetwork?.(details.change.values)) {
+    yoloHooks.log("sandbox_request.local_auto_granted_once", { type: "network", valueCount: details.change.values.length });
+    return { action: "allow", duration: "once" };
+  }
   if (!ctx.hasUI) {
     // No UI available — default to deny (fail-closed)
     return { action: "deny" };
