@@ -724,6 +724,31 @@ describe("PermissionPrompter", () => {
     ]);
   });
 
+  it("explains a yolo block with the trigger and the fix, and marks it as policy", async () => {
+    const requestPermissionDecisionFromUi = vi.fn();
+    const prompter = new PermissionPrompter({
+      promptWaitTracker: new PromptWaitTracker({ emit() {} }),
+      getConfig: () => ({ debugLog: false, permissionReviewLog: true, mode: "yolo", yoloAskBashPatterns: [] } as any),
+      writeReviewLog() {},
+      subagentSessionsDir: "/tmp/subagents",
+      forwardingDir: "/tmp/forwarding",
+      requestPermissionDecisionFromUi,
+    });
+
+    const result = await prompter.prompt({ hasUI: true, ui: { setStatus() {} } } as never, {
+      requestId: "req-rm",
+      source: "tool_call",
+      agentName: null,
+      message: "Need permission",
+      toolName: "bash",
+      command: "rm -f /tmp/api_health.json",
+    });
+
+    expect(result).toMatchObject({ approved: false, state: "denied", policyBlock: true });
+    expect(result.denialReason).toMatch(/^yolo mode: rm: yolo allows rm only when every path is inside the workspace\. .*Change the request and retry; do not repeat it unchanged\.$/);
+    expect(requestPermissionDecisionFromUi).not.toHaveBeenCalled();
+  });
+
   it("blocks matching bash yolo exceptions without a dialog", async () => {
     const requestPermissionDecisionFromUi = vi.fn(async () => ({
       approved: true,

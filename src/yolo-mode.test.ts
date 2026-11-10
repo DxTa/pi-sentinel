@@ -296,6 +296,25 @@ describe("shouldRelaxBundledToolDenyInYolo", () => {
   });
 });
 
+describe("yoloAskReason", () => {
+  const config = { yoloAskBashPatterns: ["npm run deploy*"] } as never;
+
+  it.each([
+    ["rm -f /tmp/api_health.json", /^rm: .*workspace/],
+    ["ssh host ls", /^ssh: /],
+    ["git -c core.sshCommand=x push origin feature", /^git push: /],
+    ["npm publish", /^npm publish: /],
+    ["kubectl apply -f x.yaml", /^kubectl apply: /],
+    ["npm run deploy-prod", /yoloAskBashPatterns "npm run deploy\*"/],
+  ])("explains the trigger for %s", (command, reason) => {
+    expect(yoloModeModule.yoloAskReason(command, config)).toMatch(reason);
+  });
+
+  it("returns null when no rule matches", () => {
+    expect(yoloModeModule.yoloAskReason("curl -s http://mldb.x.localhost/", config)).toBeNull();
+  });
+});
+
 describe("canResolveAskPermissionRequest", () => {
   it("returns false for matching bash yolo exceptions when no prompt path exists", () => {
     expect(

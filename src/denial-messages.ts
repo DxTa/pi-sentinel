@@ -59,6 +59,14 @@ export function formatUnavailableReason(ctx: DenialContext): string {
   return `${EXTENSION_TAG} ${buildUnavailableBody(ctx)}`;
 }
 
+/** Format the block reason when yolo mode blocks by policy: the agent must change the request. */
+export function formatPolicyBlockReason(
+  ctx: DenialContext,
+  denialReason?: string,
+): string {
+  return `${EXTENSION_TAG} ${buildUserDeniedBody(ctx, denialReason, "Blocked")}`;
+}
+
 /** Format the block reason when the user denies at an interactive prompt. */
 export function formatUserDeniedReason(
   ctx: DenialContext,
@@ -149,28 +157,29 @@ function buildUnavailableBody(ctx: DenialContext): string {
 function buildUserDeniedBody(
   ctx: DenialContext,
   denialReason?: string,
+  lead = "User denied",
 ): string {
   switch (ctx.kind) {
     case "tool": {
       const { check } = ctx;
       if (isMcpCheck(check)) {
-        return `User denied MCP target '${check.target}'.${reasonSuffix(denialReason)}`;
+        return `${lead} MCP target '${check.target}'.${reasonSuffix(denialReason)}`;
       }
       if (check.toolName === "bash" && check.command) {
-        return `User denied bash command '${check.command}'.${reasonSuffix(denialReason)}`;
+        return `${lead} bash command '${check.command}'.${reasonSuffix(denialReason)}`;
       }
-      return `User denied tool '${check.toolName}'.${reasonSuffix(denialReason)}`;
+      return `${lead} tool '${check.toolName}'.${reasonSuffix(denialReason)}`;
     }
     case "path":
-      return `User denied access to path '${ctx.pathValue}'.${reasonSuffix(denialReason)}`;
+      return `${lead} access to path '${ctx.pathValue}'.${reasonSuffix(denialReason)}`;
     case "external_directory":
-      return `User denied external directory access for tool '${ctx.toolName}' path '${ctx.pathValue}'.${reasonSuffix(denialReason)}`;
+      return `${lead} external directory access for tool '${ctx.toolName}' path '${ctx.pathValue}'.${reasonSuffix(denialReason)}`;
     case "bash_external_directory":
-      return `User denied external directory access for bash command '${ctx.command}'.${reasonSuffix(denialReason)}`;
+      return `${lead} external directory access for bash command '${ctx.command}'.${reasonSuffix(denialReason)}`;
     case "bash_path":
-      return `User denied path access for bash command '${ctx.command}' (path '${ctx.pathValue}').${reasonSuffix(denialReason)}`;
+      return `${lead} path access for bash command '${ctx.command}' (path '${ctx.pathValue}').${reasonSuffix(denialReason)}`;
     case "skill_read":
-      return `User denied access to skill '${ctx.skillName}'.${reasonSuffix(denialReason)}`;
+      return `${lead} access to skill '${ctx.skillName}'.${reasonSuffix(denialReason)}`;
   }
 }
 

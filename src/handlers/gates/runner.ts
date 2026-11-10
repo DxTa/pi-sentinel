@@ -1,5 +1,6 @@
 import {
   formatDenyReason,
+  formatPolicyBlockReason,
   formatUnavailableReason,
   formatUserDeniedReason,
 } from "#src/denial-messages";
@@ -145,7 +146,9 @@ export async function runGateCheck(
     denyReason: formatDenyReason(descriptor.denialContext),
     unavailableReason: formatUnavailableReason(descriptor.denialContext),
     userDeniedReason: (decision: PermissionPromptDecision) =>
-      formatUserDeniedReason(descriptor.denialContext, decision.denialReason),
+      decision.policyBlock
+        ? formatPolicyBlockReason(descriptor.denialContext, decision.denialReason)
+        : formatUserDeniedReason(descriptor.denialContext, decision.denialReason),
   };
 
   let autoApproved = false;

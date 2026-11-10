@@ -22,6 +22,8 @@ export type PermissionPromptDecision = {
    * become learning labels.
    */
   humanDecided?: true;
+  /** True when yolo mode blocked the request by policy. Not a user's answer; the agent must change the request. */
+  policyBlock?: true;
 };
 
 export interface PermissionDecisionUi {

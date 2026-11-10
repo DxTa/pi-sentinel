@@ -27,6 +27,7 @@ import {
   matchesYoloAskBashPattern,
   shouldAutoApprovePermissionState,
   yoloAskPatternsFor,
+  yoloAskReason,
 } from "./yolo-mode";
 
 export type PermissionReviewSource = "tool_call" | "skill_input" | "skill_read";
@@ -322,7 +323,7 @@ export class PermissionPrompter implements PermissionPrompterApi {
     startedAt: number,
   ): Promise<PermissionPromptDecision> {
     const block = (reason: string): PermissionPromptDecision => {
-      const denialReason = `Blocked by yolo mode: ${reason}`;
+      const denialReason = `yolo mode: ${reason.replace(/\.?$/, ".")} Change the request and retry; do not repeat it unchanged.`;
       this.writeReviewEntry("permission_request.yolo_blocked", { ...details, resolution: "denied", denialReason });
       this.writeDebugPrompt("permission_prompt.resolved", details, {
         approved: false,
@@ -330,7 +331,7 @@ export class PermissionPrompter implements PermissionPrompterApi {
         denialReason,
         latencyMs: Date.now() - startedAt,
       });
-      return { approved: false, state: "denied", denialReason };
+      return { approved: false, state: "denied", denialReason, policyBlock: true };
     };
     const allow = (event: string, audit: { autoModeReason?: string; evaluationId?: string; autoModeAudit?: boolean } = {}): PermissionPromptDecision => {
       this.writeReviewEntry(event, { ...details, ...audit });
@@ -348,7 +349,10 @@ export class PermissionPrompter implements PermissionPrompterApi {
       && details.autoModeTargetsWorkspace === true
       && details.autoModeHardRuleHit === false
       && isRemovalOnlyAsk(details.command, config);
-    if (forced && !workspaceRemoval) return block("this command needs explicit approval");
+    if (forced && !workspaceRemoval) {
+      const trigger = typeof details.command === "string" ? yoloAskReason(details.command, config) : null;
+      return block(trigger ?? "this request needs explicit approval, which yolo cannot give.");
+    }
     const operation = details.autoModeOperation;
     const isExternal = details.autoModeWorkspaceLocal !== true;
     if (isExternal && (operation === "read" || operation === "list") && details.autoModeHardRuleHit !== false) {

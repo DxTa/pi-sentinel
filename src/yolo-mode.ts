@@ -114,6 +114,26 @@ export function isRemovalOnlyAsk(command: string, config: PermissionSystemExtens
   return asking.length > 0 && asking.every((words) => words[0]?.slice(words[0].lastIndexOf("/") + 1) === "rm");
 }
 
+/**
+ * The first yolo ask rule a bash command hits, with the fix the model can apply. Null when no rule matches.
+ */
+export function yoloAskReason(command: string, config: PermissionSystemExtensionConfig): string | null {
+  const parts = [...(bashInnerCommands(command)?.commands ?? [command]), ...(splitBashSegments(command) ?? [])];
+  for (const part of parts) {
+    const words = bashWords(part);
+    if (!words || !isBuiltInAskCommand(words)) continue;
+    const name = words[0]!.slice(words[0]!.lastIndexOf("/") + 1);
+    if (name === "rm") return "rm: yolo allows rm only when every path is inside the workspace. Delete only workspace files, or drop the rm and write output to /dev/null or stdout.";
+    if (name === "ssh") return "ssh: yolo never runs ssh. Run it from your own terminal, or drop the ssh step.";
+    if (name === "git") return "git push: yolo runs only plain pushes (git push, or git -C <dir> push). Use the plain form, or run it from your own terminal.";
+    if (name && PACKAGE_PUBLISHERS.has(name)) return `${name} publish: yolo never publishes. Run it from your own terminal.`;
+    const verb = words.find((word) => KUBECTL_WRITE_VERBS.has(word)) ?? "write";
+    return `kubectl ${verb}: yolo never changes a cluster. Use read commands (get, describe, logs), or run it from your own terminal.`;
+  }
+  const pattern = yoloAskPatternsFor(config).find((candidate) => matchesBashAskPattern([candidate], command));
+  return pattern ? `command matches yoloAskBashPatterns "${pattern}". Remove the matching part, or run it from your own terminal.` : null;
+}
+
 export function matchesGitPushCommand(command: string): boolean {
   return (bashInnerCommands(command)?.commands ?? [command]).some((part) => {
     const words = bashWords(part);
